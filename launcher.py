@@ -114,7 +114,7 @@ def main():
     
     target_version = sys.argv[1] if len(sys.argv) > 1 else config.get('target_version', 'v0.24')
     repo = config.get('github_repo', DEFAULT_REPO)
-    token = config.get('github_token', fallback="")
+    token = config.get('github_token', fallback="").strip()
 
     version_path = os.path.join(VERSIONS_DIR, target_version)
 
@@ -124,13 +124,21 @@ def main():
     print(f"  [OK] Lanzando Archie (Motor {target_version})...")
     print("=======================================================\n")
     
-    main_script = os.path.join(version_path, "main.py")
+    # Punto de entrada exacto según la estructura de tu proyecto
+    main_script = os.path.join(version_path, "Core", "app.py")
     
+    if not os.path.exists(main_script):
+        print(f"  [ERROR] No se encontró el archivo de inicio en: {main_script}")
+        sys.exit(1)
+
+    # Instalación silenciosa de dependencias si existe requirements.txt
     req_file = os.path.join(version_path, "requirements.txt")
     if os.path.exists(req_file):
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"])
 
-    subprocess.run([sys.executable, main_script], cwd=version_path)
+    # Ejecución estableciendo el directorio de trabajo en Core/
+    script_dir = os.path.dirname(main_script)
+    subprocess.run([sys.executable, main_script], cwd=script_dir)
 
 if __name__ == "__main__":
     main()
