@@ -2,24 +2,28 @@ import os
 import sys
 import zipfile
 import urllib.request
+import urllib.error
 import shutil
 import subprocess
 import configparser
 import json
 import time
 import glob
-import subprocess
+import traceback
 
-# Directorios base
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSIONS_DIR = os.path.join(BASE_DIR, "versions")
 os.makedirs(VERSIONS_DIR, exist_ok=True)
 
-# URL RAW del Gist de control
 GIST_URL = "https://gist.githubusercontent.com/davidRubioAim/e575bfbfceef3e187410ee5e6e494a1a/raw/version.json"
 DEFAULT_REPO = "davidRubioAim/Archie"
 
+def log(tag, msg, error=False):
+    prefix = "[ERROR]" if error else "[INFO]"
+    print(f"  {prefix} [{tag}] {msg}")
+
 def sync_config():
+    log("SYNC", "Leyendo configuración local...")
     config = configparser.ConfigParser()
     config_path = os.path.join(BASE_DIR, 'config.ini')
     
@@ -28,22 +32,24 @@ def sync_config():
             f.write(f"[ARCHIE]\ntarget_version = v0.24\ngithub_repo = {DEFAULT_REPO}\ngithub_token = \n")
 
     if not os.path.exists(config_path):
+        log("SYNC", "config.ini no existe. Generando valor por defecto...")
         write_default()
         
     try:
         config.read(config_path)
         if 'ARCHIE' not in config:
-            raise ValueError("Sección [ARCHIE] ausente")
+            raise ValueError("Sección [ARCHIE] no encontrada")
     except Exception as e:
-        print(f"  [WARN] config.ini inválido ({e}). Regenerando archivo...")
+        log("SYNC", f"config.ini inválido ({e}). Regenerando...", error=True)
         write_default()
         config.read(config_path)
 
-    # Consulta dinámica al Gist maestro con cache-buster por timestamp
+    # Consulta al Gist
     try:
         url_busted = f"{GIST_URL}?t={int(time.time())}"
+        log("GIST", f"Consultando estado en nube: {GIST_URL}")
         req = urllib.request.Request(url_busted, headers={'Cache-Control': 'no-cache', 'User-Agent': 'Archie-Launcher'})
-        with urllib.request.urlopen(req, timeout=4) as response:
+        with urllib.request.urlopen(req, timeout=5) as response:
             remote_data = json.loads(response.read().decode('utf-8'))
             
         remote_v = remote_data.get("version")
@@ -54,11 +60,12 @@ def sync_config():
             
         updated = False
         if remote_v and config['ARCHIE'].get('target_version') != remote_v:
-            print(f"  [*] Orden de despliegue detectada. Sincronizando a {remote_v}...")
+            log("GIST", f"Nueva versión remota detectada: {remote_v}")
             config['ARCHIE']['target_version'] = remote_v
             updated = True
             
         if remote_repo and config['ARCHIE'].get('github_repo') != remote_repo:
+            log("GIST", f"Nuevo repositorio detectado: {remote_repo}")
             config['ARCHIE']['github_repo'] = remote_repo
             updated = True
             
@@ -67,49 +74,51 @@ def sync_config():
                 config.write(f)
                 
     except Exception as e:
-        print(f"  [WARN] No se pudo verificar el Gist ({e}). Usando configuración local.")
+        log("GIST", f"Falló conexión con Gist ({e}). Usando datos de config.ini local.", error=True)
         
     return config['ARCHIE']
 
 def download_from_github(version, repo, token):
-    print(f"  [*] La versión {version} no está en caché local.")
-    print(f"  [*] Descargando paquete desde GitHub ({repo})...")
+    log("DOWNLOAD", f"Iniciando descarga de {version} desde repositorio {repo}")
     
-    # Selección de endpoint según visibilidad del repositorio / token
-    if token and token.strip():
+    token_clean = token.strip() if token else ""
+    if token_clean:
         url = f"https://api.github.com/repos/{repo}/zipball/refs/tags/{version}"
         headers = {
             'User-Agent': 'Archie-Bootstrapper',
-            'Authorization': f"Bearer {token.strip()}",
+            'Authorization': f"Bearer {token_clean}",
             'Accept': 'application/vnd.github+json'
         }
+        log("DOWNLOAD", "Usando conexión autenticada por API Token (Repo Privado).")
     else:
         url = f"https://github.com/{repo}/archive/refs/tags/{version}.zip"
         headers = {'User-Agent': 'Archie-Bootstrapper'}
+        log("DOWNLOAD", "Usando descarga directa pública (Repo Público).")
 
+    log("DOWNLOAD", f"URL Endpoint: {url}")
     zip_path = os.path.join(BASE_DIR, f"temp_{version}.zip")
     req = urllib.request.Request(url, headers=headers)
 
     try:
+        log("DOWNLOAD", "Conectando con servidores de GitHub...")
         with urllib.request.urlopen(req) as response, open(zip_path, 'wb') as out_file:
+            log("DOWNLOAD", f"Código de Respuesta HTTP: {response.status}")
             shutil.copyfileobj(response, out_file)
             
-        print("  [*] Extrayendo módulos del motor y CustomTkinter...")
+        log("ZIP", f"Descarga completa. Tamaño ZIP: {os.path.getsize(zip_path)} bytes")
         
-        # Directorio final donde residirá el código descompuesto
         final_path = os.path.join(VERSIONS_DIR, version)
         if os.path.exists(final_path):
             shutil.rmtree(final_path)
 
-        # Extracción en un directorio temporal para aplanar la raíz de GitHub
         temp_extract_dir = os.path.join(VERSIONS_DIR, f"_temp_{version}")
         if os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir)
 
+        log("ZIP", "Descomprimiendo paquete dinámico...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(temp_extract_dir)
             
-        # Detectar la subcarpeta envolvente que añade GitHub (ej: davidRubioAim-Archie-xxxx)
         extracted_subdirs = [
             os.path.join(temp_extract_dir, d) 
             for d in os.listdir(temp_extract_dir) 
@@ -117,47 +126,29 @@ def download_from_github(version, repo, token):
         ]
         
         if extracted_subdirs:
-            # Mover el contenido interno a la raíz de la carpeta de versión
+            log("ZIP", f"Aplanando subcarpeta contenedora de GitHub: {os.path.basename(extracted_subdirs[0])}")
             shutil.move(extracted_subdirs[0], final_path)
             shutil.rmtree(temp_extract_dir)
         else:
-            # Fallback en caso de que no exista carpeta envolvente
             os.rename(temp_extract_dir, final_path)
 
         os.remove(zip_path)
-        print(f"  [OK] Entorno {version} desplegado correctamente.")
+        log("ZIP", f"Estructura desplegada correctamente en: {final_path}")
         
-    except Exception as e:
-        print(f"  [ERROR] Falló la descarga o descompresión desde GitHub ({url}): {e}")
-        if os.path.exists(zip_path): 
-            os.remove(zip_path)
-        if 'temp_extract_dir' in locals() and os.path.exists(temp_extract_dir):
-            shutil.rmtree(temp_extract_dir)
+    except urllib.error.HTTPError as e:
+        log("DOWNLOAD", f"Error HTTP {e.code}: {e.reason}", error=True)
+        log("DOWNLOAD", f"Cabeceras de Respuesta: {e.headers}", error=True)
+        if os.path.exists(zip_path): os.remove(zip_path)
         sys.exit(1)
-
-import os
-import sys
-import zipfile
-import urllib.request
-import shutil
-import subprocess
-import configparser
-import json
-import time
-import glob
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-VERSIONS_DIR = os.path.join(BASE_DIR, "versions")
-os.makedirs(VERSIONS_DIR, exist_ok=True)
-
-GIST_URL = "https://gist.githubusercontent.com/davidRubioAim/e575bfbfceef3e187410ee5e6e494a1a/raw/version.json"
-DEFAULT_REPO = "davidRubioAim/Archie"
-
-# ... [Tus funciones sync_config() y download_from_github() se mantienen igual] ...
+    except Exception as e:
+        log("DOWNLOAD", f"Error inesperado: {e}", error=True)
+        log("TRACEBACK", traceback.format_exc(), error=True)
+        if os.path.exists(zip_path): os.remove(zip_path)
+        sys.exit(1)
 
 def main():
     print("=======================================================")
-    print("  ARCHIE: Sincronizando entorno de trabajo...")
+    print("  ARCHIE: Sincronizando entorno de trabajo (DEBUG MODE)")
     print("=======================================================")
     
     config = sync_config()
@@ -169,23 +160,21 @@ def main():
     version_path = os.path.join(VERSIONS_DIR, target_version)
 
     if not os.path.exists(version_path):
+        log("MAIN", f"La versión {target_version} no existe en la carpeta /versions local.")
         download_from_github(target_version, repo, token)
 
-    print(f"  [OK] Lanzando Archie (Motor {target_version})...")
-    print("=======================================================\n")
+    log("MAIN", f"Estructura local detectada para {target_version}")
     
-    # 🎯 RESOLUCIÓN ESTRICTA Y PRIORITARIA DEL PUNTO DE ENTRADA
-    # 1. Prioridad absoluta: Core/app.py dentro de la versión actual
+    # Búsqueda estricta de Core/app.py evitando la carpeta /versions anidada
     primary_entry = os.path.join(version_path, "Core", "app.py")
-    
     if os.path.exists(primary_entry):
         main_script = primary_entry
     else:
-        # 2. Búsqueda de respaldo excluyendo carpetas 'versions' o de respaldos antiguos
+        log("MAIN", f"Buscando 'app.py' mediante rastreo estricto...", error=True)
         search_pattern = os.path.join(version_path, "**", "app.py")
         candidates = glob.glob(search_pattern, recursive=True)
         
-        # Filtrar rutas que contengan subcarpetas "versions" accidentales
+        # Filtrar subcarpetas accidentales de versiones antiguas
         valid_candidates = [
             c for c in candidates 
             if f"{os.sep}versions{os.sep}" not in c 
@@ -195,22 +184,22 @@ def main():
         if valid_candidates:
             main_script = valid_candidates[0]
         else:
-            print(f"  [ERROR] No se encontró un 'Core/app.py' válido en {version_path}")
+            log("MAIN", f"No se encontró 'app.py' válido en {version_path}", error=True)
+            log("MAIN", f"Contenido del directorio {version_path}: {os.listdir(version_path)}")
             sys.exit(1)
 
-    print(f"  [*] Punto de entrada activo: {main_script}")
+    log("MAIN", f"Punto de entrada seleccionado: {main_script}")
     script_dir = os.path.dirname(main_script)
     
-    # 📦 INSTALACIÓN Y VERIFICACIÓN DE DEPENDENCIAS (Incluso TkinterDnD2)
+    # Verificación de requerimientos
     req_file = os.path.join(version_path, "requirements.txt")
-    if not os.path.exists(req_file):
-        req_file = os.path.join(BASE_DIR, "requirements.txt")
-        
     if os.path.exists(req_file):
-        print("  [*] Verificando e instalando dependencias (CustomTkinter, TkinterDnD2)...")
+        log("PIP", "Instalando dependencias de requirements.txt...")
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"])
 
-    # 🚀 EJECUCIÓN CON WORKING DIRECTORY EN Core/
+    log("MAIN", f"Ejecutando CustomTkinter en directorio: {script_dir}")
+    print("=======================================================\n")
+    
     subprocess.run([sys.executable, main_script], cwd=script_dir)
 
 if __name__ == "__main__":
