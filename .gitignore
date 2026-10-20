@@ -1,4 +1,8 @@
-
+# Excluir explícitamente entornos virtuales, carpetas descargadas y temporales
+.venv/
 versions/
-config.ini
 temp_*.zip
+config.ini
+*.pyc
+__pycache__/
+.env
