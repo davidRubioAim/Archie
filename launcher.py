@@ -7,6 +7,7 @@ import subprocess
 import configparser
 import json
 import time
+import importlib
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSIONS_DIR = os.path.join(BASE_DIR, "versions")
@@ -136,7 +137,6 @@ def main():
     version_path = os.path.join(VERSIONS_DIR, target_version)
     expected_core_app = os.path.join(version_path, "Core", "app.py")
 
-    # Si la versión no existe o está corrupta, forzar redescarga
     if os.path.exists(version_path) and not os.path.exists(expected_core_app):
         shutil.rmtree(version_path)
 
@@ -152,16 +152,21 @@ def main():
 
     script_dir = os.path.dirname(expected_core_app)
     
-    # 📦 VERIFICACIÓN E INSTALACIÓN DE DEPENDENCIAS (Incluyendo google-genai)
+    # Instalación de dependencias garantizando actualización de paquetes
     req_file = os.path.join(version_path, "requirements.txt")
     if not os.path.exists(req_file):
         req_file = os.path.join(BASE_DIR, "requirements.txt")
         
     if os.path.exists(req_file):
-        print("  [*] Verificando e instalando dependencias (google-genai, CustomTkinter)...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"])
+        print("  [*] Verificando e instalando dependencias en el entorno...")
+        # Eliminamos --quiet temporalmente para ver cualquier posible error de depuración
+        result = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file])
+        if result.returncode != 0:
+            print("  [WARN] Falló la instalación de algunas dependencias mediante pip.")
+            
+        importlib.invalidate_caches()
 
-    # 🚀 EJECUCIÓN AISLADA
+    # Ejecución aislada de Core/app.py
     subprocess.run([sys.executable, expected_core_app], cwd=script_dir)
 
 if __name__ == "__main__":
