@@ -7,6 +7,8 @@ import subprocess
 import configparser
 import json
 import time
+import glob
+import subprocess
 
 # Directorios base
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -73,7 +75,7 @@ def download_from_github(version, repo, token):
     print(f"  [*] La versión {version} no está en caché local.")
     print(f"  [*] Descargando paquete desde GitHub ({repo})...")
     
-    # Elección de endpoint según tipo de visibilidad/token
+    # Selección de endpoint según visibilidad del repositorio / token
     if token and token.strip():
         url = f"https://api.github.com/repos/{repo}/zipball/refs/tags/{version}"
         headers = {
@@ -94,12 +96,12 @@ def download_from_github(version, repo, token):
             
         print("  [*] Extrayendo módulos del motor y CustomTkinter...")
         
-        # Carpeta destino final para la versión
+        # Directorio final donde residirá el código descompuesto
         final_path = os.path.join(VERSIONS_DIR, version)
         if os.path.exists(final_path):
             shutil.rmtree(final_path)
 
-        # Extracción temporal para resolver el directorio envoltorio de GitHub
+        # Extracción en un directorio temporal para aplanar la raíz de GitHub
         temp_extract_dir = os.path.join(VERSIONS_DIR, f"_temp_{version}")
         if os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir)
@@ -107,22 +109,26 @@ def download_from_github(version, repo, token):
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(temp_extract_dir)
             
-        # Identificar la subcarpeta envolvente que crea GitHub (ej: Archie-v0.24)
-        extracted_subdirs = [os.path.join(temp_extract_dir, d) for d in os.listdir(temp_extract_dir) if os.path.isdir(os.path.join(temp_extract_dir, d))]
+        # Detectar la subcarpeta envolvente que añade GitHub (ej: davidRubioAim-Archie-xxxx)
+        extracted_subdirs = [
+            os.path.join(temp_extract_dir, d) 
+            for d in os.listdir(temp_extract_dir) 
+            if os.path.isdir(os.path.join(temp_extract_dir, d))
+        ]
         
         if extracted_subdirs:
-            # Mover el contenido interno al directorio final de la versión
+            # Mover el contenido interno a la raíz de la carpeta de versión
             shutil.move(extracted_subdirs[0], final_path)
             shutil.rmtree(temp_extract_dir)
         else:
-            # Fallback en caso de que no haya subcarpeta envolvente
+            # Fallback en caso de que no exista carpeta envolvente
             os.rename(temp_extract_dir, final_path)
 
         os.remove(zip_path)
         print(f"  [OK] Entorno {version} desplegado correctamente.")
         
     except Exception as e:
-        print(f"  [ERROR] Falló la descarga o descompresión desde GitHub: {e}")
+        print(f"  [ERROR] Falló la descarga o descompresión desde GitHub ({url}): {e}")
         if os.path.exists(zip_path): 
             os.remove(zip_path)
         if 'temp_extract_dir' in locals() and os.path.exists(temp_extract_dir):
@@ -148,21 +154,30 @@ def main():
     print(f"  [OK] Lanzando Archie (Motor {target_version})...")
     print("=======================================================\n")
     
-    # Punto de entrada exacto según la estructura de tu proyecto
-    main_script = os.path.join(version_path, "Core", "app.py")
+    # Búsqueda recursiva del punto de entrada (app.py)
+    search_pattern = os.path.join(version_path, "**", "app.py")
+    found_files = glob.glob(search_pattern, recursive=True)
     
-    if not os.path.exists(main_script):
-        print(f"  [ERROR] No se encontró el archivo de inicio en: {main_script}")
+    if not found_files:
+        print(f"  [ERROR] No se encontró 'app.py' dentro de {version_path}")
+        print("  Asegúrate de que la carpeta Core/ está subida al repositorio de GitHub.")
         sys.exit(1)
-
+        
+    main_script = found_files[0]
+    script_dir = os.path.dirname(main_script)
+    
     # Instalación silenciosa de dependencias si existe requirements.txt
     req_file = os.path.join(version_path, "requirements.txt")
+    if not os.path.exists(req_file):
+        req_file = os.path.join(version_path, "Core", "requirements.txt")
+        
     if os.path.exists(req_file):
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"])
 
-    # Ejecución estableciendo el directorio de trabajo en Core/
-    script_dir = os.path.dirname(main_script)
+    # Ejecución aislada con el Working Directory en el directorio de app.py
     subprocess.run([sys.executable, main_script], cwd=script_dir)
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()
