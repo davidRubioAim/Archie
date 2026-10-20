@@ -13,8 +13,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSIONS_DIR = os.path.join(BASE_DIR, "versions")
 os.makedirs(VERSIONS_DIR, exist_ok=True)
 
-# ⚠️ URL RAW LIMPIA Y DINÁMICA (Sin hash de commit y sin .js)
+# URL RAW del Gist de control
 GIST_URL = "https://gist.githubusercontent.com/davidRubioAim/e575bfbfceef3e187410ee5e6e494a1a/raw/version.json"
+DEFAULT_REPO = "davidRubioAim/Archie"
 
 def sync_config():
     config = configparser.ConfigParser()
@@ -22,7 +23,7 @@ def sync_config():
     
     def write_default():
         with open(config_path, 'w') as f:
-            f.write("[ARCHIE]\ntarget_version = v0.24\ngithub_repo = davidRubioAim/AimAutoArch\ngithub_token = \n")
+            f.write(f"[ARCHIE]\ntarget_version = v0.24\ngithub_repo = {DEFAULT_REPO}\ngithub_token = \n")
 
     if not os.path.exists(config_path):
         write_default()
@@ -44,7 +45,7 @@ def sync_config():
             remote_data = json.loads(response.read().decode('utf-8'))
             
         remote_v = remote_data.get("version")
-        remote_repo = remote_data.get("github_repo")
+        remote_repo = remote_data.get("github_repo", DEFAULT_REPO)
         
         if remote_v and not remote_v.startswith("v"):
             remote_v = f"v{remote_v}"
@@ -64,13 +65,13 @@ def sync_config():
                 config.write(f)
                 
     except Exception as e:
-        print(f"  [WARN] No se pudo verificar el Gist ({e}). Usando versión local.")
+        print(f"  [WARN] No se pudo verificar el Gist ({e}). Usando configuración local.")
         
     return config['ARCHIE']
 
 def download_from_github(version, repo, token):
     print(f"  [*] La versión {version} no está en caché local.")
-    print(f"  [*] Descargando paquete dinámico desde GitHub...")
+    print(f"  [*] Descargando paquete desde GitHub ({repo})...")
     
     url = f"https://github.com/{repo}/archive/refs/tags/{version}.zip"
     zip_path = os.path.join(BASE_DIR, f"temp_{version}.zip")
@@ -83,7 +84,7 @@ def download_from_github(version, repo, token):
         with urllib.request.urlopen(req) as response, open(zip_path, 'wb') as out_file:
             shutil.copyfileobj(response, out_file)
             
-        print("  [*] Extrayendo módulos y CustomTkinter...")
+        print("  [*] Extrayendo módulos y dependencias...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             root_folder = zip_ref.namelist()[0].split('/')[0]
             zip_ref.extractall(VERSIONS_DIR)
@@ -99,7 +100,7 @@ def download_from_github(version, repo, token):
         print(f"  [OK] Entorno {version} desplegado correctamente.")
         
     except Exception as e:
-        print(f"  [ERROR] Falló la descarga desde GitHub: {e}")
+        print(f"  [ERROR] Falló la descarga desde GitHub ({url}): {e}")
         if os.path.exists(zip_path): 
             os.remove(zip_path)
         sys.exit(1)
@@ -112,7 +113,7 @@ def main():
     config = sync_config()
     
     target_version = sys.argv[1] if len(sys.argv) > 1 else config.get('target_version', 'v0.24')
-    repo = config.get('github_repo', 'davidRubioAim/AimAutoArch')
+    repo = config.get('github_repo', DEFAULT_REPO)
     token = config.get('github_token', fallback="")
 
     version_path = os.path.join(VERSIONS_DIR, target_version)
