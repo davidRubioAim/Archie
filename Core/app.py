@@ -888,7 +888,6 @@ class MegaStripApp(CTkDnD):
             self.append_chat("System", "⚠️ GEMINI_API_KEY not found. AI is disabled.")
             self.chat_input.configure(state="disabled")
             self.btn_send_ai.configure(state="disabled")
-            self.btn_create_arch.configure(state="disabled")
             return
 
         system_instruction = """
@@ -1670,6 +1669,9 @@ class MegaStripApp(CTkDnD):
         if getattr(self, 'preview_timer', None): 
             self.after_cancel(self.preview_timer)
         self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Pending Update... Press Create Architecture)", text_color="gray")
+        # Garantizar que el botón de crear arquitectura siempre esté disponible
+        if hasattr(self, 'btn_create_arch'):
+            self.btn_create_arch.configure(state="normal", text="✨ Create Architecture")
 
     def trigger_resize(self, event=None):
         if getattr(self, 'resize_timer', None): self.after_cancel(self.resize_timer)
