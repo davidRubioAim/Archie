@@ -20,12 +20,24 @@ def sync_config():
     config = configparser.ConfigParser()
     config_path = os.path.join(BASE_DIR, 'config.ini')
     
-    # 1. Crear config base si es la primera ejecución
-    if not os.path.exists(config_path):
+    # Función lambda para inyectar la configuración limpia
+    def write_default_config():
         with open(config_path, 'w') as f:
             f.write("[ARCHIE]\ntarget_version = v0.24\ngithub_repo = davidRubioAim/AimAutoArch\ngithub_token = \n")
-    
-    config.read(config_path)
+
+    # 1. Crear o reparar config local
+    if not os.path.exists(config_path):
+        write_default_config()
+        
+    try:
+        config.read(config_path)
+        # Validar que la estructura mínima existe
+        if 'ARCHIE' not in config:
+            raise ValueError("Falta la seccion [ARCHIE]")
+    except Exception as e:
+        print(f"  [WARN] config.ini corrupto detectado ({e}). Regenerando entorno limpio...")
+        write_default_config()
+        config.read(config_path)
     
     # 2. Consultar Gist maestro (con cache-buster)
     try:
