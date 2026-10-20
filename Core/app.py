@@ -44,6 +44,19 @@ def aplicar_letterbox_pil(img, target_w, target_h, resample_method):
     canvas.paste(resized, (paste_x, paste_y), resized if resized.mode == "RGBA" else None)
     return canvas
 
+# --- Añadir justo debajo de la función aplicar_letterbox_pil ---
+def obtener_version_local():
+    version_path = os.path.join(CONFIG_DIR, "version.json")
+    if os.path.exists(version_path):
+        try:
+            with open(version_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                v = data.get("version", "0.0.0")
+                return f"v{v}" if not v.startswith("v") else v
+        except Exception:
+            pass
+    return "v0.24"  # Fallback si no existe el archivo
+
 class CTkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -118,12 +131,27 @@ class MegaStripApp(CTkDnD):
             self.logo_img = ctk.CTkImage(img, size=(int(40 * (img.width / img.height)), 40))
             ctk.CTkLabel(self.header_frame, image=self.logo_img, text="").pack(side="left", padx=(0, 10))
 
-        # 2. Carga del logotipo de la herramienta
+        # 2. Carga del logotipo de la herramienta y versión dinámica
         logo_archie_path = os.path.join(ASSETS_DIR, "logo_Archie.png")
         if os.path.exists(logo_archie_path):
             img_archie = Image.open(logo_archie_path)
             self.logo_archie_img = ctk.CTkImage(img_archie, size=(int(40 * (img_archie.width / img_archie.height)), 40))
-            ctk.CTkLabel(self.header_frame, image=self.logo_archie_img, text="").pack(side="left", padx=(0, 20))
+            
+            # Sub-contenedor vertical para el Logo + Versión
+            archie_box = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+            archie_box.pack(side="left", padx=(0, 20))
+            
+            ctk.CTkLabel(archie_box, image=self.logo_archie_img, text="").pack(anchor="w")
+            
+            # Etiqueta magenta de versión dinámica
+            version_str = obtener_version_local()
+            self.lbl_version_tag = ctk.CTkLabel(
+                archie_box, 
+                text=f"Beta {version_str}", 
+                font=ctk.CTkFont(family="Open Sans", size=10, weight="normal"), 
+                text_color=self.c_magenta
+            )
+            self.lbl_version_tag.pack(anchor="w", pady=(0, 0))
             
         self.stadium_frame = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.stadium_frame.pack(side="right", padx=10)

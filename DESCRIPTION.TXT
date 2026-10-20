@@ -1,3 +1,23 @@
+¿Cómo lanzarás futuras versiones?
+A partir de ahora, cuando desarrolles mejoras en el motor o en la interfaz:
+
+1- Subes tu código a la rama principal:
+
+PowerShell
+git add .
+git commit -m "feat: mejoras en motor de distribución y GUI"
+git push origin main
+
+2- Creas el nuevo tag y lo subes:
+
+PowerShell
+git tag v0.25
+git push origin v0.25
+
+3- Editas tu Gist en GitHub y cambias "version": "0.24" por "version": "0.25".
+
+_______________________________________________________________________
+
 1. El Concepto General
 MEGA STRIP Generator Pro es una herramienta de automatización Broadcast diseñada para resolver uno de los problemas más tediosos y propensos a error en la producción de publicidad para estadios: la adaptación a múltiples resoluciones de pantallas LED perimetrales (U-Televisiva).
 
