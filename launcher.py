@@ -73,36 +73,60 @@ def download_from_github(version, repo, token):
     print(f"  [*] La versión {version} no está en caché local.")
     print(f"  [*] Descargando paquete desde GitHub ({repo})...")
     
-    url = f"https://github.com/{repo}/archive/refs/tags/{version}.zip"
+    # Elección de endpoint según tipo de visibilidad/token
+    if token and token.strip():
+        url = f"https://api.github.com/repos/{repo}/zipball/refs/tags/{version}"
+        headers = {
+            'User-Agent': 'Archie-Bootstrapper',
+            'Authorization': f"Bearer {token.strip()}",
+            'Accept': 'application/vnd.github+json'
+        }
+    else:
+        url = f"https://github.com/{repo}/archive/refs/tags/{version}.zip"
+        headers = {'User-Agent': 'Archie-Bootstrapper'}
+
     zip_path = os.path.join(BASE_DIR, f"temp_{version}.zip")
-    
-    req = urllib.request.Request(url, headers={'User-Agent': 'Archie-Bootstrapper'})
-    if token:
-        req.add_header("Authorization", f"token {token}")
+    req = urllib.request.Request(url, headers=headers)
 
     try:
         with urllib.request.urlopen(req) as response, open(zip_path, 'wb') as out_file:
             shutil.copyfileobj(response, out_file)
             
-        print("  [*] Extrayendo módulos y dependencias...")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            root_folder = zip_ref.namelist()[0].split('/')[0]
-            zip_ref.extractall(VERSIONS_DIR)
-            
-        extracted_path = os.path.join(VERSIONS_DIR, root_folder)
-        final_path = os.path.join(VERSIONS_DIR, version)
+        print("  [*] Extrayendo módulos del motor y CustomTkinter...")
         
+        # Carpeta destino final para la versión
+        final_path = os.path.join(VERSIONS_DIR, version)
         if os.path.exists(final_path):
             shutil.rmtree(final_path)
+
+        # Extracción temporal para resolver el directorio envoltorio de GitHub
+        temp_extract_dir = os.path.join(VERSIONS_DIR, f"_temp_{version}")
+        if os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir)
+
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_extract_dir)
             
-        os.rename(extracted_path, final_path)
+        # Identificar la subcarpeta envolvente que crea GitHub (ej: Archie-v0.24)
+        extracted_subdirs = [os.path.join(temp_extract_dir, d) for d in os.listdir(temp_extract_dir) if os.path.isdir(os.path.join(temp_extract_dir, d))]
+        
+        if extracted_subdirs:
+            # Mover el contenido interno al directorio final de la versión
+            shutil.move(extracted_subdirs[0], final_path)
+            shutil.rmtree(temp_extract_dir)
+        else:
+            # Fallback en caso de que no haya subcarpeta envolvente
+            os.rename(temp_extract_dir, final_path)
+
         os.remove(zip_path)
         print(f"  [OK] Entorno {version} desplegado correctamente.")
         
     except Exception as e:
-        print(f"  [ERROR] Falló la descarga desde GitHub ({url}): {e}")
+        print(f"  [ERROR] Falló la descarga o descompresión desde GitHub: {e}")
         if os.path.exists(zip_path): 
             os.remove(zip_path)
+        if 'temp_extract_dir' in locals() and os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir)
         sys.exit(1)
 
 def main():
