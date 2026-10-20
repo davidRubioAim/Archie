@@ -3,3 +3,4 @@ tkinterdnd2
 pillow
 moviepy
 python-dotenv
+google-genai
