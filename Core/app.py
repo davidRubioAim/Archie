@@ -46,16 +46,32 @@ def aplicar_letterbox_pil(img, target_w, target_h, resample_method):
 
 # --- Añadir justo debajo de la función aplicar_letterbox_pil ---
 def obtener_version_local():
+    """
+    Lee dinámicamente la versión desde Config/version.json o infiere la versión 
+    a partir de la ruta del directorio de ejecución actual (versions/v0.xx).
+    """
+    # 1. Intentar leer desde Config/version.json[cite: 3, 8]
     version_path = os.path.join(CONFIG_DIR, "version.json")
     if os.path.exists(version_path):
         try:
             with open(version_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                v = data.get("version", "0.0.0")
-                return f"v{v}" if not v.startswith("v") else v
+                v = str(data.get("version", "")).strip()
+                if v:
+                    return f"v{v}" if not v.startswith("v") else v
         except Exception:
             pass
-    return "v0.24"  # Fallback si no existe el archivo
+
+    # 2. Respaldo: Infección desde el árbol de carpetas (ej. .../versions/v0.25/Core/app.py)[cite: 1, 3]
+    try:
+        partes_ruta = BASE_DIR.replace("\\", "/").split("/")
+        for parte in partes_ruta:
+            if parte.startswith("v0.") or parte.startswith("v1."):
+                return parte
+    except Exception:
+        pass
+
+    return "v0.25"  # Fallback final por defecto
 
 class CTkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, *args, **kwargs):
@@ -65,7 +81,12 @@ class CTkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
 class MegaStripApp(CTkDnD):
     def __init__(self):
         super().__init__()
-        self.title("AIM Auto Arch - AUTO UPDATE") 
+        
+        # 1. Obtener versión dinámica al inicio
+        self.current_version_str = obtener_version_local()
+        
+        # 2. Título de la ventana dinámico[cite: 3]
+        self.title(f"AIM Auto Arch - AUTO UPDATE ({self.current_version_str})")
         self.geometry("1400x850")
         self.minsize(1280, 720)
         
@@ -137,17 +158,16 @@ class MegaStripApp(CTkDnD):
             img_archie = Image.open(logo_archie_path)
             self.logo_archie_img = ctk.CTkImage(img_archie, size=(int(40 * (img_archie.width / img_archie.height)), 40))
             
-            # Sub-contenedor vertical para el Logo + Versión
+            # Sub-contenedor vertical exclusivo para Logo + Etiqueta de versión[cite: 3]
             archie_box = ctk.CTkFrame(self.header_frame, fg_color="transparent")
             archie_box.pack(side="left", padx=(0, 20))
             
             ctk.CTkLabel(archie_box, image=self.logo_archie_img, text="").pack(anchor="w")
             
-            # Etiqueta magenta de versión dinámica
-            version_str = obtener_version_local()
+            # Etiqueta magenta en letra fina debajo del logo[cite: 3]
             self.lbl_version_tag = ctk.CTkLabel(
                 archie_box, 
-                text=f"Beta {version_str}", 
+                text=f"Beta {self.current_version_str}", 
                 font=ctk.CTkFont(family="Open Sans", size=10, weight="normal"), 
                 text_color=self.c_magenta
             )
