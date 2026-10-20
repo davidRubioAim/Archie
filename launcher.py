@@ -135,6 +135,26 @@ def download_from_github(version, repo, token):
             shutil.rmtree(temp_extract_dir)
         sys.exit(1)
 
+import os
+import sys
+import zipfile
+import urllib.request
+import shutil
+import subprocess
+import configparser
+import json
+import time
+import glob
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+VERSIONS_DIR = os.path.join(BASE_DIR, "versions")
+os.makedirs(VERSIONS_DIR, exist_ok=True)
+
+GIST_URL = "https://gist.githubusercontent.com/davidRubioAim/e575bfbfceef3e187410ee5e6e494a1a/raw/version.json"
+DEFAULT_REPO = "davidRubioAim/Archie"
+
+# ... [Tus funciones sync_config() y download_from_github() se mantienen igual] ...
+
 def main():
     print("=======================================================")
     print("  ARCHIE: Sincronizando entorno de trabajo...")
@@ -154,30 +174,44 @@ def main():
     print(f"  [OK] Lanzando Archie (Motor {target_version})...")
     print("=======================================================\n")
     
-    # Búsqueda recursiva del punto de entrada (app.py)
-    search_pattern = os.path.join(version_path, "**", "app.py")
-    found_files = glob.glob(search_pattern, recursive=True)
+    # 🎯 RESOLUCIÓN ESTRICTA Y PRIORITARIA DEL PUNTO DE ENTRADA
+    # 1. Prioridad absoluta: Core/app.py dentro de la versión actual
+    primary_entry = os.path.join(version_path, "Core", "app.py")
     
-    if not found_files:
-        print(f"  [ERROR] No se encontró 'app.py' dentro de {version_path}")
-        print("  Asegúrate de que la carpeta Core/ está subida al repositorio de GitHub.")
-        sys.exit(1)
+    if os.path.exists(primary_entry):
+        main_script = primary_entry
+    else:
+        # 2. Búsqueda de respaldo excluyendo carpetas 'versions' o de respaldos antiguos
+        search_pattern = os.path.join(version_path, "**", "app.py")
+        candidates = glob.glob(search_pattern, recursive=True)
         
-    main_script = found_files[0]
+        # Filtrar rutas que contengan subcarpetas "versions" accidentales
+        valid_candidates = [
+            c for c in candidates 
+            if f"{os.sep}versions{os.sep}" not in c 
+            and "Archie_v" not in os.path.basename(os.path.dirname(c))
+        ]
+        
+        if valid_candidates:
+            main_script = valid_candidates[0]
+        else:
+            print(f"  [ERROR] No se encontró un 'Core/app.py' válido en {version_path}")
+            sys.exit(1)
+
+    print(f"  [*] Punto de entrada activo: {main_script}")
     script_dir = os.path.dirname(main_script)
     
-    # Instalación silenciosa de dependencias si existe requirements.txt
+    # 📦 INSTALACIÓN Y VERIFICACIÓN DE DEPENDENCIAS (Incluso TkinterDnD2)
     req_file = os.path.join(version_path, "requirements.txt")
     if not os.path.exists(req_file):
-        req_file = os.path.join(version_path, "Core", "requirements.txt")
+        req_file = os.path.join(BASE_DIR, "requirements.txt")
         
     if os.path.exists(req_file):
+        print("  [*] Verificando e instalando dependencias (CustomTkinter, TkinterDnD2)...")
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"])
 
-    # Ejecución aislada con el Working Directory en el directorio de app.py
+    # 🚀 EJECUCIÓN CON WORKING DIRECTORY EN Core/
     subprocess.run([sys.executable, main_script], cwd=script_dir)
 
-if __name__ == "__main__":
-    main()
 if __name__ == "__main__":
     main()
