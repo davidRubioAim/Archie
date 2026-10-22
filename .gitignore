@@ -6,3 +6,6 @@ config.ini
 *.pyc
 __pycache__/
 .env
+
+# Ignorar launcher con credenciales inyectadas
+Archie.bat
