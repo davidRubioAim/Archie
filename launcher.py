@@ -9,6 +9,9 @@ import json
 import time
 import importlib
 
+# 1. INYECCIÓN DE LA API KEY (Reemplaza la función del .bat)
+os.environ["GEMINI_API_KEY"] = "AQ.Ab8RN6JrNe_NB4tTtmA3bJeILrl0PSh9S-bD8I0KvFSMD_PqjQ"
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSIONS_DIR = os.path.join(BASE_DIR, "versions")
 os.makedirs(VERSIONS_DIR, exist_ok=True)
@@ -152,22 +155,23 @@ def main():
 
     script_dir = os.path.dirname(expected_core_app)
     
-    # Instalación de dependencias garantizando actualización de paquetes
+    # 1. Detectar el intérprete correcto para evitar el bucle del .exe
+    python_cmd = "python" if getattr(sys, 'frozen', False) else sys.executable
+    
     req_file = os.path.join(version_path, "requirements.txt")
     if not os.path.exists(req_file):
         req_file = os.path.join(BASE_DIR, "requirements.txt")
         
     if os.path.exists(req_file):
         print("  [*] Verificando e instalando dependencias en el entorno...")
-        # Eliminamos --quiet temporalmente para ver cualquier posible error de depuración
-        result = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_file])
+        result = subprocess.run([python_cmd, "-m", "pip", "install", "-r", req_file])
         if result.returncode != 0:
             print("  [WARN] Falló la instalación de algunas dependencias mediante pip.")
             
         importlib.invalidate_caches()
 
-    # Ejecución aislada de Core/app.py
-    subprocess.run([sys.executable, expected_core_app], cwd=script_dir)
+    # 2. Ejecutar la aplicación con el intérprete del sistema
+    subprocess.run([python_cmd, expected_core_app], cwd=script_dir)
 
 if __name__ == "__main__":
     main()

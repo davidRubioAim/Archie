@@ -7,5 +7,13 @@ config.ini
 __pycache__/
 .env
 
-# Ignorar launcher con credenciales inyectadas
+# Ignorar scripts locales y antiguos con credenciales
 Archie.bat
+Archie_2.bat
+Instalar_Entorno.bat
+launcher_2.py
+
+# Excluir artefactos de compilación de PyInstaller
+build/
+dist/
+*.spec
