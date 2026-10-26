@@ -16,6 +16,7 @@ from google.genai import types
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from queue_manager import QueueManager
 from batch_manager import BatchManager
+from stadium_loader import load_stadium_library as cargar_estadios
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -198,6 +199,19 @@ class MegaStripApp(CTkDnD):
         )
         self.stadium_search_entry.pack(side="right")
         self.stadium_search_entry.bind("<Return>", self.on_search_return)
+        
+        self.btn_refresh_stadiums = ctk.CTkButton(
+            top_stadium_row,
+            text="↺",
+            width=28,
+            height=24,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#2b2b2b",
+            hover_color=self.c_magenta,
+            text_color=self.c_white,
+            command=self.refresh_stadium_library
+        )
+        self.btn_refresh_stadiums.pack(side="right", padx=(0, 6))
         
         self.stadium_selector_global = ctk.CTkOptionMenu(
             self.stadium_frame, 
@@ -1582,12 +1596,37 @@ class MegaStripApp(CTkDnD):
             return 15, 15
 
     def load_stadium_library(self):
-        library_path = os.path.join(CONFIG_DIR, "stadium_library.json")
-        try:
-            with open(library_path, "r", encoding="utf-8") as f: 
-                return json.load(f)
-        except: 
-            return {"Custom": {"Width": 25000, "Height": 72, "Goal Line Size": 5000, "Center Board Width": 0, "Canvas Width": 3840, "Canvas Height": 2160, "Canvas Mask": 96, "Offset X": 0, "Offset Y": 0}}
+        data, self.stadium_source = cargar_estadios(CONFIG_DIR)
+        return data
+
+    def refresh_stadium_library(self):
+        """Relee la hoja en un hilo aparte para no congelar la UI."""
+        self.btn_refresh_stadiums.configure(state="disabled", text="…")
+
+        def worker():
+            data, source = cargar_estadios(CONFIG_DIR)
+            self.after(0, lambda: self._apply_stadium_library(data, source))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_stadium_library(self, data, source):
+        self.btn_refresh_stadiums.configure(state="normal", text="↺")
+        if source != "sheets":
+            print(f"  [WARN] Refresh sin conexión a Sheets; se mantiene la librería actual ({source}).")
+            return
+
+        previous = self.stadium_selector_global.get()
+        self.stadium_data = data
+        self.stadium_source = source
+        self.stadium_search_var.set("")
+        self.stadium_selector_global.configure(values=list(data.keys()))
+        self.batch_manager.sync_stadiums()
+
+        if previous in data:
+            self.on_stadium_change(previous)  # recarga valores por si cambiaron en la hoja
+        else:
+            self.stadium_selector_global.set("Custom")
+            self.on_stadium_change("Custom")
     
     def filter_stadium_dropdown(self, *args):
         query = self.stadium_search_var.get().lower().strip()

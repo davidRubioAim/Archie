@@ -67,7 +67,7 @@ class BatchManager:
         self.filter_comp_var = ctk.StringVar(value="ALL")
         comp_selector = ctk.CTkSegmentedButton(
             tags_frame,
-            values=["ALL", "UCL", "UEL", "UECL"],
+            values=["ALL", "UCL", "UEL", "UECL", "UWCL"],
             variable=self.filter_comp_var,
             command=self.filter_stadiums,
             selected_color=self.app.c_magenta,
@@ -110,6 +110,16 @@ class BatchManager:
             if match_comp and match_text:
                 matching.append((stadium_name, comp_tag))
         return matching
+
+    def sync_stadiums(self):
+        if not self.checkbox_vars:
+            return  # el modal aún no se ha abierto; se construirá con los datos nuevos
+        names = [n for n in self.app.stadium_data.keys() if n != "Custom"]
+        self.checkbox_vars = {n: self.checkbox_vars.get(n) or ctk.BooleanVar(value=False) for n in names}
+        modal = getattr(self, "modal", None)
+        
+        if modal is not None and modal.winfo_exists():
+            self.filter_stadiums()
 
     def filter_stadiums(self, *args):
         for widget in self.scroll_frame.winfo_children():
