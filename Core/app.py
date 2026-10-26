@@ -17,6 +17,7 @@ from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios
+from log_utils import debug, log_error
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -166,7 +167,7 @@ class MegaStripApp(CTkDnD):
             ctk.CTkLabel(self.header_frame, image=self.logo_img, text="").pack(side="left", padx=(0, 10))
 
         # 2. Carga del logotipo de la herramienta y versión dinámica
-        # Sub-contenedor vertical exclusivo para Logo + Etiqueta de versión[cite: 3]
+        # Sub-contenedor vertical exclusivo para Logo + Etiqueta de versión
         archie_box = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         archie_box.pack(side="left", padx=(0, 20))
 
@@ -186,7 +187,7 @@ class MegaStripApp(CTkDnD):
             text_color=self.c_magenta
         )
         self.lbl_version_tag.pack(anchor="w", pady=(0, 0))
-
+            
         self.stadium_frame = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.stadium_frame.pack(side="right", padx=10)
 
@@ -209,7 +210,7 @@ class MegaStripApp(CTkDnD):
         )
         self.stadium_search_entry.pack(side="right")
         self.stadium_search_entry.bind("<Return>", self.on_search_return)
-
+        
         self.btn_refresh_stadiums = ctk.CTkButton(
             top_stadium_row,
             text="↺",
@@ -1020,7 +1021,7 @@ class MegaStripApp(CTkDnD):
                     ratio = img.width / img.height
                     is_wide = ratio > 3.0
             except Exception as e: 
-                print(f"[ARCHIE DEBUG] Error midiendo logo: {e}")
+                log_error(f"Error midiendo logo: {e}")
 
         w_total = int(self.inputs["Width"].get() or 0)
         h_total = int(self.inputs["Height"].get() or 0)
@@ -1084,7 +1085,7 @@ class MegaStripApp(CTkDnD):
                     msg = "Auto-Solver: " + config["msg"]
                     break
             except Exception as e:
-                print(f"[ARCHIE DEBUG] Auto-Solver trial failed: {e}")
+                debug(f"Auto-Solver trial failed: {e}")
                 
         if not best_config:
             best_config = test_conf
@@ -1145,7 +1146,7 @@ class MegaStripApp(CTkDnD):
             }
         except Exception as e:
             traceback.print_exc()
-            print(f"[ARCHIE DEBUG] Error in aplicar_parametros_ia: {e}")
+            log_error(f"Error in aplicar_parametros_ia: {e}")
             return {"status": "ERROR", "mensaje": f"Math engine failed: {e}"}
     
     def _actualizar_sliders_desde_ia(self, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under=False, qty_gl_under=1, qty_tl_under=1, show_cb=True, amplify=False, invert_order=False, max_anim_gl=0, max_anim_tl=0, margin=20):
@@ -1290,7 +1291,7 @@ class MegaStripApp(CTkDnD):
                     
                 except json.JSONDecodeError:
                     self.after(0, self.append_chat, "System Error", "Formatting error: The AI did not return a valid JSON.")
-                    print(f"[ARCHIE DEBUG] Raw AI response: {response.text}")
+                    debug(f"Raw AI response: {response.text}")
                     self.after(0, self._restaurar_botones_ia)
                     return
                     
@@ -1299,7 +1300,7 @@ class MegaStripApp(CTkDnD):
                 if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "503" in error_str or "UNAVAILABLE" in error_str:
                     if intento < max_intentos - 1:
                         espera = 2 ** (intento + 1)
-                        print(f"[ARCHIE DEBUG] Google rate limit reached. Silently retrying in {espera}s...")
+                        debug(f"Google rate limit reached. Silently retrying in {espera}s...")
                         time.sleep(espera)
                         continue
                     else:
@@ -1606,7 +1607,7 @@ class MegaStripApp(CTkDnD):
             return 15, 15
 
     def load_stadium_library(self):
-        data, self.stadium_source = cargar_estadios(CONFIG_DIR)
+        data, self.stadium_source = cargar_estadios(CONFIG_DIR, fallback_dirs=[os.path.join(BASE_DIR, "Config")])
         return data
 
     def refresh_stadium_library(self):
@@ -1614,7 +1615,7 @@ class MegaStripApp(CTkDnD):
         self.btn_refresh_stadiums.configure(state="disabled", text="…")
 
         def worker():
-            data, source = cargar_estadios(CONFIG_DIR)
+            data, source = cargar_estadios(CONFIG_DIR, fallback_dirs=[os.path.join(BASE_DIR, "Config")])
             self.after(0, lambda: self._apply_stadium_library(data, source))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1637,7 +1638,7 @@ class MegaStripApp(CTkDnD):
         else:
             self.stadium_selector_global.set("Custom")
             self.on_stadium_change("Custom")
-
+    
     def filter_stadium_dropdown(self, *args):
         query = self.stadium_search_var.get().lower().strip()
         all_stadiums = list(self.stadium_data.keys())
@@ -1752,7 +1753,7 @@ class MegaStripApp(CTkDnD):
             return res
         except Exception as e:
             traceback.print_exc()
-            print(f"[ARCHIE DEBUG] Error CRÍTICO en calcular_layout: {e}")
+            log_error(f"Error CRÍTICO en calcular_layout: {e}")
             return None
 
     def trigger_update(self, event=None, *args):
@@ -1791,7 +1792,7 @@ class MegaStripApp(CTkDnD):
                     else:
                         return Image.fromarray(fr).convert("RGBA")
             except Exception as e:
-                print(f"[ARCHIE DEBUG] Fallo al extraer frame de vídeo '{ruta}': {e}")
+                log_error(f"Fallo al extraer frame de vídeo '{ruta}': {e}")
                 return Image.new("RGBA", (100, h_target or 100), (255, 0, 0, 255))
         else:
             return Image.open(ruta).convert("RGBA")
@@ -1802,7 +1803,7 @@ class MegaStripApp(CTkDnD):
         return img.crop((x1, y1, x2, y2))
 
     def update_live_preview(self):
-        print("[ARCHIE DEBUG] Iniciando update_live_preview...")
+        debug("Iniciando update_live_preview...")
         try:
             datos = self.calcular_layout()
             if not datos: 
@@ -1885,7 +1886,7 @@ class MegaStripApp(CTkDnD):
                 try:
                     bg_clip_preview = VideoFileClip(bg_path, has_mask=False)
                 except Exception as e:
-                    print(f"[ARCHIE DEBUG] Error abriendo vídeo de fondo en UI: {e}")
+                    log_error(f"Error abriendo vídeo de fondo en UI: {e}")
 
             pil_bg_static = self.obtener_frame_pil(bg_path, h_total)
 
@@ -1937,7 +1938,7 @@ class MegaStripApp(CTkDnD):
                                     else: 
                                         logo_anim_img = Image.fromarray(fr).convert("RGBA")
                         except Exception as e:
-                            print(f"[ARCHIE DEBUG] Fallo obteniendo frame animado del logo: {e}")
+                            log_error(f"Fallo obteniendo frame animado del logo: {e}")
 
                     for zona in datos["zonas"].values():
                         for e in zona["elementos"]:
@@ -2001,12 +2002,12 @@ class MegaStripApp(CTkDnD):
                 
             self.after(100, self.auto_fit_zooms)
             self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Updated)", text_color=self.c_magenta)
-            print("[ARCHIE DEBUG] update_live_preview procesado con éxito.")
+            debug("update_live_preview procesado con éxito.")
         
         except Exception as e: 
             traceback.print_exc()
             err_txt = f"Geometry Error: {type(e).__name__} - {str(e)[:40]}"
-            print(f"[ARCHIE DEBUG] {err_txt}")
+            debug(f"{err_txt}")
             self.lbl_preview_status.configure(text=err_txt, text_color="#E74C3C")
     
     def auto_fit_zooms(self):

@@ -133,14 +133,14 @@ def parse_sheet_rows(rows):
             continue  # fila plantilla/vacía (p.ej. 'NUEVO ESTADIO')
         bad = [k for k in REQUIRED if not profile[k]]
         if bad:
-            warnings.append(f"Fila {line_no} '{name}': omitida, faltan {bad}")
+            warnings.append(f"{name}: falta {', '.join(bad)} (fila {line_no})")
             continue
         if profile["Canvas Height"] > 4320 or profile["Canvas Width"] > 8192:
-            warnings.append(f"Fila {line_no} '{name}': omitida, canvas sospechoso "
-                            f"{profile['Canvas Width']}x{profile['Canvas Height']}")
+            warnings.append(f"{name}: canvas no valido "
+                            f"{profile['Canvas Width']}x{profile['Canvas Height']} (fila {line_no})")
             continue
         if name in stadiums:
-            warnings.append(f"Fila {line_no} '{name}': nombre duplicado, se queda la primera")
+            warnings.append(f"{name}: nombre duplicado, se usa la primera fila (fila {line_no})")
             continue
         stadiums[name] = profile
 
@@ -167,43 +167,66 @@ def _read_json(path):
         return json.load(f)
 
 
-def load_stadium_library(config_dir, log=print):
+def _log_summary(log, stadiums, warnings, previous):
+    names = list(stadiums.keys())
+    log(f"  [ESTADIOS] {len(names)} cargados desde Google Sheets.")
+    if previous:
+        nuevos = [n for n in names if n not in previous]
+        quitados = [n for n in previous if n not in stadiums and n != "Custom"]
+        if nuevos:
+            log("             Nuevos: " + ", ".join(nuevos))
+        if quitados:
+            log("             Ya no estan en la hoja: " + ", ".join(quitados))
+    if warnings:
+        log(f"  [ESTADIOS] {len(warnings)} omitidos por datos incompletos:")
+        for w in warnings:
+            log(f"             - {w}")
+
+
+def load_stadium_library(config_dir, log=print, fallback_dirs=()):
     """
     Devuelve (stadium_data, source) donde source ∈ {'sheets', 'cache', 'json', 'default'}.
     stadium_data mantiene el formato de stadium_library.json, con 'Custom' siempre primero.
+    fallback_dirs: carpetas extra donde buscar stadium_library.json (p.ej. Config/ de la versión).
     """
     cache_path = os.path.join(config_dir, "stadium_cache.json")
-    legacy_path = os.path.join(config_dir, "stadium_library.json")
     sheet_id = (os.getenv("STADIUM_SHEET_ID") or DEFAULT_SHEET_ID).strip()
     gid = (os.getenv("STADIUM_SHEET_GID") or DEFAULT_SHEET_GID).strip()
 
-    if sheet_id:
-        try:
-            stadiums, warnings = parse_sheet_rows(fetch_sheet_rows(sheet_id, gid))
-            for w in warnings:
-                log(f"  [WARN] {w}")
-            if stadiums:
-                data = _with_custom(stadiums)
-                try:
-                    with open(cache_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=4, ensure_ascii=False)
-                except OSError as e:
-                    log(f"  [WARN] No se pudo escribir la caché: {e}")
-                log(f"  [OK] {len(stadiums)} estadios cargados desde Google Sheets.")
-                return data, "sheets"
-            log("  [WARN] La hoja no devolvió estadios válidos.")
-        except Exception as e:
-            log(f"  [WARN] No se pudo leer Google Sheets: {e}")
-    else:
-        log("  [WARN] STADIUM_SHEET_ID no configurado en Config/.env")
+    previous = {}
+    try:
+        previous = _read_json(cache_path)
+    except Exception:
+        pass
 
-    for path, source in ((cache_path, "cache"), (legacy_path, "json")):
+    try:
+        stadiums, warnings = parse_sheet_rows(fetch_sheet_rows(sheet_id, gid))
+        if stadiums:
+            data = _with_custom(stadiums)
+            try:
+                os.makedirs(config_dir, exist_ok=True)
+                with open(cache_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=4, ensure_ascii=False)
+            except OSError as e:
+                log(f"  [WARN] No se pudo guardar la copia local de estadios: {e}")
+            _log_summary(log, stadiums, warnings, previous)
+            return data, "sheets"
+        log("  [WARN] La hoja de estadios no tiene filas validas.")
+    except Exception as e:
+        log(f"  [WARN] Sin conexion con la hoja de estadios ({e}).")
+
+    if previous:
+        log(f"  [ESTADIOS] {len(previous) - 1} cargados desde la copia local (ultima sincronizacion).")
+        return _with_custom(previous), "cache"
+
+    for folder in (config_dir, *fallback_dirs):
+        path = os.path.join(folder, "stadium_library.json")
         try:
             data = _read_json(path)
-            log(f"  [OK] Estadios cargados desde {os.path.basename(path)} (fallback).")
-            return _with_custom(data), source
+            log(f"  [ESTADIOS] {len(data)} cargados desde stadium_library.json (respaldo).")
+            return _with_custom(data), "json"
         except Exception:
             pass
 
-    log("  [ERROR] Sin fuente de estadios; solo perfil Custom.")
+    log("  [ERROR] No hay ninguna fuente de estadios; solo perfil Custom.")
     return {"Custom": dict(CUSTOM_PROFILE)}, "default"

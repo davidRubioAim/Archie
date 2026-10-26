@@ -163,10 +163,14 @@ def main():
         req_file = os.path.join(BASE_DIR, "requirements.txt")
         
     if os.path.exists(req_file):
-        print("  [*] Verificando e instalando dependencias en el entorno...")
-        result = subprocess.run([python_cmd, "-m", "pip", "install", "-r", req_file])
+        print("  [*] Comprobando dependencias...")
+        result = subprocess.run(
+            [python_cmd, "-m", "pip", "install", "-q", "--disable-pip-version-check", "-r", req_file],
+            capture_output=True, text=True
+        )
         if result.returncode != 0:
-            print("  [WARN] Falló la instalación de algunas dependencias mediante pip.")
+            print("  [WARN] Falló la instalación de algunas dependencias mediante pip:")
+            print(result.stderr.strip()[-1500:])
             
         importlib.invalidate_caches()
 
