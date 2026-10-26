@@ -24,7 +24,7 @@ import urllib.request
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 FETCH_TIMEOUT = 6
 DEFAULT_SHEET_ID = "15hfgbbpTAd06OEmSR6Zpad3-xjgN_CiSuLtnS5-ExL0"  # AIM Sport - Atlas Venue Specs
-DEFAULT_SHEET_GID = "0"  # pestaña MASTER ATLAS
+DEFAULT_SHEET_GID = "1272902361"   # pestaña MASTER ATLAS
 
 # Columna de la hoja (normalizada) -> clave que espera la app
 COLUMN_MAP = {
