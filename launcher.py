@@ -9,8 +9,6 @@ import json
 import time
 import importlib
 
-# 1. INYECCIÓN DE LA API KEY (Reemplaza la función del .bat)
-os.environ["GEMINI_API_KEY"] = "AQ.Ab8RN6JrNe_NB4tTtmA3bJeILrl0PSh9S-bD8I0KvFSMD_PqjQ"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSIONS_DIR = os.path.join(BASE_DIR, "versions")

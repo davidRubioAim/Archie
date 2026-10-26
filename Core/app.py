@@ -18,6 +18,7 @@ from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios
 from log_utils import debug, log_error
+from remote_config import load_remote_config
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +44,7 @@ def find_asset(filename):
 
 # 2. Cargar variables de entorno desde Config
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
+load_remote_config()  # rellena GEMINI_API_KEY desde la hoja de configuración si no está en .env
 api_key = os.getenv("GEMINI_API_KEY")
 
 try:
