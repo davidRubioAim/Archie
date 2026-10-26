@@ -1,44 +1,42 @@
 =========================================================
-GUÍA RÁPIDA DE MANTENIMIENTO - AIM AUTO ARCH (ARCHIE)
+GUÍA DE ARQUITECTURA Y MANTENIMIENTO - AIM AUTO ARCH
 =========================================================
 
-1. ¿DÓNDE ESTÁ CADA COSA?
+1. ESTRUCTURA LOCAL (LO QUE TIENES TÚ Y TUS COMPAÑEROS)
 ---------------------------------------------------------
-- /Core/   -> Código fuente del programa. 
+- Archie.exe -> El único archivo que necesitan los usuarios. Al hacer doble clic, comprueba GitHub, descarga la última versión y abre la app.
+- /versions/ -> Carpeta autogenerada por el .exe. Contiene el motor descargado. NO editar ni trabajar aquí.
+
+2. ESTRUCTURA DE DESARROLLO (LO QUE SUBES A GITHUB)
+---------------------------------------------------------
+- /Core/   -> Código fuente (app.py, motor_distribucion.py, etc.).
 - /Assets/ -> Imágenes, logos y tipografías.
 - /Config/ -> Archivos de configuración (stadium_library.json).
-- /versions/ -> Carpeta generada automáticamente. Aquí es donde el launcher guarda y ejecuta el código descargado de GitHub. NO trabajes ni edites archivos aquí dentro.
-- Archie.bat -> Tu lanzador local con tu clave privada (NUNCA se sube a GitHub).
-- launcher.py -> El script que revisa si hay actualizaciones en GitHub y las descarga.
 
-2. CÓMO AÑADIR O EDITAR ESTADIOS (O CÓDIGO)
+3. CÓMO AÑADIR O EDITAR ESTADIOS (O CÓDIGO)
 ---------------------------------------------------------
-1. En tu carpeta principal de trabajo, ve a /Config/
-2. Edita stadium_library.json copiando el bloque de un estadio existente y cambiando sus valores.
+1. En tu carpeta de desarrollo, ve a /Config/.
+2. Edita stadium_library.json copiando el bloque de un estadio existente y ajustando sus valores.
 3. Guarda el archivo.
-NOTA: Como el programa se ejecuta desde lo que descarga de GitHub (carpeta /versions/), no verás estos cambios en la app hasta que los subas y lances una actualización.
+NOTA: Los usuarios no verán esto hasta que lances una actualización en GitHub.
 
-3. CÓMO GUARDAR TUS CAMBIOS EN GITHUB (COMMIT)
+4. CÓMO GUARDAR TUS CAMBIOS EN LA NUBE (COMMIT)
 ---------------------------------------------------------
 Abre la terminal en la raíz de tu proyecto y ejecuta:
-1. git add .
-2. git commit -m "Añadidos nuevos estadios y arreglos visuales"
-3. git push
-(Con esto, tu código de trabajo ya está a salvo en la nube de GitHub).
 
-4. CÓMO LANZAR UNA NUEVA VERSIÓN (ACTUALIZACIÓN AUTOMÁTICA)
+git add .
+git commit -m "Añadidos nuevos estadios y arreglos en el motor"
+git push
+
+5. CÓMO LANZAR UNA ACTUALIZACIÓN A TODOS LOS USUARIOS
 ---------------------------------------------------------
-Para que tu ordenador (y el de cualquier otro usuario) descargue los cambios:
-1. Ve a tu repositorio en la web de GitHub.
-2. Crea un nuevo "Release" (o Tag) con el nuevo número de versión, por ejemplo: v0.26
-3. Ve a tu Gist de GitHub (el enlace crudo de version.json).
-4. Edita ese Gist cambiando el texto a "v0.26" y guárdalo.
+Para que los "Archie.exe" de tus compañeros descarguen los nuevos cambios:
+1. Ve a tu repositorio en GitHub (https://github.com/davidRubioAim/Archie) y crea un nuevo "Release" o "Tag" (ej: v0.26).
+2. Ve a tu Gist de GitHub (el enlace de version.json).
+3. Edita el texto del Gist poniendo la nueva versión: "v0.26".
+4. Guarda el Gist.
 
-¡Listo! La próxima vez que abras Archie.bat, el launcher leerá el Gist, verá que hay una versión v0.26, la descargará de GitHub, y la instalará sola.
-
----------------------------------------------------------
-REGLA DE ORO: Mantén Archie.bat y cualquier archivo .env en tu archivo .gitignore para proteger tu clave de inteligencia artificial.
-
+La próxima vez que un compañero abra Archie.exe, verá en la consola que hay una nueva versión, se descargará sola y abrirá la herramienta actualizada.
 _______________________________________________________________________
 
 1. El Concepto General

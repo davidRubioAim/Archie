@@ -17,10 +17,18 @@ from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from queue_manager import QueueManager
 from batch_manager import BatchManager
 
-# 1. Definir rutas maestras dinámicas
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_DIR = os.path.join(BASE_DIR, "Config")
-ASSETS_DIR = os.path.join(BASE_DIR, "Assets")
+# 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
+CORE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(CORE_DIR)
+
+# Si estamos ejecutando desde 'versions/vX.X/', subimos al directorio maestro
+if os.path.basename(os.path.dirname(BASE_DIR)).lower() == "versions":
+    MASTER_DIR = os.path.dirname(os.path.dirname(BASE_DIR))
+else:
+    MASTER_DIR = BASE_DIR
+
+CONFIG_DIR = os.path.join(MASTER_DIR, "Config")
+ASSETS_DIR = os.path.join(MASTER_DIR, "Assets")
 
 # 2. Cargar variables de entorno desde Config
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
@@ -44,25 +52,20 @@ def aplicar_letterbox_pil(img, target_w, target_h, resample_method):
     canvas.paste(resized, (paste_x, paste_y), resized if resized.mode == "RGBA" else None)
     return canvas
 
-# --- Añadir justo debajo de la función aplicar_letterbox_pil ---
 def obtener_version_local():
-    """
-    Lee dinámicamente la versión desde Config/version.json o infiere la versión 
-    a partir de la ruta del directorio de ejecución actual (versions/v0.xx).
-    """
-    # 1. Intentar leer desde Config/version.json[cite: 3, 8]
-    version_path = os.path.join(CONFIG_DIR, "version.json")
-    if os.path.exists(version_path):
+    """Lee la versión real dictada por el launcher desde config.ini maestro"""
+    import configparser
+    config_path = os.path.join(MASTER_DIR, "config.ini")
+    if os.path.exists(config_path):
         try:
-            with open(version_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                v = str(data.get("version", "")).strip()
-                if v:
-                    return f"v{v}" if not v.startswith("v") else v
+            config = configparser.ConfigParser()
+            config.read(config_path)
+            v = config['ARCHIE'].get('target_version', '').strip()
+            if v: return v
         except Exception:
             pass
 
-    # 2. Respaldo: Infección desde el árbol de carpetas (ej. .../versions/v0.25/Core/app.py)[cite: 1, 3]
+    # Respaldo: Inferencia desde el árbol de carpetas
     try:
         partes_ruta = BASE_DIR.replace("\\", "/").split("/")
         for parte in partes_ruta:
@@ -71,7 +74,7 @@ def obtener_version_local():
     except Exception:
         pass
 
-    return "v0.25"  # Fallback final por defecto
+    return "v0.25"
 
 class CTkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, *args, **kwargs):
