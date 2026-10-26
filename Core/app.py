@@ -31,6 +31,15 @@ else:
 CONFIG_DIR = os.path.join(MASTER_DIR, "Config")
 ASSETS_DIR = os.path.join(MASTER_DIR, "Assets")
 
+
+def find_asset(filename):
+    """Busca un asset en Assets/ junto al .bat y, si no está, en el Assets/ de la versión descargada."""
+    for folder in (ASSETS_DIR, os.path.join(BASE_DIR, "Assets"), os.path.join(CORE_DIR, "Assets")):
+        path = os.path.join(folder, filename)
+        if os.path.exists(path):
+            return path
+    return None
+
 # 2. Cargar variables de entorno desde Config
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
 api_key = os.getenv("GEMINI_API_KEY")
@@ -150,33 +159,34 @@ class MegaStripApp(CTkDnD):
         self.header_frame.pack(fill="x", anchor="w", padx=10, pady=(0, 10))
 
         # 1. Carga del logotipo principal AIM
-        logo_path = os.path.join(ASSETS_DIR, "logo_aim.png")
-        if os.path.exists(logo_path):
+        logo_path = find_asset("logo_aim.png")
+        if logo_path:
             img = Image.open(logo_path)
             self.logo_img = ctk.CTkImage(img, size=(int(40 * (img.width / img.height)), 40))
             ctk.CTkLabel(self.header_frame, image=self.logo_img, text="").pack(side="left", padx=(0, 10))
 
         # 2. Carga del logotipo de la herramienta y versión dinámica
-        logo_archie_path = os.path.join(ASSETS_DIR, "logo_Archie.png")
-        if os.path.exists(logo_archie_path):
+        # Sub-contenedor vertical exclusivo para Logo + Etiqueta de versión[cite: 3]
+        archie_box = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+        archie_box.pack(side="left", padx=(0, 20))
+
+        logo_archie_path = find_asset("logo_Archie.png")
+        if logo_archie_path:
             img_archie = Image.open(logo_archie_path)
             self.logo_archie_img = ctk.CTkImage(img_archie, size=(int(40 * (img_archie.width / img_archie.height)), 40))
-            
-            # Sub-contenedor vertical exclusivo para Logo + Etiqueta de versión[cite: 3]
-            archie_box = ctk.CTkFrame(self.header_frame, fg_color="transparent")
-            archie_box.pack(side="left", padx=(0, 20))
-            
             ctk.CTkLabel(archie_box, image=self.logo_archie_img, text="").pack(anchor="w")
-            
-            # Etiqueta magenta en letra fina debajo del logo[cite: 3]
-            self.lbl_version_tag = ctk.CTkLabel(
-                archie_box, 
-                text=f"Beta {self.current_version_str}", 
-                font=ctk.CTkFont(family="Open Sans", size=10, weight="normal"), 
-                text_color=self.c_magenta
-            )
-            self.lbl_version_tag.pack(anchor="w", pady=(0, 0))
-            
+        else:
+            ctk.CTkLabel(archie_box, text="Archie", font=self.font_t1, text_color=self.c_magenta).pack(anchor="w")
+
+        # Etiqueta magenta en letra fina debajo del logo (siempre visible, haya logo o no)
+        self.lbl_version_tag = ctk.CTkLabel(
+            archie_box,
+            text=f"Beta {self.current_version_str}",
+            font=ctk.CTkFont(family="Open Sans", size=10, weight="normal"),
+            text_color=self.c_magenta
+        )
+        self.lbl_version_tag.pack(anchor="w", pady=(0, 0))
+
         self.stadium_frame = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.stadium_frame.pack(side="right", padx=10)
 
@@ -199,7 +209,7 @@ class MegaStripApp(CTkDnD):
         )
         self.stadium_search_entry.pack(side="right")
         self.stadium_search_entry.bind("<Return>", self.on_search_return)
-        
+
         self.btn_refresh_stadiums = ctk.CTkButton(
             top_stadium_row,
             text="↺",
@@ -1627,7 +1637,7 @@ class MegaStripApp(CTkDnD):
         else:
             self.stadium_selector_global.set("Custom")
             self.on_stadium_change("Custom")
-    
+
     def filter_stadium_dropdown(self, *args):
         query = self.stadium_search_var.get().lower().strip()
         all_stadiums = list(self.stadium_data.keys())
