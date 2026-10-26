@@ -124,6 +124,21 @@ def download_from_github(version, repo, token):
             shutil.rmtree(temp_extract_dir)
         sys.exit(1)
 
+def self_update_launcher(version_path):
+    """Sustituye este launcher.py por el de la versión descargada (efectivo en el próximo arranque)."""
+    new_launcher = os.path.join(version_path, "launcher.py")
+    this_launcher = os.path.abspath(__file__)
+    try:
+        if getattr(sys, 'frozen', False) or not os.path.exists(new_launcher):
+            return
+        with open(new_launcher, 'rb') as f_new, open(this_launcher, 'rb') as f_old:
+            if f_new.read() == f_old.read():
+                return
+        shutil.copyfile(new_launcher, this_launcher)
+        print("  [OK] Launcher actualizado (se aplica en el próximo arranque).")
+    except Exception as e:
+        print(f"  [WARN] No se pudo actualizar el launcher: {e}")
+
 def main():
     print("=======================================================")
     print("  ARCHIE: Sincronizando entorno de trabajo...")
@@ -144,6 +159,8 @@ def main():
     if not os.path.exists(version_path):
         download_from_github(target_version, repo, token)
 
+    self_update_launcher(version_path)
+
     print(f"  [OK] Lanzando Archie (Motor {target_version})...")
     print("=======================================================\n")
     
@@ -161,7 +178,7 @@ def main():
         req_file = os.path.join(BASE_DIR, "requirements.txt")
         
     if os.path.exists(req_file):
-        print("  [*] Comprobando dependencias...")
+        print("  [*] Verificando e instalando dependencias en el entorno...\n")
         result = subprocess.run(
             [python_cmd, "-m", "pip", "install", "-q", "--disable-pip-version-check", "-r", req_file],
             capture_output=True, text=True
