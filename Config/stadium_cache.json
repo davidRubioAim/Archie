@@ -129,6 +129,19 @@
         "Offset Y": 0,
         "FPS": 60
     },
+    "Galatasaray - RAMS Park (UEFA)": {
+        "Competition": "UCL",
+        "Width": 24640,
+        "Height": 90,
+        "Goal Line Size": 7300,
+        "Center Board Width": 1270,
+        "Canvas Width": 1920,
+        "Canvas Height": 1170,
+        "Canvas Mask": 0,
+        "Offset X": 0,
+        "Offset Y": 0,
+        "FPS": 60
+    },
     "Chelsea - UEFA Women": {
         "Competition": "UWCL",
         "Width": 39456,
@@ -150,7 +163,7 @@
         "Center Board Width": 1010,
         "Canvas Width": 1920,
         "Canvas Height": 1080,
-        "Canvas Mask": 0,
+        "Canvas Mask": 48,
         "Offset X": 0,
         "Offset Y": 0,
         "FPS": 60
@@ -185,7 +198,7 @@
         "Competition": "UWCL",
         "Width": 24800,
         "Height": 90,
-        "Goal Line Size": 0,
+        "Goal Line Size": 7120,
         "Center Board Width": 1200,
         "Canvas Width": 2400,
         "Canvas Height": 990,
@@ -200,19 +213,6 @@
         "Height": 144,
         "Goal Line Size": 10944,
         "Center Board Width": 1920,
-        "Canvas Width": 3840,
-        "Canvas Height": 2160,
-        "Canvas Mask": 96,
-        "Offset X": 0,
-        "Offset Y": 0,
-        "FPS": 60
-    },
-    "NEW STADIUM": {
-        "Competition": "NONE",
-        "Width": 31392,
-        "Height": 144,
-        "Goal Line Size": 11232,
-        "Center Board Width": 0,
         "Canvas Width": 3840,
         "Canvas Height": 2160,
         "Canvas Mask": 96,

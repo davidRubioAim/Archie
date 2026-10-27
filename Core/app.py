@@ -6,6 +6,7 @@ import math
 import traceback
 import numpy as np
 import threading
+import gc
 from PIL import Image, ImageDraw, ImageFont
 from moviepy import VideoFileClip
 
@@ -18,6 +19,7 @@ from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios
 from log_utils import debug, log_error
+from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
@@ -51,6 +53,14 @@ try:
     RESAMPLE_METHOD = Image.Resampling.LANCZOS
 except AttributeError:
     RESAMPLE_METHOD = Image.LANCZOS
+
+# La previsualización usa un filtro más rápido; el render final sigue usando RESAMPLE_METHOD
+try:
+    PREVIEW_RESAMPLE = Image.Resampling.BILINEAR
+except AttributeError:
+    PREVIEW_RESAMPLE = Image.BILINEAR
+
+PREVIEW_FRAMES = 8
 
 def aplicar_letterbox_pil(img, target_w, target_h, resample_method):
     if target_w <= 0 or target_h <= 0:
@@ -135,6 +145,12 @@ class MegaStripApp(CTkDnD):
         self.manual_zoom_strip = False
         self.manual_zoom_sys = False
         self.preview_enabled = False
+        self.architecture_created = False   # True tras el primer "Create Architecture" (auto-solver)
+        self.arch_stadium = None            # estadio para el que se calculó la arquitectura por defecto
+        self.preview_dirty = False          # hay cambios sin aplicar a la preview
+        self.render_gen = 0                 # id del render en curso (descarta resultados obsoletos)
+        self.render_busy = False
+        self.prefetch_timer = None
 
         self.pan_x_strip = 0
         self.pan_y_strip = 0
@@ -294,7 +310,7 @@ class MegaStripApp(CTkDnD):
         self.btn_create_arch = ctk.CTkButton(
             self.actions_arch_frame, text="✨ Create Architecture", font=self.font_t2, height=40, 
             corner_radius=10, fg_color=self.c_magenta, text_color=self.c_white,
-            hover_color="#D1007A", command=self.auto_create_architecture
+            hover_color="#D1007A", command=self.on_create_architecture
         )
         self.btn_create_arch.grid(row=0, column=0, sticky="ew", padx=(0, 5))
 
@@ -550,6 +566,18 @@ class MegaStripApp(CTkDnD):
         self.overlay_bar.set(0)
         self.btn_overlay_cancel = ctk.CTkButton(self.overlay_inner, text="Cancel Render", fg_color="#C0392B", hover_color="#E74C3C", font=ctk.CTkFont(weight="bold"), command=self.queue_manager.cancel_direct_render)
         self.btn_overlay_cancel.pack(pady=(20, 20))
+
+        # Overlay que bloquea toda la ventana mientras se calcula la arquitectura / preview
+        self.preview_overlay = ctk.CTkFrame(self, fg_color="#1a1a1a", corner_radius=0)
+        preview_overlay_inner = ctk.CTkFrame(self.preview_overlay, corner_radius=15, border_width=2, border_color=self.c_magenta, fg_color="#2b2b2b")
+        preview_overlay_inner.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.4, relheight=0.25)
+        self.lbl_preview_overlay_title = ctk.CTkLabel(preview_overlay_inner, text="BUILDING ARCHITECTURE...", font=ctk.CTkFont(size=20, weight="bold"), text_color=self.c_magenta)
+        self.lbl_preview_overlay_title.pack(pady=(30, 10))
+        self.lbl_preview_overlay_status = ctk.CTkLabel(preview_overlay_inner, text="Preparing...", text_color="gray")
+        self.lbl_preview_overlay_status.pack(pady=(0, 10))
+        self.preview_overlay_bar = ctk.CTkProgressBar(preview_overlay_inner, progress_color=self.c_magenta)
+        self.preview_overlay_bar.pack(fill="x", padx=40, pady=10)
+        self.preview_overlay_bar.set(0)
 
     def get_ctk_scale(self):
         try:
@@ -1006,10 +1034,33 @@ class MegaStripApp(CTkDnD):
         except Exception as e:
             self.append_chat("System Error", f"⚠️ Failed to initialize AI: {str(e)}")
 
+    def on_create_architecture(self):
+        """1er click (o estadio nuevo): arquitectura por defecto. Después: aplica los ajustes actuales a la preview."""
+        if self.render_busy: return
+        stadium = self.stadium_selector_global.get()
+        if not self.architecture_created or stadium != self.arch_stadium:
+            self.auto_create_architecture()
+        else:
+            self.start_preview_render()
+
     def auto_create_architecture(self):
         self.btn_create_arch.configure(state="disabled", text="✨ Calculating Internally...")
         self.reset_zooms_and_pan()
-        threading.Thread(target=self._native_auto_solver, daemon=True).start()
+        self.show_preview_overlay("Calculating default architecture...")
+        self._start_thread(self._solver_thread)
+
+    def _solver_thread(self):
+        try:
+            self._native_auto_solver()
+        except Exception as e:
+            traceback.print_exc()
+            log_error(f"Auto-Solver falló: {e}")
+            self.after(0, self._on_preview_error, self.render_gen, e)
+
+    def _on_solver_done(self):
+        self.architecture_created = True
+        self.arch_stadium = self.stadium_selector_global.get()
+        self.start_preview_render()
 
     def _native_auto_solver(self):
         stadium = self.stadium_selector_global.get()
@@ -1018,9 +1069,9 @@ class MegaStripApp(CTkDnD):
         
         if logo_path:
             try:
-                img = self.obtener_frame_pil(logo_path)
-                if img and img.height > 0:
-                    ratio = img.width / img.height
+                logo_w, logo_h = FRAME_CACHE.dimensions(logo_path)
+                if logo_h > 0:
+                    ratio = logo_w / logo_h
                     is_wide = ratio > 3.0
             except Exception as e: 
                 log_error(f"Error midiendo logo: {e}")
@@ -1108,7 +1159,7 @@ class MegaStripApp(CTkDnD):
         
         self.preview_enabled = True 
         
-        self.after(0, self.trigger_update)
+        self.after(0, self._on_solver_done)
         self.after(0, lambda: self.btn_create_arch.configure(state="normal", text="✨ Create Architecture"))
         self.after(0, self.append_chat, "System AI", msg)
 
@@ -1448,7 +1499,10 @@ class MegaStripApp(CTkDnD):
         else:
             self.preview_row_idx = 1
             self.btn_toggle_row.configure(text="🔄 View: 1ST ROW", fg_color="#8E44AD", hover_color="#9B59B6")
-        self.trigger_update()
+        if self.pil_preview_images and not self.preview_dirty:
+            self.start_preview_render()
+        else:
+            self.trigger_update()
     
     def update_margin_label(self, value, *args): 
         self.margin_val_label.configure(text=f"{int(value)} px")
@@ -1759,21 +1813,20 @@ class MegaStripApp(CTkDnD):
             return None
 
     def trigger_update(self, event=None, *args):
-        if not getattr(self, 'preview_enabled', False): return
-        if getattr(self, 'preview_timer', None): self.after_cancel(self.preview_timer)
-        valid_anims = [f for f in self.archivos_cargados["anim_zones"] if f is not None]
-        if not valid_anims and not self.archivos_cargados["background"] and not self.archivos_cargados["static_logo"] and not self.archivos_cargados["center_board"]: return
-        
-        self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Calculating...)", text_color="#E67E22")
-        self.preview_timer = self.after(800, self.update_live_preview)
+        """Ya no recalcula: marca la preview como pendiente hasta pulsar "Create Architecture"."""
+        if not hasattr(self, "lbl_preview_status"): return
+        self.preview_dirty = True
+        if self.render_busy: return
+        if self.pil_preview_images:
+            self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Pending changes · Press Create Architecture)", text_color="#E67E22")
+        else:
+            self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Pending Update... Press Create Architecture)", text_color="gray")
+        self.schedule_prefetch()
 
     def reset_preview_state(self):
-        self.preview_enabled = False
-        if getattr(self, 'preview_timer', None): 
-            self.after_cancel(self.preview_timer)
-        self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Pending Update... Press Create Architecture)", text_color="gray")
+        self.trigger_update()
         # Garantizar que el botón de crear arquitectura siempre esté disponible
-        if hasattr(self, 'btn_create_arch'):
+        if hasattr(self, 'btn_create_arch') and not self.render_busy:
             self.btn_create_arch.configure(state="normal", text="✨ Create Architecture")
 
     def trigger_resize(self, event=None):
@@ -1782,239 +1835,380 @@ class MegaStripApp(CTkDnD):
 
     def obtener_frame_pil(self, ruta, h_target=None):
         if not ruta: return Image.new("RGBA", (100, h_target or 100), (0,0,0,0))
-        ext = os.path.splitext(ruta)[1].lower()
-        if ext in ['.mov', '.mp4', '.avi', '.m4v']:
+        if is_video(ruta):
             try:
-                with VideoFileClip(ruta, has_mask=True) as cl:
-                    if h_target: cl = cl.resized(height=h_target)
-                    fr = cl.get_frame(0)
-                    if getattr(cl, 'mask', None):
-                        ma = (cl.mask.get_frame(0)*255).astype(np.uint8)
-                        return Image.fromarray(np.dstack((fr, ma)))
-                    else:
-                        return Image.fromarray(fr).convert("RGBA")
+                return FRAME_CACHE.frame_sync(ruta, 0, h_target).copy()
             except Exception as e:
                 log_error(f"Fallo al extraer frame de vídeo '{ruta}': {e}")
                 return Image.new("RGBA", (100, h_target or 100), (255, 0, 0, 255))
         else:
-            return Image.open(ruta).convert("RGBA")
+            return FRAME_CACHE.image(ruta).copy()
 
     def safe_crop(self, img, x1, y1, x2, y2):
         x1, x2 = sorted([max(0, min(x1, img.width)), max(0, min(x2, img.width))])
         y1, y2 = sorted([max(0, min(y1, img.height)), max(0, min(y2, img.height))])
         return img.crop((x1, y1, x2, y2))
 
-    def update_live_preview(self):
-        debug("Iniciando update_live_preview...")
+    # ==========================================
+    # PREVIEW: manual, en segundo plano y con caché de frames
+    # ==========================================
+    def _start_thread(self, target, *args):
+        # Recolectar basura de Tk (fuentes/imágenes de widgets destruidos) en el hilo principal:
+        # si el GC la libera dentro de un hilo secundario mientras el principal espera, Tk se bloquea.
+        gc.collect()
+        threading.Thread(target=target, args=args, daemon=True).start()
+
+    def show_preview_overlay(self, status_text):
+        self.render_busy = True
+        self.lbl_preview_overlay_status.configure(text=status_text)
+        self.preview_overlay_bar.set(0)
+        self.preview_overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        self.preview_overlay.lift()
+        self.preview_overlay.focus_set()
+
+    def hide_preview_overlay(self):
+        self.render_busy = False
+        self.preview_overlay.place_forget()
+        if hasattr(self, 'btn_create_arch'):
+            self.btn_create_arch.configure(state="normal", text="✨ Create Architecture")
+
+    def _set_preview_progress(self, gen, value, text):
+        if gen != self.render_gen or not self.render_busy: return
+        self.preview_overlay_bar.set(value)
+        self.lbl_preview_overlay_status.configure(text=text)
+
+    def _aplicar_warnings(self, datos):
+        warnings = datos.get("warnings", [])
+        color_default = "white"
+        color_error = "#E74C3C"
+        self.lbl_qty_goal_title.configure(text_color=color_default)
+        self.lbl_qty_corner_title.configure(text_color=color_default)
+        self.lbl_qty_cb_title.configure(text_color=color_default)
+        self.lbl_qty_tl_title.configure(text_color=color_default)
+        self.lbl_warning.configure(text="")
+
+        if "goal_overlap" in warnings:
+            self.lbl_qty_goal_title.configure(text_color=color_error)
+            self.lbl_qty_corner_title.configure(text_color=color_error)
+            self.lbl_warning.configure(text="⚠️ OVERLAP: Too many logos in Goals/Corners!")
+        if "touchline_overlap" in warnings:
+            self.lbl_qty_cb_title.configure(text_color=color_error)
+            self.lbl_qty_corner_title.configure(text_color=color_error)
+            self.lbl_qty_tl_title.configure(text_color=color_error)
+            self.lbl_warning.configure(text="⚠️ OVERLAP: Too many logos in Touchline/Centerboard!")
+        if "goal_overlap" in warnings and "touchline_overlap" in warnings:
+            self.lbl_warning.configure(text="⚠️ OVERLAP: Too many logos in multiple zones!")
+
+        if "stretch_fit_15" in warnings:
+            self.lbl_warning.configure(text="⚠️ WARNING: Stretch Fit ha deformado los elementos más del 15%!")
+
+    def _archivos_preview(self):
+        valid_anims = [f for f in self.archivos_cargados.get("anim_zones", []) if f is not None]
+        if not valid_anims and self.archivos_cargados.get("anim_zone"): valid_anims = [self.archivos_cargados["anim_zone"]]
+        return {
+            "anims": valid_anims,
+            "static_logo": self.archivos_cargados.get("static_logo"),
+            "background": self.archivos_cargados.get("background"),
+            "center_board": self.archivos_cargados.get("center_board"),
+        }
+
+    @staticmethod
+    def _tiempos_preview(anims):
+        dur_base = 1.0
+        for path in anims:
+            if is_video(path):
+                dur_base = max(dur_base, FRAME_CACHE.duration(path))
+        return [dur_base * (i / float(PREVIEW_FRAMES)) for i in range(PREVIEW_FRAMES)]
+
+    @staticmethod
+    def _solicitar_frames(files, h_total, tiempos, idx):
+        """Encola en la caché los frames de vídeo que necesita el frame 'idx' de la preview."""
+        t = tiempos[idx]
+        futures = []
+        for path in files["anims"]:
+            if is_video(path): futures.append(FRAME_CACHE.request(path, t, h_total))
+        bg = files["background"]
+        if is_video(bg): futures.append(FRAME_CACHE.request(bg, t, h_total))
+        logo = files["static_logo"]
+        if is_video(logo):
+            futures.append(FRAME_CACHE.request(logo, 0, h_total))
+            futures.append(FRAME_CACHE.request(logo, t, h_total))
+        cb = files["center_board"]
+        if is_video(cb): futures.append(FRAME_CACHE.request(cb, 0, h_total))
+        return futures
+
+    def schedule_prefetch(self):
+        """Precarga en segundo plano los frames de los archivos actuales (no bloquea nada)."""
+        if self.prefetch_timer: self.after_cancel(self.prefetch_timer)
+        self.prefetch_timer = self.after(600, self._prefetch_current)
+
+    def _prefetch_current(self):
+        self.prefetch_timer = None
         try:
-            datos = self.calcular_layout()
-            if not datos: 
-                self.lbl_preview_status.configure(text="Missing / Invalid Parameters", text_color="#E74C3C")
-                return
+            h_total = int(self.inputs["Height"].get() or 0)
+        except Exception:
+            return
+        files = self._archivos_preview()
+        if h_total <= 0 or not any(is_video(f) for f in files["anims"] + [files["background"], files["static_logo"], files["center_board"]]):
+            return
+        first = self.preview_current_idx
 
-            warnings = datos.get("warnings", [])
-            color_default = "white"
-            color_error = "#E74C3C"
-            self.lbl_qty_goal_title.configure(text_color=color_default)
-            self.lbl_qty_corner_title.configure(text_color=color_default)
-            self.lbl_qty_cb_title.configure(text_color=color_default)
-            self.lbl_qty_tl_title.configure(text_color=color_default)
-            self.lbl_warning.configure(text="")
+        def worker():
+            try:
+                tiempos = self._tiempos_preview(files["anims"])
+                for idx in [first] + [i for i in range(PREVIEW_FRAMES) if i != first]:
+                    self._solicitar_frames(files, h_total, tiempos, idx)
+            except Exception as e:
+                debug(f"Prefetch de frames falló: {e}")
+        self._start_thread(worker)
 
-            if "goal_overlap" in warnings:
-                self.lbl_qty_goal_title.configure(text_color=color_error)
-                self.lbl_qty_corner_title.configure(text_color=color_error)
-                self.lbl_warning.configure(text="⚠️ OVERLAP: Too many logos in Goals/Corners!")
-            if "touchline_overlap" in warnings:
-                self.lbl_qty_cb_title.configure(text_color=color_error)
-                self.lbl_qty_corner_title.configure(text_color=color_error)
-                self.lbl_qty_tl_title.configure(text_color=color_error)
-                self.lbl_warning.configure(text="⚠️ OVERLAP: Too many logos in Touchline/Centerboard!")
-            if "goal_overlap" in warnings and "touchline_overlap" in warnings:
-                self.lbl_warning.configure(text="⚠️ OVERLAP: Too many logos in multiple zones!")
+    def update_live_preview(self):
+        # Compatibilidad: cualquier llamada antigua pasa por el nuevo pipeline
+        self.start_preview_render()
 
-            if "stretch_fit_15" in warnings:
-                self.lbl_warning.configure(text="⚠️ WARNING: Stretch Fit ha deformado los elementos más del 15%!")
-            
+    def start_preview_render(self):
+        debug("Iniciando render de preview...")
+        datos = self.calcular_layout()
+        if not datos:
+            self.hide_preview_overlay()
+            self.lbl_preview_status.configure(text="Missing / Invalid Parameters", text_color="#E74C3C")
+            return
+        try:
+            self._aplicar_warnings(datos)
             w_total = datos["dimensiones_globales"]["width"]
             h_total = datos["dimensiones_globales"]["height"]
-            sys_w = int(self.inputs["Canvas Width"].get() or 3840)
-            sys_h = int(self.inputs["Canvas Height"].get() or 2160)
-            sys_mask = int(self.inputs["Canvas Mask"].get() or 96)
-            sys_off_x = int(self.inputs["Offset X"].get() or 0)
-            sys_off_y = int(self.inputs["Offset Y"].get() or 0)
-
-            is_amplify = datos.get("config", {}).get("amplify", False)
-            if is_amplify and hasattr(self, 'preview_row_idx'):
-                h_slice = h_total // 2
-                if self.preview_row_idx == 1:
-                    src_y_start, src_y_end = h_slice, h_total
-                else:
-                    src_y_start, src_y_end = 0, h_slice
-            else:
-                h_slice = h_total
-                src_y_start, src_y_end = 0, h_total
-
-            advance = sys_w - sys_mask
-            if advance <= 0: raise ValueError("Mask > Width")
-            total_rows = math.ceil((w_total + sys_off_x) / advance)
-            
-            pil_logo_raw = self.obtener_frame_pil(self.archivos_cargados.get("static_logo"), h_total)
-            
-            valid_anims = [f for f in self.archivos_cargados.get("anim_zones", []) if f is not None]
-            if not valid_anims and self.archivos_cargados.get("anim_zone"): valid_anims = [self.archivos_cargados["anim_zone"]]
-            
-            dur_base = 1.0
-            for path in valid_anims:
-                try:
-                    ext = os.path.splitext(path)[1].lower()
-                    if ext in ['.mov', '.mp4']:
-                        with VideoFileClip(path, has_mask=True) as cl:
-                            if cl.duration > dur_base: dur_base = cl.duration
-                except: pass
-
-            tiempos = [dur_base * (i / 8.0) for i in range(8)]
-            
-            self.pil_preview_images, self.pil_sys_images = [], []
-
-            logo_path = self.archivos_cargados.get("static_logo")
-            
-            from motor_distribucion import generar_imagen_arquitectura
-            gl_offset_pct = self.offset_slider.get() / 100.0
-
-            bg_clip_preview = None
-            bg_path = self.archivos_cargados.get("background")
-            if bg_path and os.path.splitext(bg_path)[1].lower() in ['.mov', '.mp4', '.m4v', '.avi']:
-                try:
-                    bg_clip_preview = VideoFileClip(bg_path, has_mask=False)
-                except Exception as e:
-                    log_error(f"Error abriendo vídeo de fondo en UI: {e}")
-
-            pil_bg_static = self.obtener_frame_pil(bg_path, h_total)
-
-            try:
-                for t in tiempos:
-                    if bg_clip_preview:
-                        try:
-                            fr_bg = bg_clip_preview.get_frame(t % bg_clip_preview.duration)
-                            pil_bg_current = Image.fromarray(fr_bg).convert("RGBA")
-                        except Exception:
-                            pil_bg_current = pil_bg_static
-                    else:
-                        pil_bg_current = pil_bg_static
-
-                    new_bg_w = max(1, int(h_total * (pil_bg_current.width / max(1, pil_bg_current.height))))
-                    pil_bg_current = pil_bg_current.resize((new_bg_w, h_total), RESAMPLE_METHOD)
-                    
-                    master = Image.new("RGBA", (w_total, h_total))
-                    for x in range(0, w_total, new_bg_w): 
-                        master.paste(pil_bg_current, (x, 0))
-
-                    pil_anims_frames = []
-                    for path in valid_anims:
-                        try:
-                            ext = os.path.splitext(path)[1].lower()
-                            if ext in ['.mov', '.mp4']:
-                                with VideoFileClip(path, has_mask=True) as cl:
-                                    fr = cl.get_frame(t % cl.duration)
-                                    if getattr(cl, 'mask', None):
-                                        ma = (cl.mask.get_frame(t % cl.duration)*255).astype(np.uint8)
-                                        img = Image.fromarray(np.dstack((fr, ma)))
-                                    else: img = Image.fromarray(fr).convert("RGBA")
-                            else: img = Image.open(path).convert("RGBA")
-                            pil_anims_frames.append(img)
-                        except: pil_anims_frames.append(Image.new("RGBA", (3000, h_total), (255, 0, 0, 255)))
-                    
-                    if not pil_anims_frames: pil_anims_frames = [Image.new("RGBA", (3000, h_total), (255, 0, 0, 255))]
-
-                    logo_anim_img = pil_logo_raw
-                    if logo_path:
-                        try:
-                            ext = os.path.splitext(logo_path)[1].lower()
-                            if ext in ['.mov', '.mp4']:
-                                with VideoFileClip(logo_path, has_mask=True) as cl:
-                                    fr = cl.get_frame(t % cl.duration)
-                                    if getattr(cl, 'mask', None):
-                                        ma = (cl.mask.get_frame(t % cl.duration)*255).astype(np.uint8)
-                                        logo_anim_img = Image.fromarray(np.dstack((fr, ma)))
-                                    else: 
-                                        logo_anim_img = Image.fromarray(fr).convert("RGBA")
-                        except Exception as e:
-                            log_error(f"Fallo obteniendo frame animado del logo: {e}")
-
-                    for zona in datos["zonas"].values():
-                        for e in zona["elementos"]:
-                            if e["tipo"] == "center_board" and e["width"] > 0:
-                                cb_path = self.archivos_cargados.get("center_board")
-                                mostrar_cb = self.show_cb_var.get() and datos.get("config", {}).get("show_cb", True)
-                                if cb_path and mostrar_cb:
-                                    pil_cb_raw = self.obtener_frame_pil(cb_path, h_target=h_total)
-                                    cb_letterbox = aplicar_letterbox_pil(pil_cb_raw, e["width"], h_total, RESAMPLE_METHOD)
-                                    master.paste(cb_letterbox, (e["x_absoluta"], 0), cb_letterbox)
-                                else:
-                                    master.paste(Image.new("RGBA", (e["width"], h_total), (0,0,0,255)), (e["x_absoluta"], 0))
-                            elif e["tipo"] == "anim_zone":
-                                a_idx = e.get("anim_idx", 0) % len(pil_anims_frames)
-                                anim_img = pil_anims_frames[a_idx].resize((e["width"], h_total), RESAMPLE_METHOD)
-                                master.paste(anim_img, (e["x_absoluta"], 0), anim_img)
-                                
-                    for zona in datos["zonas"].values():
-                        for e in zona["elementos"]:
-                            if e["tipo"] == "static_logo":
-                                if e.get("logo_under_type") == "animated":
-                                    logo_img = logo_anim_img.resize((e["width"], h_total), RESAMPLE_METHOD)
-                                else:
-                                    logo_img = pil_logo_raw.resize((e["width"], h_total), RESAMPLE_METHOD)
-                                    
-                                master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
-
-                    res = generar_imagen_arquitectura(master, datos, h_total, w_total, gl_offset_pct, bg_color=(0, 0, 0, 0))
-                    self.pil_preview_images.append(res)
-
-                    master_slice = self.safe_crop(master, 0, src_y_start, w_total, src_y_end)
-                    sys_canvas = Image.new("RGBA", (sys_w, sys_h), (0,0,0,255))
-
-                    for i in range(total_rows):
-                        x_m_strip = i * advance - sys_off_x
-                        crop_x1 = max(0, x_m_strip)
-                        crop_x2 = min(w_total, x_m_strip + advance)
-                        if crop_x1 >= crop_x2: continue
-                        x_canvas = abs(x_m_strip) if x_m_strip < 0 else 0
-                        paste_y = sys_off_y + (i * h_slice)
-                        row_img = self.safe_crop(master_slice, crop_x1, 0, crop_x2, h_slice)
-                        sys_canvas.paste(row_img, (int(x_canvas), int(paste_y)))
-                        
-                    if sys_mask > 0: ImageDraw.Draw(sys_canvas).rectangle([sys_w - sys_mask, 0, sys_w, sys_h], fill=(0,0,0,255))
-
-                    draw_sys = ImageDraw.Draw(sys_canvas)
-                    stroke_w = max(3, int(min(sys_w, sys_h) * 0.0018))
-                    draw_sys.rectangle(
-                        [0, 0, sys_w - 1, sys_h - 1], 
-                        outline=(180, 180, 180, 255), 
-                        width=stroke_w
-                    )
-
-                    self.pil_sys_images.append(sys_canvas)
-            finally:
-                if bg_clip_preview:
-                    try:
-                        bg_clip_preview.close()
-                    except Exception:
-                        pass
-                
-            self.after(100, self.auto_fit_zooms)
-            self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Updated)", text_color=self.c_magenta)
-            debug("update_live_preview procesado con éxito.")
-        
-        except Exception as e: 
+            params = {
+                "datos": datos,
+                "w_total": w_total,
+                "h_total": h_total,
+                "sys_w": int(self.inputs["Canvas Width"].get() or 3840),
+                "sys_h": int(self.inputs["Canvas Height"].get() or 2160),
+                "sys_mask": int(self.inputs["Canvas Mask"].get() or 96),
+                "sys_off_x": int(self.inputs["Offset X"].get() or 0),
+                "sys_off_y": int(self.inputs["Offset Y"].get() or 0),
+                "row_idx": getattr(self, "preview_row_idx", None),
+                "show_cb": self.show_cb_var.get() and datos.get("config", {}).get("show_cb", True),
+                "gl_offset_pct": self.offset_slider.get() / 100.0,
+                "files": self._archivos_preview(),
+            }
+            if params["sys_w"] - params["sys_mask"] <= 0: raise ValueError("Mask > Width")
+        except Exception as e:
             traceback.print_exc()
-            err_txt = f"Geometry Error: {type(e).__name__} - {str(e)[:40]}"
-            debug(f"{err_txt}")
-            self.lbl_preview_status.configure(text=err_txt, text_color="#E74C3C")
-    
+            self.hide_preview_overlay()
+            self.lbl_preview_status.configure(text=f"Geometry Error: {type(e).__name__} - {str(e)[:40]}", text_color="#E74C3C")
+            return
+
+        self.render_gen += 1
+        gen = self.render_gen
+        self.preview_dirty = False
+        first_idx = self.preview_current_idx if 0 <= self.preview_current_idx < PREVIEW_FRAMES else 0
+        self.btn_create_arch.configure(state="disabled", text="✨ Building Preview...")
+        self.show_preview_overlay("Loading key frames...")
+        self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Calculating...)", text_color="#E67E22")
+        self._start_thread(self._render_worker, gen, params, first_idx)
+
+    def _render_worker(self, gen, p, first_idx):
+        try:
+            files, h_total = p["files"], p["h_total"]
+            tiempos = self._tiempos_preview(files["anims"])
+            order = [first_idx] + [i for i in range(PREVIEW_FRAMES) if i != first_idx]
+
+            # Encolar todas las decodificaciones por prioridad: el frame visible va primero
+            first_futures = self._solicitar_frames(files, h_total, tiempos, first_idx)
+            for idx in order[1:]:
+                self._solicitar_frames(files, h_total, tiempos, idx)
+
+            total = max(1, len(first_futures))
+            for k, fut in enumerate(first_futures, 1):
+                try: fut.result()
+                except Exception: pass  # el compositor pinta el placeholder rojo
+                self.after(0, self._set_preview_progress, gen, 0.85 * k / total, f"Decoding key frames {k}/{total}...")
+
+            self.after(0, self._set_preview_progress, gen, 0.9, "Composing architecture...")
+            memo = {}
+            res, sys_canvas = self._componer_frame_preview(p, tiempos[first_idx], memo)
+            if gen != self.render_gen: return
+            self.after(0, self._on_first_preview_frame, gen, first_idx, res, sys_canvas)
+
+            # Resto de frames en segundo plano, sin bloquear la ventana
+            for idx in order[1:]:
+                if gen != self.render_gen: return
+                res, sys_canvas = self._componer_frame_preview(p, tiempos[idx], memo)
+                if gen != self.render_gen: return
+                self.after(0, self._on_background_preview_frame, gen, idx, res, sys_canvas)
+        except Exception as e:
+            traceback.print_exc()
+            log_error(f"Error en render de preview: {e}")
+            self.after(0, self._on_preview_error, gen, e)
+
+    def _on_first_preview_frame(self, gen, idx, res, sys_canvas):
+        if gen != self.render_gen: return
+        self.pil_preview_images = [None] * PREVIEW_FRAMES
+        self.pil_sys_images = [None] * PREVIEW_FRAMES
+        self.pil_preview_images[idx] = res
+        self.pil_sys_images[idx] = sys_canvas
+        self.preview_current_idx = idx
+        self.preview_frames_ready = 1
+        self.hide_preview_overlay()
+        self._update_preview_status_label()
+        self.after(100, self.auto_fit_zooms)
+        debug("Preview: primer frame listo.")
+
+    def _on_background_preview_frame(self, gen, idx, res, sys_canvas):
+        if gen != self.render_gen: return
+        self.pil_preview_images[idx] = res
+        self.pil_sys_images[idx] = sys_canvas
+        self.preview_frames_ready += 1
+        self._update_preview_status_label()
+        if self.preview_frames_ready == PREVIEW_FRAMES:
+            debug("Preview: 8 frames listos.")
+
+    def _update_preview_status_label(self):
+        if self.preview_dirty: return  # no pisar el aviso de cambios pendientes
+        if self.preview_frames_ready < PREVIEW_FRAMES:
+            self.lbl_preview_status.configure(text=f"ARCHITECTURE PREVIEW (Updated · loading frames {self.preview_frames_ready}/{PREVIEW_FRAMES})", text_color=self.c_magenta)
+        else:
+            self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Updated)", text_color=self.c_magenta)
+
+    def _on_preview_error(self, gen, e):
+        if gen != self.render_gen: return
+        self.hide_preview_overlay()
+        err_txt = f"Geometry Error: {type(e).__name__} - {str(e)[:40]}"
+        debug(f"{err_txt}")
+        self.lbl_preview_status.configure(text=err_txt, text_color="#E74C3C")
+
+    def _componer_frame_preview(self, p, t, memo):
+        """Compone un frame de la preview (strip + system). Corre en un hilo: no tocar widgets aquí."""
+        datos, files = p["datos"], p["files"]
+        w_total, h_total = p["w_total"], p["h_total"]
+        sys_w, sys_h, sys_mask = p["sys_w"], p["sys_h"], p["sys_mask"]
+        sys_off_x, sys_off_y = p["sys_off_x"], p["sys_off_y"]
+
+        def fetch(path, tt):
+            try:
+                return FRAME_CACHE.frame(path, tt, h_total) if is_video(path) else FRAME_CACHE.image(path)
+            except Exception as e:
+                log_error(f"Preview: no se pudo leer '{path}': {e}")
+                return None
+
+        def resized(key, img, size):
+            # memo compartido entre frames para lo estático; por frame para lo animado
+            k = (key, size)
+            if k not in memo:
+                memo[k] = img.resize(size, PREVIEW_RESAMPLE)
+            return memo[k]
+
+        frame_memo = {}
+
+        is_amplify = datos.get("config", {}).get("amplify", False)
+        if is_amplify and p["row_idx"] is not None:
+            h_slice = h_total // 2
+            if p["row_idx"] == 1:
+                src_y_start, src_y_end = h_slice, h_total
+            else:
+                src_y_start, src_y_end = 0, h_slice
+        else:
+            h_slice = h_total
+            src_y_start, src_y_end = 0, h_total
+
+        advance = sys_w - sys_mask
+        total_rows = math.ceil((w_total + sys_off_x) / advance)
+
+        master = Image.new("RGBA", (w_total, h_total))
+
+        # Fondo
+        bg_path = files["background"]
+        if bg_path:
+            bg_img = fetch(bg_path, t)
+            if bg_img is not None:
+                new_bg_w = max(1, int(h_total * (bg_img.width / max(1, bg_img.height))))
+                if is_video(bg_path):
+                    tile = bg_img if bg_img.size == (new_bg_w, h_total) else bg_img.resize((new_bg_w, h_total), PREVIEW_RESAMPLE)
+                else:
+                    tile = resized(("bg", bg_path), bg_img, (new_bg_w, h_total))
+                for x in range(0, w_total, new_bg_w):
+                    master.paste(tile, (x, 0))
+
+        # Zonas de animación
+        pil_anims_frames = []
+        for path in files["anims"]:
+            img = fetch(path, t)
+            pil_anims_frames.append(img if img is not None else Image.new("RGBA", (3000, h_total), (255, 0, 0, 255)))
+        if not pil_anims_frames: pil_anims_frames = [Image.new("RGBA", (3000, h_total), (255, 0, 0, 255))]
+
+        # Logo (frame 0 para los estáticos, frame t para los "animated" del modo Logo Under)
+        logo_path = files["static_logo"]
+        pil_logo_raw = fetch(logo_path, 0) if logo_path else None
+        if pil_logo_raw is None: pil_logo_raw = Image.new("RGBA", (100, h_total), (0, 0, 0, 0))
+        logo_anim_img = pil_logo_raw
+        if is_video(logo_path):
+            logo_anim_frame = fetch(logo_path, t)
+            if logo_anim_frame is not None: logo_anim_img = logo_anim_frame
+
+        cb_path = files["center_board"]
+        for zona in datos["zonas"].values():
+            for e in zona["elementos"]:
+                if e["tipo"] == "center_board" and e["width"] > 0:
+                    if cb_path and p["show_cb"]:
+                        k = ("cb", cb_path, e["width"], h_total)
+                        if k not in memo:
+                            pil_cb_raw = fetch(cb_path, 0)
+                            if pil_cb_raw is None: pil_cb_raw = Image.new("RGBA", (100, h_total), (255, 0, 0, 255))
+                            memo[k] = aplicar_letterbox_pil(pil_cb_raw, e["width"], h_total, PREVIEW_RESAMPLE)
+                        cb_letterbox = memo[k]
+                        master.paste(cb_letterbox, (e["x_absoluta"], 0), cb_letterbox)
+                    else:
+                        master.paste(Image.new("RGBA", (e["width"], h_total), (0,0,0,255)), (e["x_absoluta"], 0))
+                elif e["tipo"] == "anim_zone":
+                    a_idx = e.get("anim_idx", 0) % len(pil_anims_frames)
+                    k = (a_idx, e["width"])
+                    if k not in frame_memo:
+                        frame_memo[k] = pil_anims_frames[a_idx].resize((e["width"], h_total), PREVIEW_RESAMPLE)
+                    anim_img = frame_memo[k]
+                    master.paste(anim_img, (e["x_absoluta"], 0), anim_img)
+
+        for zona in datos["zonas"].values():
+            for e in zona["elementos"]:
+                if e["tipo"] == "static_logo":
+                    if e.get("logo_under_type") == "animated" and logo_anim_img is not pil_logo_raw:
+                        k = ("logo_anim", e["width"])
+                        if k not in frame_memo:
+                            frame_memo[k] = logo_anim_img.resize((e["width"], h_total), PREVIEW_RESAMPLE)
+                        logo_img = frame_memo[k]
+                    else:
+                        logo_img = resized(("logo", logo_path), pil_logo_raw, (e["width"], h_total))
+                    master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
+
+        res = generar_imagen_arquitectura(master, datos, h_total, w_total, p["gl_offset_pct"], bg_color=(0, 0, 0, 0), resample=PREVIEW_RESAMPLE, max_png_width=None)
+
+        master_slice = self.safe_crop(master, 0, src_y_start, w_total, src_y_end)
+        sys_canvas = Image.new("RGBA", (sys_w, sys_h), (0,0,0,255))
+
+        for i in range(total_rows):
+            x_m_strip = i * advance - sys_off_x
+            crop_x1 = max(0, x_m_strip)
+            crop_x2 = min(w_total, x_m_strip + advance)
+            if crop_x1 >= crop_x2: continue
+            x_canvas = abs(x_m_strip) if x_m_strip < 0 else 0
+            paste_y = sys_off_y + (i * h_slice)
+            row_img = self.safe_crop(master_slice, crop_x1, 0, crop_x2, h_slice)
+            sys_canvas.paste(row_img, (int(x_canvas), int(paste_y)))
+
+        if sys_mask > 0: ImageDraw.Draw(sys_canvas).rectangle([sys_w - sys_mask, 0, sys_w, sys_h], fill=(0,0,0,255))
+
+        draw_sys = ImageDraw.Draw(sys_canvas)
+        stroke_w = max(3, int(min(sys_w, sys_h) * 0.0018))
+        draw_sys.rectangle(
+            [0, 0, sys_w - 1, sys_h - 1],
+            outline=(180, 180, 180, 255),
+            width=stroke_w
+        )
+        return res, sys_canvas
+
     def auto_fit_zooms(self):
         self.update_idletasks()
         if not self.pil_preview_images or not self.pil_sys_images: return
+        if self.pil_preview_images[self.preview_current_idx] is None: return
         
         if not getattr(self, 'manual_zoom_sys', False):
             img_sys = self.pil_sys_images[self.preview_current_idx]
@@ -2044,7 +2238,6 @@ class MegaStripApp(CTkDnD):
 
     def get_panned_image(self, img, zoom, pan_x, pan_y, container_w, container_h):
         sw, sh = max(1, int(img.width * zoom)), max(1, int(img.height * zoom))
-        resized = img.resize((sw, sh), RESAMPLE_METHOD)
         
         max_pan_x = max(0, (sw - container_w) / 2)
         max_pan_y = max(0, (sh - container_h) / 2)
@@ -2057,11 +2250,21 @@ class MegaStripApp(CTkDnD):
         paste_x = int((container_w - sw) / 2 + pan_x)
         paste_y = int((container_h - sh) / 2 + pan_y)
         
-        canvas.paste(resized, (paste_x, paste_y))
+        # Solo se reescala la parte visible (antes se reescalaba la imagen entera en cada zoom/arrastre)
+        rx1, ry1 = max(0, -paste_x), max(0, -paste_y)
+        rx2, ry2 = min(sw, container_w - paste_x), min(sh, container_h - paste_y)
+        if rx2 > rx1 and ry2 > ry1:
+            sx, sy = img.width / float(sw), img.height / float(sh)
+            visible = img.resize(
+                (rx2 - rx1, ry2 - ry1), RESAMPLE_METHOD,
+                box=(rx1 * sx, ry1 * sy, rx2 * sx, ry2 * sy), reducing_gap=3.0
+            )
+            canvas.paste(visible, (paste_x + rx1, paste_y + ry1))
         return canvas, pan_x, pan_y
 
     def actualizar_imagen_preview(self):
         if not self.pil_preview_images: return
+        if self.pil_preview_images[self.preview_current_idx] is None: return
         if hasattr(self, 'lbl_sys_placeholder') and self.lbl_sys_placeholder.winfo_exists(): self.lbl_sys_placeholder.destroy()
         if hasattr(self, 'lbl_arch_placeholder') and self.lbl_arch_placeholder.winfo_exists(): self.lbl_arch_placeholder.destroy()
         
@@ -2132,7 +2335,12 @@ class MegaStripApp(CTkDnD):
 
     def ciclar_preview(self, e=None):
         if not self.pil_preview_images: return
-        self.preview_current_idx = (self.preview_current_idx + 1) % len(self.pil_preview_images)
+        n = len(self.pil_preview_images)
+        for step in range(1, n + 1):
+            idx = (self.preview_current_idx + step) % n
+            if self.pil_preview_images[idx] is not None and self.pil_sys_images[idx] is not None:
+                self.preview_current_idx = idx
+                break
         self.actualizar_imagen_preview()
 
     def on_drag_start(self, event, view_type):

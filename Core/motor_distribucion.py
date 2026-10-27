@@ -3,6 +3,8 @@ import os
 import traceback
 from moviepy import VideoFileClip
 from PIL import Image, ImageDraw, ImageFont
+from log_utils import debug, log_error
+from frame_cache import FRAME_CACHE
 
 
 class Distribuidor:
@@ -10,8 +12,8 @@ class Distribuidor:
   def __init__(
       self, w_total, h_total, goal_line, cb_width, margin, archivos, config
   ):
-    print(
-        f"[ARCHIE DEBUG] Inicializando Motor: w_total={w_total}, config={config}"
+    debug(
+        f"Inicializando Motor: w_total={w_total}, config={config}"
     )
     self.w_total = w_total
     self.h_total = h_total
@@ -42,28 +44,35 @@ class Distribuidor:
       self.anim_w = int(self.anim_w * (self.h_total / self.anim_h))
     self.anim_w = max(1, self.anim_w)
 
-    print(
-        f"[ARCHIE DEBUG] Dimensiones Motor calculadas: logo_w={self.logo_w},"
+    debug(
+        f"Dimensiones Motor calculadas: logo_w={self.logo_w},"
         f" anim_w={self.anim_w}"
     )
 
   def get_dimensions(self, path, def_w, def_h):
     if not path:
       return def_w, def_h
+    # Ruta rápida: metadatos cacheados (evita abrir un VideoFileClip en cada cálculo)
+    try:
+      w, h = FRAME_CACHE.dimensions(path)
+      if w and h:
+        return w, h
+    except Exception as e:
+      debug(f"FrameCache sin dimensiones para '{path}', usando lectura directa: {e}")
     ext = os.path.splitext(path)[1].lower()
     if ext in [".mov", ".mp4", ".avi", ".m4v"]:
       try:
         with VideoFileClip(path) as cl:
           return cl.size
       except Exception as e:
-        print(f"[ARCHIE DEBUG] Error leyendo dim Video: {e}")
+        log_error(f"Error leyendo dim Video: {e}")
         return def_w, def_h
     else:
       try:
         with Image.open(path) as im:
           return im.size
       except Exception as e:
-        print(f"[ARCHIE DEBUG] Error leyendo dim Image: {e}")
+        log_error(f"Error leyendo dim Image: {e}")
         return def_w, def_h
 
   def get_anim_idx(self):
@@ -262,7 +271,7 @@ class Distribuidor:
 
   def procesar(self):
     try:
-      print("[ARCHIE DEBUG] Iniciando procesar()...")
+      debug("Iniciando procesar()...")
       cb_start = (self.w_total / 2) - (self.cb_width / 2)
       cb_end = cb_start + self.cb_width
 
@@ -275,7 +284,7 @@ class Distribuidor:
       z5_w = self.goal_line
 
       if self.config.get("amplify", False):
-        print("[ARCHIE DEBUG] Entrando a modo procesar_amplify (Flexbox)...")
+        debug("Entrando a modo procesar_amplify (Flexbox)...")
         return self.procesar_amplify(
             cb_start,
             cb_end,
@@ -289,8 +298,8 @@ class Distribuidor:
         )
 
       if not self.archivos.get("static_logo"):
-        print(
-            "[ARCHIE DEBUG] Entrando a modo procesar_fallback (sin logo)..."
+        debug(
+            "Entrando a modo procesar_fallback (sin logo)..."
         )
         return self.procesar_fallback(
             cb_start,
@@ -544,8 +553,8 @@ class Distribuidor:
 
       # --- 6. POST-PROCESADO LOGO UNDER (Con Space-Around proporcional PURO POR ZONA) ---
       if self.config.get("logo_under"):
-        print(
-            "[ARCHIE DEBUG] Iniciando post-procesado Logo Under PURGADO Y"
+        debug(
+            "Iniciando post-procesado Logo Under PURGADO Y"
             " EQUIDISTANTE..."
         )
         try:
@@ -664,8 +673,8 @@ class Distribuidor:
 
         except Exception as e:
           traceback.print_exc()
-          print(
-              f"[ARCHIE DEBUG] Error CRÍTICO dentro del bloque Logo Under: {e}"
+          log_error(
+              f"Error CRÍTICO dentro del bloque Logo Under: {e}"
           )
 
       if not self.config.get("logo_under"):
@@ -680,7 +689,7 @@ class Distribuidor:
       }
     except Exception as e:
       traceback.print_exc()
-      print(f"[ARCHIE DEBUG] Error CRÍTICO en procesar(): {e}")
+      log_error(f"Error CRÍTICO en procesar(): {e}")
       raise e
 
   def procesar_amplify(
@@ -920,7 +929,8 @@ class Distribuidor:
 
 
 def generar_imagen_arquitectura(
-    master, datos, h_total, w_total, gl_offset_pct, bg_color=(0, 0, 0, 0)
+    master, datos, h_total, w_total, gl_offset_pct, bg_color=(0, 0, 0, 0),
+    resample=None, max_png_width=16000
 ):
   def safe_crop(img, x1, y1, x2, y2):
     x1, x2 = sorted([max(0, min(x1, img.width)), max(0, min(x2, img.width))])
@@ -1022,14 +1032,17 @@ def generar_imagen_arquitectura(
   draw_label("GOAL RIGHT", cx_g5, text_y3)
   draw_label("GOAL LINE RIGHT", x_c5 + c5.width, text_y3, anchor="rb")
 
-  max_png_width = 16000
-  if res.width > max_png_width:
+  # max_png_width=None (preview) evita el reescalado final: la UI ya escala al mostrar
+  if max_png_width and res.width > max_png_width:
     ratio = max_png_width / float(res.width)
     new_h = int(res.height * ratio)
-    try:
-      resamp = Image.Resampling.LANCZOS
-    except AttributeError:
-      resamp = Image.LANCZOS
+    if resample is not None:
+      resamp = resample
+    else:
+      try:
+        resamp = Image.Resampling.LANCZOS
+      except AttributeError:
+        resamp = Image.LANCZOS
     res = res.resize((max_png_width, new_h), resamp)
 
   return res
