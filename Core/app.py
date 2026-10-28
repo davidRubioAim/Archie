@@ -21,6 +21,7 @@ from stadium_loader import load_stadium_library as cargar_estadios
 from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
+from auto_import import buscar_elements_hermanos
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1436,6 +1437,8 @@ class MegaStripApp(CTkDnD):
             name = os.path.splitext(os.path.basename(file_path))[0]
             self.output_filename_var.set(f"{name}")
         self.check_and_activate_logo_under(file_path)
+        if idx == 0:
+            self._autoimportar_elements(file_path, "anim_zone")
         self.refresh_anim_zones_ui()
         self.reset_preview_state()
         self.reset_zooms_and_pan()
@@ -1753,9 +1756,46 @@ class MegaStripApp(CTkDnD):
         if key == "center_board":
             self.show_cb_var.set(True)
         self.check_and_activate_logo_under(file_path)
+        if self._autoimportar_elements(file_path, key):
+            self.refresh_anim_zones_ui()
         self.reset_preview_state()
         self.reset_zooms_and_pan()
         self.trigger_update()
+
+    def _autoimportar_elements(self, file_path, zona_dropeada):
+        """v0.34: al dropear un ELEMENT etiquetado (ANIM/BG/LOGO/CB), carga el resto
+        de ELEMENTS de su carpeta en sus zonas. Si hay varios de un tipo, esa zona
+        queda vacía para dropear a mano. Devuelve True si tocó la Zone A de Anim."""
+        try:
+            encontrados = buscar_elements_hermanos(file_path)
+        except Exception as e:
+            log_error(f"Autoimport: {e}")
+            return False
+
+        toco_anim = False
+        for tipo, ruta in encontrados.items():
+            if tipo == zona_dropeada:
+                continue
+            if tipo == "anim_zone":
+                if not self.archivos_cargados["anim_zones"]:
+                    self.archivos_cargados["anim_zones"].append(None)
+                self.archivos_cargados["anim_zones"][0] = ruta
+                self.archivos_cargados["anim_zone"] = ruta
+                if ruta:
+                    self.output_filename_var.set(os.path.splitext(os.path.basename(ruta))[0])
+                toco_anim = True
+            else:
+                self.archivos_cargados[tipo] = ruta
+                if ruta:
+                    self.drop_labels[tipo].configure(text=f"Loaded:\n{os.path.basename(ruta)}", text_color="#2CC985")
+                    if tipo == "center_board":
+                        self.show_cb_var.set(True)
+                else:
+                    self.drop_labels[tipo].configure(text="Drop file here", text_color="gray")
+            if ruta:
+                self.check_and_activate_logo_under(ruta)
+            debug(f"Autoimport {tipo}: {ruta}")
+        return toco_anim
 
     def calcular_layout(self):
         try:

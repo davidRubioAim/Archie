@@ -146,7 +146,7 @@ def main():
     
     config = sync_config()
     
-    target_version = sys.argv[1] if len(sys.argv) > 1 else config.get('target_version', 'v0.24')
+    target_version = sys.argv[1] if len(sys.argv) > 1 else config.get('target_version', 'v0.34')
     repo = config.get('github_repo', DEFAULT_REPO)
     token = config.get('github_token', fallback="").strip()
 
