@@ -1,6 +1,8 @@
 customtkinter
-tkinterdnd2
 pillow
-moviepy
-python-dotenv
+numpy
+moviepy>=2.0
+proglog
 google-genai
+tkinterdnd2
+python-dotenv
