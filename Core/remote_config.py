@@ -6,7 +6,9 @@ compartida por enlace, para no guardarlas en GitHub ni configurarlas PC a PC.
 Formato de la hoja (pestaña única): columna A = nombre, columna B = valor
     GEMINI_API_KEY | AIza....
 
-Prioridad: variable de entorno / Config/.env  >  hoja remota.
+Prioridad: hoja remota  >  variable de entorno / Config/.env (solo como respaldo sin conexión).
+Así, cambiar la clave en la hoja la actualiza en todos los equipos en el siguiente arranque,
+aunque el Archie.bat o el .env de algún PC aún tengan una clave antigua.
 """
 import csv
 import io
@@ -19,9 +21,8 @@ FETCH_TIMEOUT = 6
 
 
 def load_remote_config(keys=("GEMINI_API_KEY",), log=print):
-    pending = [k for k in keys if not os.getenv(k)]
     sheet_id = (os.getenv("CONFIG_SHEET_ID") or CONFIG_SHEET_ID).strip()
-    if not pending or not sheet_id:
+    if not sheet_id:
         return
 
     url = (f"https://docs.google.com/spreadsheets/d/{sheet_id}/export"
@@ -34,11 +35,14 @@ def load_remote_config(keys=("GEMINI_API_KEY",), log=print):
             raise PermissionError("la hoja de configuración no es accesible por enlace")
         values = {r[0].strip(): r[1].strip() for r in csv.reader(io.StringIO(raw)) if len(r) >= 2}
     except Exception as e:
-        log(f"  [WARN] No se pudo leer la configuración remota ({e}).")
+        log(f"  [WARN] No se pudo leer la configuración remota ({e}). Se usa la clave local si existe.")
         return
 
-    for k in pending:
+    for k in keys:
         if values.get(k):
             os.environ[k] = values[k]
+            log(f"  [OK] {k} cargada desde la hoja de configuración.")
+        elif os.getenv(k):
+            log(f"  [WARN] {k} no está en la hoja; se usa la clave local.")
         else:
             log(f"  [WARN] {k} no está en la hoja de configuración.")

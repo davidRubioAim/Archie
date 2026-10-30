@@ -17,6 +17,26 @@ os.makedirs(VERSIONS_DIR, exist_ok=True)
 GIST_URL = "https://gist.githubusercontent.com/davidRubioAim/e575bfbfceef3e187410ee5e6e494a1a/raw/version.json"
 DEFAULT_REPO = "davidRubioAim/Archie"
 
+# Hoja "ARCHIE API": de aquí salen GEMINI_API_KEY y GITHUB_TOKEN (columna A = nombre, B = valor)
+CONFIG_SHEET_ID = "1NtfSsL-ZdVZEiE7kMaNk0BKyRZ9bNxrYrYLfFmS9Khk"
+
+def fetch_sheet_value(key):
+    """Lee un valor de la hoja de configuración. Devuelve "" si no hay conexión o no existe."""
+    import csv, io
+    url = f"https://docs.google.com/spreadsheets/d/{CONFIG_SHEET_ID}/export?format=csv&gid=0"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Archie-Launcher", "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            raw = resp.read().decode("utf-8")
+        if "<html" in raw[:500].lower():
+            return ""
+        for row in csv.reader(io.StringIO(raw)):
+            if len(row) >= 2 and row[0].strip() == key:
+                return row[1].strip()
+    except Exception as e:
+        print(f"  [WARN] No se pudo leer la hoja de configuración ({e}).")
+    return ""
+
 def sync_config():
     config = configparser.ConfigParser()
     config_path = os.path.join(BASE_DIR, 'config.ini')
@@ -146,9 +166,10 @@ def main():
     
     config = sync_config()
     
-    target_version = sys.argv[1] if len(sys.argv) > 1 else config.get('target_version', 'v0.34')
+    target_version = sys.argv[1] if len(sys.argv) > 1 else config.get('target_version', 'v0.24')
     repo = config.get('github_repo', DEFAULT_REPO)
-    token = config.get('github_token', fallback="").strip()
+    # El token de la hoja manda; el de config.ini solo es respaldo
+    token = fetch_sheet_value("GITHUB_TOKEN") or config.get('github_token', fallback="").strip()
 
     version_path = os.path.join(VERSIONS_DIR, target_version)
     expected_core_app = os.path.join(version_path, "Core", "app.py")
