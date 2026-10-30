@@ -121,24 +121,23 @@ class CTkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
 
 class MegaStripApp(CTkDnD):
     def _set_window_icon(self):
-        """Icono de ventana y barra de tareas: Assets/logo_Archie.ico (+ .png como respaldo).
-        iconbitmap() marca la ventana para que CustomTkinter no ponga su icono a los 200 ms."""
-        ico = find_asset("logo_Archie.ico")
-        if ico:
-            try:
-                self.iconbitmap(ico)
-                self.iconbitmap(default=ico)  # también para las ventanas secundarias
-            except Exception as e:
-                debug(f"No se pudo poner el icono .ico ({ico}): {e}")
-        png = find_asset("logo_Archie.png")
-        if png:
-            try:
-                self._icon_photo = ImageTk.PhotoImage(Image.open(png).convert("RGBA").resize((256, 256)))
-                self.iconphoto(True, self._icon_photo)
-            except Exception as e:
-                debug(f"No se pudo poner el icono .png ({png}): {e}")
-        if not ico and not png:
-            debug("Icono no encontrado: falta Assets/logo_Archie.ico")
+        """Icono de ventana y barra de tareas a partir de Assets/logo_Archie.ico.
+        No se usa iconbitmap(): el lector de .ico de Tk no entiende las capas guardadas como PNG (lo habitual en .ico
+        modernos) y deja un icono en blanco. PIL sí las lee, y iconphoto() recibe las imágenes ya decodificadas."""
+        self._iconbitmap_method_called = True  # evita que CustomTkinter ponga su icono a los 200 ms
+        ico = find_asset("logo_Archie.ico") or find_asset("logo_Archie.png")
+        if not ico:
+            print("  [WARN] Icono no encontrado: falta Assets/logo_Archie.ico")
+            return
+        try:
+            src = Image.open(ico)
+            if src.format == "ICO" and src.info.get("sizes"):
+                src.size = max(src.info["sizes"])  # elige la capa más grande del .ico
+            base = src.convert("RGBA")
+            self._icon_photos = [ImageTk.PhotoImage(base.resize((n, n), RESAMPLE_METHOD)) for n in (256, 64, 48, 32, 16)]
+            self.iconphoto(True, *self._icon_photos)
+        except Exception as e:
+            print(f"  [WARN] No se pudo poner el icono ({ico}): {e}")
 
     def __init__(self):
         super().__init__()
