@@ -928,6 +928,46 @@ class Distribuidor:
     }
 
 
+def segmentos_arquitectura(datos, h_total, w_total):
+  """Geometría de la imagen de arquitectura (3 filas: GL izq, touchline, GL der).
+
+  Devuelve ((res_w, res_h), [(x_ini_master, x_fin_master, x_res, y_res) x 3]).
+  La usan generar_imagen_arquitectura y el reproductor de la preview, para que
+  ambos coloquen cada tramo del strip exactamente en el mismo sitio.
+  """
+  z1_w = datos["zonas"]["ZONA_1"]["width"]
+  z2_s = datos["zonas"]["ZONA_2"]["x_inicio"]
+  z4_e = (
+      datos["zonas"]["ZONA_4"]["x_inicio"] + datos["zonas"]["ZONA_4"]["width"]
+  )
+  z5_s = datos["zonas"]["ZONA_5"]["x_inicio"]
+  z234_w = max(1, z4_e - z2_s)
+
+  def tramo(x1, x2):
+    x1, x2 = sorted([max(0, min(x1, w_total)), max(0, min(x2, w_total))])
+    return x1, x2
+
+  t1, t2, t5 = tramo(0, z1_w), tramo(z2_s, z4_e), tramo(z5_s, w_total)
+
+  v_gap = int(h_total * 2.8)
+  top_margin = int(h_total * 2.8)
+  res_h = top_margin + (h_total * 3) + (v_gap * 2)
+
+  y1 = top_margin
+  y2 = top_margin + h_total + v_gap
+  y3 = top_margin + (h_total * 2) + (v_gap * 2)
+
+  x_c1 = 0
+  x_c2 = int((z234_w - (t2[1] - t2[0])) / 2)
+  x_c5 = max(0, z234_w - (t5[1] - t5[0]))
+
+  return (z234_w, res_h), [
+      (t1[0], t1[1], x_c1, y1),
+      (t2[0], t2[1], x_c2, y2),
+      (t5[0], t5[1], x_c5, y3),
+  ]
+
+
 def generar_imagen_arquitectura(
     master, datos, h_total, w_total, gl_offset_pct, bg_color=(0, 0, 0, 0),
     resample=None, max_png_width=16000
@@ -937,31 +977,16 @@ def generar_imagen_arquitectura(
     y1, y2 = sorted([max(0, min(y1, img.height)), max(0, min(y2, img.height))])
     return img.crop((x1, y1, x2, y2))
 
-  z2_s = datos["zonas"]["ZONA_2"]["x_inicio"]
-  z4_e = (
-      datos["zonas"]["ZONA_4"]["x_inicio"] + datos["zonas"]["ZONA_4"]["width"]
-  )
-  z234_w = max(1, z4_e - z2_s)
-
-  c1 = safe_crop(master, 0, 0, datos["zonas"]["ZONA_1"]["width"], h_total)
-  c2 = safe_crop(master, z2_s, 0, z4_e, h_total)
-  c5 = safe_crop(
-      master, datos["zonas"]["ZONA_5"]["x_inicio"], 0, w_total, h_total
+  (z234_w, res_h), segs = segmentos_arquitectura(datos, h_total, w_total)
+  (s1, x_c1, y1), (s2, x_c2, y2), (s5, x_c5, y3) = (
+      (seg[0], seg[2], seg[3]) for seg in segs
   )
 
-  v_gap = int(h_total * 2.8)
-  top_margin = int(h_total * 2.8)
-  res_h = top_margin + (h_total * 3) + (v_gap * 2)
+  c1 = safe_crop(master, s1, 0, segs[0][1], h_total)
+  c2 = safe_crop(master, s2, 0, segs[1][1], h_total)
+  c5 = safe_crop(master, s5, 0, segs[2][1], h_total)
 
   res = Image.new("RGBA", (z234_w, res_h), bg_color)
-
-  y1 = top_margin
-  y2 = top_margin + h_total + v_gap
-  y3 = top_margin + (h_total * 2) + (v_gap * 2)
-
-  x_c1 = 0
-  x_c2 = int((z234_w - c2.width) / 2)
-  x_c5 = max(0, z234_w - c5.width)
 
   res.paste(c1, (x_c1, y1), c1 if c1.mode == "RGBA" else None)
   res.paste(c2, (x_c2, y2), c2 if c2.mode == "RGBA" else None)
