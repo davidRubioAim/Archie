@@ -6,6 +6,7 @@ import traceback
 from PIL import Image
 from moviepy import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, VideoClip, concatenate_videoclips
 from proglog import ProgressBarLogger
+from log_utils import debug, log_error
 
 class UILogger(ProgressBarLogger):
     def __init__(self, ui_callback, cancel_check=None):
@@ -17,7 +18,7 @@ class UILogger(ProgressBarLogger):
 
     def callback(self, **kwargs):
         if self.cancel_check and self.cancel_check(): raise Exception("RENDER_CANCELLED")
-        if "message" in kwargs: print(f"[Motor Background] {kwargs['message']}")
+        if "message" in kwargs: debug(f"[Motor] {kwargs['message']}")
 
     def bars_callback(self, bar, attr, value, old_value):
         if self.cancel_check and self.cancel_check(): raise Exception("RENDER_CANCELLED")
@@ -68,7 +69,7 @@ def detectar_movimiento_video(clip, threshold=1.0):
         
         return (diff1 > threshold) or (diff2 > threshold)
     except Exception as e:
-        print(f"[ARCHIE DEBUG] Fallo en detección de movimiento, asumiendo estático: {e}")
+        log_error(f"Fallo en detección de movimiento, asumiendo estático: {e}")
         return False
 
 def obtener_clip_fondo_inteligente(bg_path, w_total, h_total, duracion_objetivo):
@@ -85,11 +86,11 @@ def obtener_clip_fondo_inteligente(bg_path, w_total, h_total, duracion_objetivo)
             tiene_movimiento = detectar_movimiento_video(clip_orig)
             
             if not tiene_movimiento:
-                print(f"[ARCHIE DEBUG] Fondo optimizado: Vídeo SIN movimiento detectado ({os.path.basename(bg_path)}). Congelando frame 0.")
+                debug(f"Fondo optimizado: Vídeo SIN movimiento detectado ({os.path.basename(bg_path)}). Congelando frame 0.")
                 pil_bg = Image.fromarray(clip_orig.get_frame(0)).convert("RGB")
                 clip_orig.close()
             else:
-                print(f"[ARCHIE DEBUG] Fondo animado DETECTADO ({os.path.basename(bg_path)}). Renderizando stream dinámico.")
+                debug(f"Fondo animado DETECTADO ({os.path.basename(bg_path)}). Renderizando stream dinámico.")
                 new_bg_w = max(1, int(h_total * (clip_orig.w / max(1, clip_orig.h))))
                 clip_orig = clip_orig.resized(width=new_bg_w, height=h_total)
                 repeats = int(math.ceil(w_total / float(new_bg_w)))
@@ -118,12 +119,12 @@ def obtener_clip_fondo_inteligente(bg_path, w_total, h_total, duracion_objetivo)
 
     except Exception as e:
         traceback.print_exc()
-        print(f"[ARCHIE DEBUG] Error generando fondo, aplicando negro: {e}")
+        log_error(f"Error generando fondo, aplicando negro: {e}")
         return ColorClip(size=(w_total, h_total), color=(0,0,0), duration=duracion_objetivo)
 
 def obtener_clip_fuente(ruta, h_total, duracion=None):
     if not ruta: return None
-    print(f"[ARCHIE DEBUG] Cargando clip para render: {ruta}")
+    debug(f"Cargando clip para render: {ruta}")
     try:
         if es_video(ruta):
             clip = VideoFileClip(ruta, has_mask=True).resized(height=h_total)
@@ -140,11 +141,11 @@ def obtener_clip_fuente(ruta, h_total, duracion=None):
             return clip
     except Exception as e:
         traceback.print_exc()
-        print(f"[ARCHIE DEBUG] Error al cargar clip {ruta}: {e}")
+        log_error(f"Error al cargar clip {ruta}: {e}")
         return None
 
 def construir_mega_strip(datos):
-    print("[ARCHIE DEBUG] Iniciando construcción visual de Mega Strip...")
+    debug("Iniciando construcción visual de Mega Strip...")
     w_total = datos["dimensiones_globales"]["width"]
     h_total = datos["dimensiones_globales"]["height"]
     archivos = datos["archivos_fuente"]
@@ -165,7 +166,7 @@ def construir_mega_strip(datos):
                 if temp_clip.duration > duracion_video: duracion_video = temp_clip.duration
                 temp_clip.close()
             except Exception as e:
-                print(f"[ARCHIE DEBUG] Error obteniendo duración de {path}: {e}")
+                log_error(f"Error obteniendo duración de {path}: {e}")
             
     for path in valid_anims:
         anim_clips_base.append(obtener_clip_fuente(path, h_total, duracion_video))
@@ -198,7 +199,7 @@ def construir_mega_strip(datos):
                         clip_cb = ImageClip(np.array(cb_encuadrado)).with_duration(duracion_video).with_position((pos_x, 0))
                         lista_composicion.append(clip_cb)
                     except Exception as e:
-                        print(f"[ARCHIE DEBUG] Error procesando Center Board en render, aplicando negro: {e}")
+                        log_error(f"Error procesando Center Board en render, aplicando negro: {e}")
                         clip = ColorClip(size=(w_elem, h_total), color=(0, 0, 0), duration=duracion_video).with_position((pos_x, 0))
                         lista_composicion.append(clip)
                 else:
@@ -230,7 +231,7 @@ def construir_mega_strip(datos):
                 lista_composicion.append(clip)
 
     mega_strip_clip = CompositeVideoClip(lista_composicion, size=(w_total, h_total))
-    print("[ARCHIE DEBUG] Composición base de Mega Strip finalizada.")
+    debug("Composición base de Mega Strip finalizada.")
     return mega_strip_clip, w_total, h_total, duracion_video
 
 def renderizar_megastrip(json_path, output_filename="resultado_megastrip.mov", progress_callback=None, cancel_check=None):
@@ -238,14 +239,14 @@ def renderizar_megastrip(json_path, output_filename="resultado_megastrip.mov", p
     mega_strip_clip, w_total, h_total, duracion = construir_mega_strip(datos)
     logger = UILogger(progress_callback, cancel_check) if progress_callback else "bar"
 
-    print("[ARCHIE DEBUG] Iniciando MoviePy write_videofile (MEGASTRIP)...")
+    debug("Iniciando MoviePy write_videofile (MEGASTRIP)...")
     mega_strip_clip.write_videofile(
         output_filename, fps=25, codec="libx264", audio=False, ffmpeg_params=["-pix_fmt", "yuv420p"], logger=logger
     )
     mega_strip_clip.close()
-    print("[ARCHIE DEBUG] Render MEGASTRIP finalizado.")
+    debug("Render MEGASTRIP finalizado.")
 
-def renderizar_system_file(json_path, output_filename="resultado_system.mp4", progress_callback=None, cancel_check=None, row_target=None):
+def renderizar_system_file_moviepy(json_path, output_filename="resultado_system.mp4", progress_callback=None, cancel_check=None, row_target=None):
     with open(json_path, 'r', encoding='utf-8') as f: datos = json.load(f)
     mega_strip_clip, w_total, h_total, duracion = construir_mega_strip(datos)
     
@@ -302,7 +303,7 @@ def renderizar_system_file(json_path, output_filename="resultado_system.mp4", pr
     system_clip_final = VideoClip(make_system_frame).with_duration(duracion)
     logger = UILogger(progress_callback, cancel_check) if progress_callback else "bar"
 
-    print(f"[ARCHIE DEBUG] Iniciando MoviePy write_videofile (SYSTEM - {row_target or 'FULL'})...")
+    debug(f"Iniciando MoviePy write_videofile (SYSTEM - {row_target or 'FULL'})...")
     system_clip_final.write_videofile(
         output_filename, fps=25, codec="libx264", bitrate="15000k", audio=False, 
         ffmpeg_params=["-minrate", "15000k", "-maxrate", "15000k", "-bufsize", "30000k", "-pix_fmt", "yuv420p"], logger=logger
@@ -310,4 +311,17 @@ def renderizar_system_file(json_path, output_filename="resultado_system.mp4", pr
     
     system_clip_final.close()
     mega_strip_clip.close()
-    print("[ARCHIE DEBUG] Render SYSTEM finalizado.")
+    debug("Render SYSTEM finalizado.")
+
+# ---------------------------------------------------------------- Entrada pública
+# System File con el motor rápido (render_rapido.py, ffmpeg directo). Si falla por cualquier motivo que no sea una cancelación,
+# se repite con el motor MoviePy de siempre para que el render no se pierda.
+def renderizar_system_file(json_path, output_filename="resultado_system.mp4", progress_callback=None, cancel_check=None, row_target=None):
+    try:
+        import render_rapido
+        return render_rapido.renderizar_system_file(json_path, output_filename, progress_callback, cancel_check, row_target)
+    except Exception as e:
+        if "RENDER_CANCELLED" in str(e): raise
+        traceback.print_exc()
+        log_error(f"Render rápido falló, usando motor MoviePy: {e}")
+    return renderizar_system_file_moviepy(json_path, output_filename, progress_callback, cancel_check, row_target)
