@@ -7,6 +7,7 @@ import time
 import customtkinter as ctk
 from moviepy import VideoFileClip
 from renderizador import renderizar_megastrip, renderizar_system_file
+from log_utils import debug, log_error
 
 class QueueManager:
     def __init__(self, app):
@@ -14,6 +15,7 @@ class QueueManager:
         self.render_queue = []
         self.is_rendering = False
         self.cancel_render_flag = False
+        self.cancel_queue_flag = False   # v0.38: Cancel del render en lote (cola)
 
     def generate_safe_filename(self, base, preset, rtype, ext, out_dir):
         preset_clean = preset.replace(" ", "_")
@@ -144,12 +146,14 @@ class QueueManager:
     def start_queue_processor(self):
         if not self.is_rendering:
             self.is_rendering = True
+            self.cancel_queue_flag = False
             self.app.btn_start_queue.configure(state="disabled", text="Rendering...")
             self.toggle_batch_overlay(True)
             threading.Thread(target=self.process_queue_worker, daemon=True).start()
 
     def process_queue_worker(self):
         while True:
+            if self.cancel_queue_flag: break
             job = next((j for j in self.render_queue if j["status"] == "Pending"), None)
             if not job: break 
 
@@ -186,11 +190,16 @@ class QueueManager:
                 else: 
                     renderizar_system_file(
                         json_path, out_path, progress_callback=update_progress, 
+                        cancel_check=lambda: self.cancel_queue_flag,
                         row_target=job["data"].get("row_target")
                     )
                 
                 self.app.after(0, lambda j=job: self.update_job_ui(j, "Completed!", 1.0, done=True))
             except Exception as e:
+                if "RENDER_CANCELLED" in str(e) or self.cancel_queue_flag:
+                    # El trabajo cortado vuelve a "Pending" para poder relanzar la cola
+                    self.app.after(0, lambda j=job: self.reset_job_to_pending(j))
+                    break
                 traceback.print_exc()
                 err_msg = type(e).__name__ + ": " + str(e).replace('\n', ' ')[:40]
                 self.app.after(0, lambda j=job, e_msg=err_msg: self.update_job_ui(j, f"{e_msg}", 0, done=True))
@@ -201,6 +210,20 @@ class QueueManager:
         self.app.after(0, lambda: self.app.btn_start_queue.configure(state="normal", text="▶ Start Queue"))
         self.app.after(0, lambda: self.toggle_batch_overlay(False))
     
+    def cancel_queue(self):
+        self.cancel_queue_flag = True
+        if hasattr(self, "batch_cancel_btn"):
+            self.batch_cancel_btn.configure(state="disabled", text="Cancelling...")
+
+    def reset_job_to_pending(self, job):
+        job["status"] = "Pending"
+        if "ui" in job:
+            job["ui"]["status"].configure(text="Cancelled", text_color="#E67E22")
+            job["ui"]["bar"].set(0)
+            job["ui"]["btn_del"].configure(state="normal")
+            job["ui"]["entry_fn"].configure(state="normal")
+            job["ui"]["btn_dir"].configure(state="normal")
+
     def update_job_ui(self, job, status_text, percent, done=False):
         if "ui" in job:
             job["ui"]["status"].configure(text=status_text)
@@ -246,7 +269,7 @@ class QueueManager:
                 text=f"✔ AE Export Ready: {safe_filename}", 
                 text_color="#27AE60"
             )
-            print(f"[ARCHIE DEBUG] JSON exportado para After Effects en: {json_path}")
+            debug(f"JSON exportado para After Effects en: {json_path}")
             
             # Abrir automáticamente el directorio donde se ha guardado el .json
             if os.path.exists(out_dir):
@@ -269,6 +292,7 @@ class QueueManager:
         if not data: return
         
         self.cancel_render_flag = False
+        self.app.lbl_overlay_title.configure(text="RENDERING DIRECT FILE...", text_color=self.app.c_magenta)
         self.app.overlay_frame.lift()
         self.app.overlay_frame.place(relx=0.5, rely=0.5, relwidth=1, relheight=1, anchor="center")
         self.app.overlay_bar.set(0)
@@ -361,6 +385,13 @@ class QueueManager:
                     text_color="#FF099A"
                 )
                 self.batch_block_label.place(relx=0.5, rely=0.5, anchor="center")
+                self.batch_cancel_btn = ctk.CTkButton(
+                    self.batch_block_frame, text="Cancel Batch", width=160, height=36,
+                    fg_color="#C0392B", hover_color="#E74C3C", font=ctk.CTkFont(size=14, weight="bold"),
+                    command=self.cancel_queue
+                )
+                self.batch_cancel_btn.place(relx=0.5, rely=0.5, anchor="n", y=70)
+            self.batch_cancel_btn.configure(state="normal", text="Cancel Batch")
             
             # Lo posicionamos ocupando las filas 0, 1 y 2 (Dejando la fila 3, donde está la cola, visible)
             self.batch_block_frame.grid(row=0, column=0, rowspan=3, columnspan=3, sticky="nsew", padx=5, pady=5)

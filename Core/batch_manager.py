@@ -6,6 +6,7 @@ from PIL import Image, ImageDraw, ImageFont
 from moviepy import VideoFileClip
 
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
+from log_utils import debug, log_error
 
 try:
     RESAMPLE_METHOD = Image.Resampling.LANCZOS
@@ -163,18 +164,37 @@ class BatchManager:
         self.app.overlay_frame.place(relx=0.5, rely=0.5, relwidth=1, relheight=1, anchor="center")
         self.app.lbl_overlay_title.configure(text="PREPARING BATCH...", text_color=self.app.c_magenta)
         self.app.lbl_overlay_status.configure(text="Calculating geometries and generating QC images...", text_color="white")
-        self.app.btn_overlay_cancel.configure(state="disabled")
+        # v0.38: se puede cancelar mientras se calculan los frames de Quality Check
+        self.cancel_batch_flag = False
+        self.app.btn_overlay_cancel.configure(text="Cancel", state="normal", fg_color="#C0392B", hover_color="#E74C3C", command=self.cancel_batch_process)
         
         self.app.overlay_bar.configure(mode="indeterminate")
         self.app.overlay_bar.start()
         
         threading.Thread(target=self._process_batch_worker, args=(selected_stadiums,), daemon=True).start()
 
+    def cancel_batch_process(self):
+        self.cancel_batch_flag = True
+        self.app.lbl_overlay_status.configure(text="Cancelling batch... Please wait.", text_color="#E67E22")
+        self.app.btn_overlay_cancel.configure(state="disabled")
+
+    def _on_batch_cancelled(self):
+        self.app.overlay_bar.stop()
+        self.app.overlay_bar.configure(mode="determinate")
+        self.app.overlay_frame.place_forget()
+        self.app.btn_overlay_cancel.configure(text="Cancel Render", state="normal", command=self.app.queue_manager.cancel_direct_render)
+        debug("Batch cancelado por el usuario: no se añade nada a la cola.")
+
     def _process_batch_worker(self, stadiums):
         out_dir = self.app.output_path_var.get()
         base_filename = self.app.output_filename_var.get().strip()
+        cancelado = lambda: getattr(self, "cancel_batch_flag", False)
+        preparados = []  # (data, estadio): se añaden a la cola solo si el batch termina sin cancelar
 
-        for stadium_name in stadiums:
+        for n, stadium_name in enumerate(stadiums, 1):
+            if cancelado(): break
+            self.app.after(0, lambda n=n, s=stadium_name: self.app.lbl_overlay_status.configure(
+                text=f"QC images {n}/{len(stadiums)}: {s}", text_color="white"))
             stadium_info = self.app.stadium_data[stadium_name]
             best_config = self.headless_auto_solver(stadium_info)
             
@@ -214,12 +234,18 @@ class BatchManager:
                 }
             }
 
-            self.generate_reference_pngs(data, stadium_name, base_filename, out_dir)
-            self.app.after(0, lambda d=data, n=stadium_name: self.app.queue_manager.add_to_queue("SYSTEM", batch_data=d, batch_preset=n))
+            self.generate_reference_pngs(data, stadium_name, base_filename, out_dir, cancel_check=cancelado)
+            preparados.append((data, stadium_name))
 
+        if cancelado():
+            self.app.after(0, self._on_batch_cancelled)
+            return
+        for d, n in preparados:
+            self.app.after(0, lambda d=d, n=n: self.app.queue_manager.add_to_queue("SYSTEM", batch_data=d, batch_preset=n))
         self.app.after(0, lambda: self.show_qc_warning(out_dir))
 
     def show_qc_warning(self, out_dir):
+        self.app.btn_overlay_cancel.configure(text="Cancel Render", state="normal", command=self.app.queue_manager.cancel_direct_render)
         self.app.overlay_bar.stop()
         self.app.overlay_bar.configure(mode="determinate")
         self.app.overlay_frame.place_forget()
@@ -341,7 +367,7 @@ class BatchManager:
                 
         return best_config if best_config else ui_config
 
-    def generate_reference_pngs(self, datos, stadium_name, base_filename, out_dir):
+    def generate_reference_pngs(self, datos, stadium_name, base_filename, out_dir, cancel_check=None):
         w_total = datos["dimensiones_globales"]["width"]
         h_total = datos["dimensiones_globales"]["height"]
         
@@ -373,6 +399,7 @@ class BatchManager:
         gl_offset_pct = datos.get("config", {}).get("gl_offset", 0) / 100.0
         
         for idx, t in enumerate(tiempos):
+            if cancel_check and cancel_check(): return
             pil_anims_frames = []
             for path in valid_anims:
                 try:
@@ -435,4 +462,4 @@ class BatchManager:
             try:
                 res.save(ref_path, "PNG")
             except Exception as e:
-                print(f"[ARCHIE DEBUG] Error saving QC image {ref_path}: {e}")
+                log_error(f"Error saving QC image {ref_path}: {e}")

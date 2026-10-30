@@ -1,4 +1,5 @@
 import customtkinter as ctk
+import tkinter as tk
 from tkinterdnd2 import TkinterDnD, DND_FILES
 import os
 import json
@@ -14,7 +15,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
+from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura, segmentos_arquitectura
 from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios
@@ -22,6 +23,7 @@ from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
 from auto_import import buscar_elements_hermanos
+from video_player import PreviewPlayer, PhotoTarget, Escena, PLAYER_FPS
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +38,10 @@ else:
 CONFIG_DIR = os.path.join(MASTER_DIR, "Config")
 ASSETS_DIR = os.path.join(MASTER_DIR, "Assets")
 
+
+# v0.38: auto-actualización de la Architecture Preview al tocar Manual Edit
+AUTO_UPDATE_DELAY_MS = 350    # sliders / checkboxes
+AUTO_UPDATE_TYPING_MS = 800   # campos de texto (Width, Height...)
 
 def find_asset(filename):
     """Busca un asset en Assets/ junto al .bat y, si no está, en el Assets/ de la versión descargada."""
@@ -152,6 +158,15 @@ class MegaStripApp(CTkDnD):
         self.render_gen = 0                 # id del render en curso (descarta resultados obsoletos)
         self.render_busy = False
         self.prefetch_timer = None
+        self.auto_update_timer = None       # v0.38: recálculo automático tras tocar Manual Edit
+        self.solver_busy = False            # el auto-solver (arquitectura por defecto) está calculando
+        self.solver_gen = 0                 # id del auto-solver en curso (Cancel lo invalida)
+        self.loading_overlay_on = False     # v0.38: previews oscurecidas con "Loading new architecture"
+        self._shown_strip = None            # última imagen pintada en Architecture Preview (sin oscurecer)
+        self._shown_strip_player = False    # ...y si la pintó el reproductor
+        self._shown_sys = None              # última imagen pintada en System File Preview
+        self.player = PreviewPlayer(self)    # reproductor de vídeo de la Architecture Preview
+        self._player_target = PhotoTarget()
 
         self.pan_x_strip = 0
         self.pan_y_strip = 0
@@ -439,6 +454,34 @@ class MegaStripApp(CTkDnD):
             text_color="gray"
         )
         self.lbl_arch_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+
+        # --- REPRODUCTOR DE VÍDEO (v0.35) ---
+        self.player_bar = ctk.CTkFrame(self.preview_container, fg_color="transparent")
+        self.player_bar.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
+        self.player_bar.grid_columnconfigure(1, weight=1)
+        self._player_icons = self._crear_iconos_reproductor()
+        self.btn_player_play = ctk.CTkButton(
+            self.player_bar, text="", image=self._player_icons["play"], width=34, height=24, fg_color=self.c_magenta, hover_color="#d1077e",
+            font=ctk.CTkFont(size=13, weight="bold"), command=self.on_player_toggle, state="disabled")
+        self.btn_player_play.grid(row=0, column=0, padx=(0, 8))
+        self.player_slider = ctk.CTkSlider(
+            self.player_bar, from_=0, to=1, number_of_steps=1000, height=14,
+            button_color=self.c_magenta, button_hover_color="#d1077e", progress_color=self.c_magenta,
+            command=self.on_player_scrub, state="disabled")
+        self.player_slider.set(0)
+        self.player_slider.grid(row=0, column=1, sticky="ew")
+        self.player_slider.bind("<ButtonRelease-1>", self.on_player_scrub_end, add="+")
+        self.lbl_player_time = ctk.CTkLabel(self.player_bar, text="--:--.- / --:--.-", text_color="gray",
+                                            font=ctk.CTkFont(family="Consolas", size=11), width=110)
+        self.lbl_player_time.grid(row=0, column=2, padx=(8, 4))
+        self.player_loop_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(self.player_bar, text="Loop", width=60, checkbox_width=16, checkbox_height=16,
+                        font=ctk.CTkFont(size=11), text_color="gray", fg_color=self.c_magenta,
+                        variable=self.player_loop_var, command=self.on_player_loop).grid(row=0, column=3, padx=(4, 4))
+        self.lbl_player_info = ctk.CTkLabel(self.player_bar, text="", text_color="gray", font=ctk.CTkFont(size=10), width=150, anchor="e")
+        self.lbl_player_info.grid(row=0, column=4, padx=(4, 0))
+        self._player_scrubbing = False
+        self._player_scrub_resume = False
         
         self.lbl_live_preview.bind("<ButtonPress-1>", lambda e: self.on_drag_start(e, "strip"))
         self.lbl_live_preview.bind("<B1-Motion>", lambda e: self.on_drag_motion(e, "strip"))
@@ -568,17 +611,20 @@ class MegaStripApp(CTkDnD):
         self.btn_overlay_cancel = ctk.CTkButton(self.overlay_inner, text="Cancel Render", fg_color="#C0392B", hover_color="#E74C3C", font=ctk.CTkFont(weight="bold"), command=self.queue_manager.cancel_direct_render)
         self.btn_overlay_cancel.pack(pady=(20, 20))
 
-        # Overlay que bloquea toda la ventana mientras se calcula la arquitectura / preview
-        self.preview_overlay = ctk.CTkFrame(self, fg_color="#1a1a1a", corner_radius=0)
-        preview_overlay_inner = ctk.CTkFrame(self.preview_overlay, corner_radius=15, border_width=2, border_color=self.c_magenta, fg_color="#2b2b2b")
-        preview_overlay_inner.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.4, relheight=0.25)
-        self.lbl_preview_overlay_title = ctk.CTkLabel(preview_overlay_inner, text="BUILDING ARCHITECTURE...", font=ctk.CTkFont(size=20, weight="bold"), text_color=self.c_magenta)
-        self.lbl_preview_overlay_title.pack(pady=(30, 10))
-        self.lbl_preview_overlay_status = ctk.CTkLabel(preview_overlay_inner, text="Preparing...", text_color="gray")
-        self.lbl_preview_overlay_status.pack(pady=(0, 10))
-        self.preview_overlay_bar = ctk.CTkProgressBar(preview_overlay_inner, progress_color=self.c_magenta)
-        self.preview_overlay_bar.pack(fill="x", padx=40, pady=10)
+        # v0.38: aviso de carga solo sobre las dos previews (la imagen anterior se oscurece debajo);
+        # el resto de la ventana sigue editable.
+        self.sys_loading_box = ctk.CTkFrame(self.sys_image_container, corner_radius=10, border_width=1, border_color=self.c_magenta, fg_color="#111111")
+        ctk.CTkLabel(self.sys_loading_box, text="Loading new architecture", font=ctk.CTkFont(size=16, weight="bold"), text_color=self.c_white).pack(padx=24, pady=12)
+
+        self.preview_loading_box = ctk.CTkFrame(self.preview_image_container, corner_radius=10, border_width=1, border_color=self.c_magenta, fg_color="#111111")
+        ctk.CTkLabel(self.preview_loading_box, text="Loading new architecture", font=ctk.CTkFont(size=16, weight="bold"), text_color=self.c_white).pack(padx=24, pady=(12, 2))
+        self.lbl_preview_overlay_status = ctk.CTkLabel(self.preview_loading_box, text="Preparing...", text_color="gray", font=ctk.CTkFont(size=11))
+        self.lbl_preview_overlay_status.pack(padx=24)
+        self.preview_overlay_bar = ctk.CTkProgressBar(self.preview_loading_box, progress_color=self.c_magenta, width=220, height=6)
+        self.preview_overlay_bar.pack(padx=24, pady=(4, 6))
         self.preview_overlay_bar.set(0)
+        ctk.CTkButton(self.preview_loading_box, text="Cancel", width=80, height=22, fg_color="#C0392B", hover_color="#E74C3C",
+                      font=ctk.CTkFont(size=11, weight="bold"), command=self.cancel_preview_render).pack(pady=(0, 10))
 
     def get_ctk_scale(self):
         try:
@@ -1037,7 +1083,7 @@ class MegaStripApp(CTkDnD):
 
     def on_create_architecture(self):
         """1er click (o estadio nuevo): arquitectura por defecto. Después: aplica los ajustes actuales a la preview."""
-        if self.render_busy: return
+        if self.solver_busy: return  # un render de preview en curso sí se puede sustituir
         stadium = self.stadium_selector_global.get()
         if not self.architecture_created or stadium != self.arch_stadium:
             self.auto_create_architecture()
@@ -1045,25 +1091,38 @@ class MegaStripApp(CTkDnD):
             self.start_preview_render()
 
     def auto_create_architecture(self):
+        self._cancel_auto_update()
+        self.render_gen += 1  # descarta cualquier render de preview anterior
+        self.solver_gen += 1
+        self.solver_busy = True
         self.btn_create_arch.configure(state="disabled", text="✨ Calculating Internally...")
         self.reset_zooms_and_pan()
         self.show_preview_overlay("Calculating default architecture...")
-        self._start_thread(self._solver_thread)
+        self._start_thread(self._solver_thread, self.solver_gen)
 
-    def _solver_thread(self):
+    def _solver_thread(self, gen):
         try:
-            self._native_auto_solver()
+            self._native_auto_solver(gen)
         except Exception as e:
             traceback.print_exc()
             log_error(f"Auto-Solver falló: {e}")
-            self.after(0, self._on_preview_error, self.render_gen, e)
+            self.after(0, self._on_solver_error, gen, e)
 
-    def _on_solver_done(self):
+    def _on_solver_error(self, gen, e):
+        if gen != self.solver_gen: return  # cancelado
+        self.solver_busy = False
+        self._on_preview_error(self.render_gen, e)
+
+    def _on_solver_done(self, gen, slider_args, msg):
+        if gen != self.solver_gen: return  # el usuario pulsó Cancel: no tocar nada
+        self.solver_busy = False
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
+        self._actualizar_sliders_desde_ia(*slider_args)
+        self.append_chat("System AI", msg)
         self.start_preview_render()
 
-    def _native_auto_solver(self):
+    def _native_auto_solver(self, gen=None):
         stadium = self.stadium_selector_global.get()
         logo_path = self.archivos_cargados.get("static_logo")
         is_wide = False
@@ -1147,7 +1206,7 @@ class MegaStripApp(CTkDnD):
 
         self.current_hide_edges = best_config["hide_extreme_edges"]
 
-        self.after(0, self._actualizar_sliders_desde_ia, 
+        slider_args = (
                    best_config["qty_goal"], best_config["qty_corner"], 
                    best_config["qty_cb"], best_config["qty_tl"], 
                    best_config["stretch_limit"], best_config["squash_logos"], 
@@ -1160,9 +1219,8 @@ class MegaStripApp(CTkDnD):
         
         self.preview_enabled = True 
         
-        self.after(0, self._on_solver_done)
-        self.after(0, lambda: self.btn_create_arch.configure(state="normal", text="✨ Create Architecture"))
-        self.after(0, self.append_chat, "System AI", msg)
+        # Sliders, chat y preview se aplican juntos en el hilo principal (y nada si se canceló)
+        self.after(0, self._on_solver_done, gen, slider_args, msg)
 
     def aplicar_parametros_ia(self, qty_goal: int, qty_corner: int, qty_cb: int, qty_tl: int, stretch_limit: int, squash_logos: bool, stretch_fit_per: bool, gl_offset: int, corner_logo: bool, logo_under: bool = False, qty_gl_under: int = 1, qty_tl_under: int = 1, show_cb: bool = True, amplify: bool = False, invert_order: bool = False, max_anim_gl: int = 0, max_anim_tl: int = 0, margin: int = 20) -> dict:
         self.reset_zooms_and_pan()
@@ -1192,7 +1250,7 @@ class MegaStripApp(CTkDnD):
                     "mensaje": "You have requested to add more elements than can fit. To fulfill your instructions, we need to modify the rest of the elements to avoid overlapping. Are you sure you want to proceed by indicating what to sacrifice?"
                 }
             
-            self.after(0, self._actualizar_sliders_desde_ia, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under, qty_gl_under, qty_tl_under, show_cb, amplify, invert_order, max_anim_gl, max_anim_tl, margin_simulado)
+            self.after(0, self._actualizar_sliders_desde_ia, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under, qty_gl_under, qty_tl_under, show_cb, amplify, invert_order, max_anim_gl, max_anim_tl, margin_simulado, True)
             
             return {
                 "status": "SUCCESS", 
@@ -1203,7 +1261,7 @@ class MegaStripApp(CTkDnD):
             log_error(f"Error in aplicar_parametros_ia: {e}")
             return {"status": "ERROR", "mensaje": f"Math engine failed: {e}"}
     
-    def _actualizar_sliders_desde_ia(self, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under=False, qty_gl_under=1, qty_tl_under=1, show_cb=True, amplify=False, invert_order=False, max_anim_gl=0, max_anim_tl=0, margin=20):
+    def _actualizar_sliders_desde_ia(self, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under=False, qty_gl_under=1, qty_tl_under=1, show_cb=True, amplify=False, invert_order=False, max_anim_gl=0, max_anim_tl=0, margin=20, render_now=False):
         if hasattr(self, "invert_order_var"):
             self.invert_order_var.set(invert_order)
             
@@ -1244,6 +1302,14 @@ class MegaStripApp(CTkDnD):
         self.update_qty_anim_labels(max_anim_tl, "anim_tl")
         
         self.trigger_update()
+
+        if render_now:
+            # v0.38: los cambios pedidos al chatbot se ven al momento, sin pulsar Create Architecture
+            if self.solver_busy: return  # el auto-solver los recogerá al terminar (auto-update)
+            self.architecture_created = True
+            self.arch_stadium = self.stadium_selector_global.get()
+            self.save_history_state()
+            self.start_preview_render()
 
     def send_ai_message(self):
         user_text = self.chat_input.get().strip()
@@ -1852,16 +1918,45 @@ class MegaStripApp(CTkDnD):
             log_error(f"Error CRÍTICO en calcular_layout: {e}")
             return None
 
+    def _auto_update_enabled(self):
+        """v0.38: con la arquitectura ya creada para este estadio, cualquier cambio se aplica solo."""
+        return self.architecture_created and self.stadium_selector_global.get() == self.arch_stadium
+
     def trigger_update(self, event=None, *args):
-        """Ya no recalcula: marca la preview como pendiente hasta pulsar "Create Architecture"."""
+        """Marca la preview como pendiente y, si ya hay arquitectura, la recalcula sola tras una pausa corta."""
         if not hasattr(self, "lbl_preview_status"): return
         self.preview_dirty = True
-        if self.render_busy: return
-        if self.pil_preview_images:
-            self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Pending changes · Press Create Architecture)", text_color="#E67E22")
-        else:
-            self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Pending Update... Press Create Architecture)", text_color="gray")
+        self.player.interrupt()  # pausa mientras se tocan parámetros; reanuda al soltar
+        if self._auto_update_enabled():
+            # Al teclear en un campo se espera más, para no recalcular con números a medias
+            self._schedule_auto_update(AUTO_UPDATE_TYPING_MS if isinstance(event, tk.Event) else AUTO_UPDATE_DELAY_MS)
+            if not self.render_busy:
+                self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Updating...)", text_color="#E67E22")
+        elif not self.render_busy:
+            if self.pil_preview_images:
+                self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (New stadium · Press Create Architecture)", text_color="#E67E22")
+            else:
+                self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Press Create Architecture)", text_color="gray")
         self.schedule_prefetch()
+
+    def _schedule_auto_update(self, delay_ms=None):
+        if self.auto_update_timer: self.after_cancel(self.auto_update_timer)
+        self.auto_update_timer = self.after(delay_ms or AUTO_UPDATE_DELAY_MS, self._run_auto_update)
+
+    def _cancel_auto_update(self):
+        if self.auto_update_timer:
+            self.after_cancel(self.auto_update_timer)
+            self.auto_update_timer = None
+
+    def _run_auto_update(self):
+        self.auto_update_timer = None
+        if not self._auto_update_enabled(): return
+        if self.solver_busy:
+            # El auto-solver aún está calculando: reintentar cuando acabe
+            self._schedule_auto_update()
+            return
+        # Si hay un render de preview en marcha, start_preview_render lo sustituye (render_gen)
+        self.start_preview_render()
 
     def reset_preview_state(self):
         self.trigger_update()
@@ -1900,17 +1995,61 @@ class MegaStripApp(CTkDnD):
 
     def show_preview_overlay(self, status_text):
         self.render_busy = True
+        self.player.hold()
         self.lbl_preview_overlay_status.configure(text=status_text)
         self.preview_overlay_bar.set(0)
-        self.preview_overlay.place(x=0, y=0, relwidth=1, relheight=1)
-        self.preview_overlay.lift()
-        self.preview_overlay.focus_set()
+        if not self.loading_overlay_on:
+            self.loading_overlay_on = True
+            self._repintar_previews()  # oscurece lo que se ve ahora
+        self.sys_loading_box.place(relx=0.5, rely=0.5, anchor="center")
+        self.sys_loading_box.lift()
+        self.preview_loading_box.place(relx=0.5, rely=0.5, anchor="center")
+        self.preview_loading_box.lift()
 
     def hide_preview_overlay(self):
         self.render_busy = False
-        self.preview_overlay.place_forget()
+        self.sys_loading_box.place_forget()
+        self.preview_loading_box.place_forget()
+        if self.loading_overlay_on:
+            self.loading_overlay_on = False
+            self._repintar_previews()
         if hasattr(self, 'btn_create_arch'):
             self.btn_create_arch.configure(state="normal", text="✨ Create Architecture")
+
+    def cancel_preview_render(self):
+        """v0.38: Cancel del aviso de carga. Descarta el cálculo en curso y deja la preview anterior."""
+        self._cancel_auto_update()
+        self.render_gen += 1
+        if self.solver_busy:
+            self.solver_gen += 1
+            self.solver_busy = False
+        self.hide_preview_overlay()
+        self.player.release()
+        self.preview_dirty = True
+        self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Update cancelled)", text_color="#E67E22")
+
+    @staticmethod
+    def _oscurecer(img):
+        """Negro semitransparente encima de la imagen (aviso de carga)."""
+        img = img.convert("RGBA")
+        return Image.alpha_composite(img, Image.new("RGBA", img.size, (0, 0, 0, 170)))
+
+    def _repintar_previews(self):
+        """Vuelve a pintar la última imagen de cada preview (oscurecida o no según loading_overlay_on)."""
+        if self._shown_strip is not None:
+            if self._shown_strip_player:
+                self.player_show(self._shown_strip)
+            else:
+                self._pintar_label(self.lbl_live_preview, self._shown_strip)
+        if self._shown_sys is not None:
+            self._pintar_label(self.lbl_sys_image, self._shown_sys)
+
+    def _pintar_label(self, label, img):
+        scale = self.get_ctk_scale()
+        if scale <= 0: scale = 1.0
+        shown = self._oscurecer(img) if self.loading_overlay_on else img
+        size = (max(1, int(img.width / scale)), max(1, int(img.height / scale)))
+        label.configure(text="", image=ctk.CTkImage(light_image=shown, dark_image=shown, size=size))
 
     def _set_preview_progress(self, gen, value, text):
         if gen != self.render_gen or not self.render_busy: return
@@ -2008,9 +2147,11 @@ class MegaStripApp(CTkDnD):
 
     def start_preview_render(self):
         debug("Iniciando render de preview...")
+        self._cancel_auto_update()
         datos = self.calcular_layout()
         if not datos:
             self.hide_preview_overlay()
+            self.player.release()
             self.lbl_preview_status.configure(text="Missing / Invalid Parameters", text_color="#E74C3C")
             return
         try:
@@ -2035,6 +2176,7 @@ class MegaStripApp(CTkDnD):
         except Exception as e:
             traceback.print_exc()
             self.hide_preview_overlay()
+            self.player.release()
             self.lbl_preview_status.configure(text=f"Geometry Error: {type(e).__name__} - {str(e)[:40]}", text_color="#E74C3C")
             return
 
@@ -2070,6 +2212,16 @@ class MegaStripApp(CTkDnD):
             if gen != self.render_gen: return
             self.after(0, self._on_first_preview_frame, gen, first_idx, res, sys_canvas)
 
+            # Escena del reproductor: capa estática + instancias (los vídeos se decodifican aparte, una vez)
+            try:
+                escena = self._construir_escena_reproductor(p, memo)
+            except Exception as e:
+                traceback.print_exc()
+                log_error(f"Reproductor: no se pudo preparar la escena: {e}")
+                escena = None
+            if gen != self.render_gen: return
+            self.after(0, self._on_player_scene, gen, escena)
+
             # Resto de frames en segundo plano, sin bloquear la ventana
             for idx in order[1:]:
                 if gen != self.render_gen: return
@@ -2089,6 +2241,7 @@ class MegaStripApp(CTkDnD):
         self.pil_sys_images[idx] = sys_canvas
         self.preview_current_idx = idx
         self.preview_frames_ready = 1
+        self._shown_strip = self._shown_sys = None  # no repintar la imagen vieja: la nueva llega enseguida
         self.hide_preview_overlay()
         self._update_preview_status_label()
         self.after(100, self.auto_fit_zooms)
@@ -2113,12 +2266,19 @@ class MegaStripApp(CTkDnD):
     def _on_preview_error(self, gen, e):
         if gen != self.render_gen: return
         self.hide_preview_overlay()
+        self.player.release()
         err_txt = f"Geometry Error: {type(e).__name__} - {str(e)[:40]}"
         debug(f"{err_txt}")
         self.lbl_preview_status.configure(text=err_txt, text_color="#E74C3C")
 
-    def _componer_frame_preview(self, p, t, memo):
-        """Compone un frame de la preview (strip + system). Corre en un hilo: no tocar widgets aquí."""
+    def _componer_frame_preview(self, p, t, memo, capa_estatica=False):
+        """Compone un frame de la preview (strip + system). Corre en un hilo: no tocar widgets aquí.
+
+        capa_estatica=True: solo lo que no se mueve (base del reproductor); devuelve (res, None).
+        Si el fondo es vídeo, todo el strip pasa al reproductor y aquí solo quedan los textos.
+        """
+        bg_video = is_video(p["files"]["background"])
+        solo_textos = capa_estatica and bg_video
         datos, files = p["datos"], p["files"]
         w_total, h_total = p["w_total"], p["h_total"]
         sys_w, sys_h, sys_mask = p["sys_w"], p["sys_h"], p["sys_mask"]
@@ -2158,7 +2318,7 @@ class MegaStripApp(CTkDnD):
 
         # Fondo
         bg_path = files["background"]
-        if bg_path:
+        if bg_path and not solo_textos:
             bg_img = fetch(bg_path, t)
             if bg_img is not None:
                 new_bg_w = max(1, int(h_total * (bg_img.width / max(1, bg_img.height))))
@@ -2186,7 +2346,8 @@ class MegaStripApp(CTkDnD):
             if logo_anim_frame is not None: logo_anim_img = logo_anim_frame
 
         cb_path = files["center_board"]
-        for zona in datos["zonas"].values():
+        anim_paths = files["anims"] or [None]
+        for zona in ([] if solo_textos else datos["zonas"].values()):
             for e in zona["elementos"]:
                 if e["tipo"] == "center_board" and e["width"] > 0:
                     if cb_path and p["show_cb"]:
@@ -2201,15 +2362,17 @@ class MegaStripApp(CTkDnD):
                         master.paste(Image.new("RGBA", (e["width"], h_total), (0,0,0,255)), (e["x_absoluta"], 0))
                 elif e["tipo"] == "anim_zone":
                     a_idx = e.get("anim_idx", 0) % len(pil_anims_frames)
+                    if capa_estatica and is_video(anim_paths[a_idx % len(anim_paths)]): continue
                     k = (a_idx, e["width"])
                     if k not in frame_memo:
                         frame_memo[k] = pil_anims_frames[a_idx].resize((e["width"], h_total), PREVIEW_RESAMPLE)
                     anim_img = frame_memo[k]
                     master.paste(anim_img, (e["x_absoluta"], 0), anim_img)
 
-        for zona in datos["zonas"].values():
+        for zona in ([] if solo_textos else datos["zonas"].values()):
             for e in zona["elementos"]:
                 if e["tipo"] == "static_logo":
+                    if capa_estatica and e.get("logo_under_type") == "animated" and is_video(logo_path): continue
                     if e.get("logo_under_type") == "animated" and logo_anim_img is not pil_logo_raw:
                         k = ("logo_anim", e["width"])
                         if k not in frame_memo:
@@ -2220,6 +2383,8 @@ class MegaStripApp(CTkDnD):
                     master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
 
         res = generar_imagen_arquitectura(master, datos, h_total, w_total, p["gl_offset_pct"], bg_color=(0, 0, 0, 0), resample=PREVIEW_RESAMPLE, max_png_width=None)
+        if capa_estatica:
+            return res, None
 
         master_slice = self.safe_crop(master, 0, src_y_start, w_total, src_y_end)
         sys_canvas = Image.new("RGBA", (sys_w, sys_h), (0,0,0,255))
@@ -2244,6 +2409,186 @@ class MegaStripApp(CTkDnD):
             width=stroke_w
         )
         return res, sys_canvas
+
+    # ==========================================
+    # REPRODUCTOR (v0.35): cada ELEMENT se decodifica una vez y se pinta en todas sus instancias
+    # ==========================================
+    def _construir_escena_reproductor(self, p, memo):
+        """Corre en el hilo de render. Replica el orden de pintado de _componer_frame_preview."""
+        datos, files = p["datos"], p["files"]
+        w_total, h_total = p["w_total"], p["h_total"]
+        static_res, _ = self._componer_frame_preview(p, 0.0, memo, capa_estatica=True)
+        _, segmentos = segmentos_arquitectura(datos, h_total, w_total)
+
+        videos, instancias = {}, []
+
+        def video(path):
+            try:
+                info = FRAME_CACHE.info(path)
+            except Exception as e:
+                log_error(f"Reproductor: no se pudo leer '{path}': {e}")
+                return None
+            videos[path] = info
+            return path
+
+        def still(path, t=0.0):
+            try:
+                return FRAME_CACHE.frame(path, t, h_total) if is_video(path) else FRAME_CACHE.image(path)
+            except Exception as e:
+                log_error(f"Reproductor: no se pudo leer '{path}': {e}")
+                return None
+
+        bg_path = files["background"]
+        bg_video = is_video(bg_path)
+        if bg_video and video(bg_path):
+            bw, bh = videos[bg_path]["size"]
+            tile_w = max(1, int(round(bw * h_total / float(max(1, bh)))))
+            for x in range(0, w_total, tile_w):
+                instancias.append({"src": bg_path, "x": x, "w": tile_w, "mask": True})
+
+        anims = files["anims"]
+        cb_path = files["center_board"]
+        for zona in datos["zonas"].values():
+            for e in zona["elementos"]:
+                if e["width"] <= 0: continue
+                if e["tipo"] == "center_board" and bg_video:
+                    if cb_path and p["show_cb"]:
+                        k = ("cb", cb_path, e["width"], h_total)
+                        if k not in memo:
+                            raw = still(cb_path) or Image.new("RGBA", (100, h_total), (255, 0, 0, 255))
+                            memo[k] = aplicar_letterbox_pil(raw, e["width"], h_total, PREVIEW_RESAMPLE)
+                        instancias.append({"src": memo[k], "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                    else:
+                        instancias.append({"src": Image.new("RGBA", (1, 1), (0, 0, 0, 255)), "x": e["x_absoluta"], "w": e["width"], "mask": False})
+                elif e["tipo"] == "anim_zone" and anims:
+                    path = anims[e.get("anim_idx", 0) % len(anims)]
+                    if is_video(path):
+                        if path in videos or video(path):
+                            instancias.append({"src": path, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                    elif bg_video:
+                        img = still(path)
+                        if img is not None:
+                            instancias.append({"src": img, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+
+        logo_path = files["static_logo"]
+        logo_still = None
+        for zona in datos["zonas"].values():
+            for e in zona["elementos"]:
+                if e["tipo"] != "static_logo" or e["width"] <= 0 or not logo_path: continue
+                if e.get("logo_under_type") == "animated" and is_video(logo_path):
+                    if logo_path in videos or video(logo_path):
+                        instancias.append({"src": logo_path, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                elif bg_video:
+                    if logo_still is None: logo_still = still(logo_path)
+                    if logo_still is not None:
+                        instancias.append({"src": logo_still, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+
+        return Escena(static_res, segmentos, h_total, instancias, videos)
+
+    def _on_player_scene(self, gen, escena):
+        if gen != self.render_gen: return
+        if escena is None:
+            self.player.clear()
+        else:
+            self.player.set_escena(escena)
+        self.player.release(immediate=True)
+        self.actualizar_imagen_preview()
+
+    # --- Callbacks que usa PreviewPlayer ---
+    def player_view(self):
+        if not self.pil_preview_images or self.player.escena is None: return None
+        cw = self.preview_image_container.winfo_width()
+        ch = self.preview_image_container.winfo_height()
+        if cw <= 10 or ch <= 10: return None
+        rw, rh = self.player.escena.res_size
+        zoom = self.zoom_factor_strip
+        sw, sh = max(1, int(rw * zoom)), max(1, int(rh * zoom))
+        # mismo recorte del pan que get_panned_image
+        max_px, max_py = max(0, (sw - cw) / 2), max(0, (sh - ch) / 2)
+        self.pan_x_strip = max(-max_px, min(max_px, self.pan_x_strip)) if sw > cw else 0
+        self.pan_y_strip = max(-max_py, min(max_py, self.pan_y_strip)) if sh > ch else 0
+        return {"cw": cw, "ch": ch, "zoom": zoom, "pan_x": self.pan_x_strip, "pan_y": self.pan_y_strip}
+
+    def player_static_view(self, static_res):
+        v = self.player_view()
+        canvas, _, _ = self.get_panned_image(static_res, v["zoom"], v["pan_x"], v["pan_y"], v["cw"], v["ch"])
+        return canvas
+
+    def player_show(self, img):
+        for attr in ("lbl_arch_placeholder", "lbl_sys_placeholder"):
+            w = getattr(self, attr, None)
+            if w is not None and w.winfo_exists(): w.destroy()
+        self._shown_strip, self._shown_strip_player = img, True
+        self._player_target.show(self.lbl_live_preview._label, self._oscurecer(img) if self.loading_overlay_on else img)
+
+    @staticmethod
+    def _crear_iconos_reproductor():
+        """Iconos dibujados (los glifos ▶/⏸ no existen en todas las fuentes de Windows)."""
+        icons = {}
+        for name in ("play", "pause"):
+            img = Image.new("RGBA", (48, 48), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            if name == "play":
+                d.polygon([(14, 8), (14, 40), (40, 24)], fill=(255, 255, 255, 255))
+            else:
+                d.rectangle([12, 9, 20, 39], fill=(255, 255, 255, 255))
+                d.rectangle([28, 9, 36, 39], fill=(255, 255, 255, 255))
+            icons[name] = ctk.CTkImage(light_image=img, dark_image=img, size=(12, 12))
+        return icons
+
+    @staticmethod
+    def _fmt_tiempo(t):
+        m, s = divmod(max(0.0, t), 60)
+        return f"{int(m):02d}:{s:04.1f}"
+
+    def player_state_changed(self):
+        pl = self.player
+        ready = pl.ready
+        self.btn_player_play.configure(state="normal" if ready else "disabled", image=self._player_icons["pause" if pl.playing else "play"])
+        self.player_slider.configure(state="normal" if ready else "disabled")
+        if not ready:
+            self.player_slider.set(0)
+            self.lbl_player_time.configure(text="--:--.- / --:--.-")
+            self.lbl_player_info.configure(text="No video ELEMENTS" if pl.escena is not None else "")
+            return
+        dur = pl.duration or 1.0
+        if not self._player_scrubbing:
+            self.player_slider.set(min(1.0, pl.t / dur))
+        self.lbl_player_time.configure(text=f"{self._fmt_tiempo(pl.t)} / {self._fmt_tiempo(dur)}")
+        if not pl.engaged:
+            info = f"{len(pl.escena.videos)} videos · {len(pl.escena.instancias)} instances"
+        elif pl.buffering:
+            info = f"Buffering {int(pl.buffer_progress() * 100)}%"
+        elif pl.playing:
+            info = f"Proxy {pl.proxy_h}p · {PLAYER_FPS} fps"
+        else:
+            info = "Paused · full quality" if pl.hq_shown else "Paused"
+        self.lbl_player_info.configure(text=info)
+
+    # --- Controles ---
+    def on_player_toggle(self):
+        self.player.toggle()
+
+    def on_player_loop(self):
+        self.player.loop = self.player_loop_var.get()
+
+    def on_player_scrub(self, value):
+        if not self.player.ready: return
+        if not self._player_scrubbing:
+            self._player_scrubbing = True
+            self._player_scrub_resume = self.player.playing
+            self.player.pause()
+        self.player.seek(float(value) * self.player.duration)
+
+    def on_player_scrub_end(self, event=None):
+        if not self._player_scrubbing: return
+        resume = self._player_scrub_resume
+        self._player_scrubbing = self._player_scrub_resume = False
+        if not self.player.ready: return
+        if resume:
+            self.player.play()
+        else:
+            self.player.seek(self.player.t, hq=True)
 
     def auto_fit_zooms(self):
         self.update_idletasks()
@@ -2308,23 +2653,18 @@ class MegaStripApp(CTkDnD):
         if hasattr(self, 'lbl_sys_placeholder') and self.lbl_sys_placeholder.winfo_exists(): self.lbl_sys_placeholder.destroy()
         if hasattr(self, 'lbl_arch_placeholder') and self.lbl_arch_placeholder.winfo_exists(): self.lbl_arch_placeholder.destroy()
         
-        scale = self.get_ctk_scale()
-        if scale <= 0: scale = 1.0
-        
         img_strip = self.pil_preview_images[self.preview_current_idx]
         cw_strip = self.preview_image_container.winfo_width()
         ch_strip = self.preview_image_container.winfo_height()
         
-        if cw_strip > 10 and ch_strip > 10:
+        if self.player.engaged and self.player.ready:
+            self.player.render()
+        elif cw_strip > 10 and ch_strip > 10:
             final_strip, self.pan_x_strip, self.pan_y_strip = self.get_panned_image(
                 img_strip, self.zoom_factor_strip, self.pan_x_strip, self.pan_y_strip, cw_strip, ch_strip
             )
-            cw_log = max(1, int(cw_strip / scale))
-            ch_log = max(1, int(ch_strip / scale))
-            self.lbl_live_preview.configure(
-                text="", 
-                image=ctk.CTkImage(light_image=final_strip, dark_image=final_strip, size=(cw_log, ch_log))
-            )
+            self._shown_strip, self._shown_strip_player = final_strip, False
+            self._pintar_label(self.lbl_live_preview, final_strip)
 
         img_sys = self.pil_sys_images[self.preview_current_idx]
         cw_sys = self.sys_image_container.winfo_width()
@@ -2334,12 +2674,8 @@ class MegaStripApp(CTkDnD):
             final_sys, self.pan_x_sys, self.pan_y_sys = self.get_panned_image(
                 img_sys, self.zoom_factor_sys, self.pan_x_sys, self.pan_y_sys, cw_sys, ch_sys
             )
-            cw_log_sys = max(1, int(cw_sys / scale))
-            ch_log_sys = max(1, int(ch_sys / scale))
-            self.lbl_sys_image.configure(
-                text="", 
-                image=ctk.CTkImage(light_image=final_sys, dark_image=final_sys, size=(cw_log_sys, ch_log_sys))
-            )
+            self._shown_sys = final_sys
+            self._pintar_label(self.lbl_sys_image, final_sys)
 
     def zoom_in_strip(self):
         self.manual_zoom_strip = True
@@ -2410,7 +2746,10 @@ class MegaStripApp(CTkDnD):
 
     def on_drag_release(self, event, view_type):
         if not self.is_dragging and view_type == "strip":
-            self.ciclar_preview()
+            if self.player.engaged and self.player.ready:
+                self.player.toggle()
+            else:
+                self.ciclar_preview()
         self.is_dragging = False
 
 if __name__ == "__main__":
