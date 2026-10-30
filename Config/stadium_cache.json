@@ -219,5 +219,31 @@
         "Offset X": 0,
         "Offset Y": 0,
         "FPS": 60
+    },
+    "Lillestrom - UEL - UEFA": {
+        "Competition": "UEL",
+        "Width": 23040,
+        "Height": 90,
+        "Goal Line Size": 6050,
+        "Center Board Width": 1280,
+        "Canvas Width": 1920,
+        "Canvas Height": 1080,
+        "Canvas Mask": 0,
+        "Offset X": 0,
+        "Offset Y": 0,
+        "FPS": 60
+    },
+    "Lillestrom - UEL - UEFA - Digital Overlay": {
+        "Competition": "UEL",
+        "Width": 18432,
+        "Height": 72,
+        "Goal Line Size": 4860,
+        "Center Board Width": 1024,
+        "Canvas Width": 1920,
+        "Canvas Height": 1080,
+        "Canvas Mask": 0,
+        "Offset X": 0,
+        "Offset Y": 0,
+        "FPS": 50
     }
 }
