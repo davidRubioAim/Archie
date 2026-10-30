@@ -23,7 +23,7 @@ from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
 from auto_import import buscar_elements_hermanos
-from video_player import PreviewPlayer, PhotoTarget, Escena, PLAYER_FPS
+from video_player import PreviewPlayer, PhotoTarget, Escena, Vista, PLAYER_FPS
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -165,8 +165,12 @@ class MegaStripApp(CTkDnD):
         self._shown_strip = None            # última imagen pintada en Architecture Preview (sin oscurecer)
         self._shown_strip_player = False    # ...y si la pintó el reproductor
         self._shown_sys = None              # última imagen pintada en System File Preview
+        self._shown_sys_player = False      # ...y si la pintó el reproductor
         self.player = PreviewPlayer(self)    # reproductor de vídeo de la Architecture Preview
         self._player_target = PhotoTarget()
+        # v0.39: el reproductor también pinta en System File Preview (mismo reloj, mismos proxies)
+        self._sys_player_target = PhotoTarget()
+        self.sys_vista = self.player.add_vista(Vista(self.sys_player_view, self.sys_player_static_view, self.sys_player_show))
 
         self.pan_x_strip = 0
         self.pan_y_strip = 0
@@ -2042,7 +2046,10 @@ class MegaStripApp(CTkDnD):
             else:
                 self._pintar_label(self.lbl_live_preview, self._shown_strip)
         if self._shown_sys is not None:
-            self._pintar_label(self.lbl_sys_image, self._shown_sys)
+            if self._shown_sys_player:
+                self.sys_player_show(self._shown_sys)
+            else:
+                self._pintar_label(self.lbl_sys_image, self._shown_sys)
 
     def _pintar_label(self, label, img):
         scale = self.get_ctk_scale()
@@ -2218,7 +2225,7 @@ class MegaStripApp(CTkDnD):
             except Exception as e:
                 traceback.print_exc()
                 log_error(f"Reproductor: no se pudo preparar la escena: {e}")
-                escena = None
+                escena = None  # (escena strip, escena system) o None
             if gen != self.render_gen: return
             self.after(0, self._on_player_scene, gen, escena)
 
@@ -2300,20 +2307,6 @@ class MegaStripApp(CTkDnD):
 
         frame_memo = {}
 
-        is_amplify = datos.get("config", {}).get("amplify", False)
-        if is_amplify and p["row_idx"] is not None:
-            h_slice = h_total // 2
-            if p["row_idx"] == 1:
-                src_y_start, src_y_end = h_slice, h_total
-            else:
-                src_y_start, src_y_end = 0, h_slice
-        else:
-            h_slice = h_total
-            src_y_start, src_y_end = 0, h_total
-
-        advance = sys_w - sys_mask
-        total_rows = math.ceil((w_total + sys_off_x) / advance)
-
         master = Image.new("RGBA", (w_total, h_total))
 
         # Fondo
@@ -2383,19 +2376,13 @@ class MegaStripApp(CTkDnD):
                     master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
 
         res = generar_imagen_arquitectura(master, datos, h_total, w_total, p["gl_offset_pct"], bg_color=(0, 0, 0, 0), resample=PREVIEW_RESAMPLE, max_png_width=None)
-        if capa_estatica:
-            return res, None
 
+        filas, (src_y_start, src_y_end) = self._filas_system(p)
+        h_slice = src_y_end - src_y_start
         master_slice = self.safe_crop(master, 0, src_y_start, w_total, src_y_end)
         sys_canvas = Image.new("RGBA", (sys_w, sys_h), (0,0,0,255))
 
-        for i in range(total_rows):
-            x_m_strip = i * advance - sys_off_x
-            crop_x1 = max(0, x_m_strip)
-            crop_x2 = min(w_total, x_m_strip + advance)
-            if crop_x1 >= crop_x2: continue
-            x_canvas = abs(x_m_strip) if x_m_strip < 0 else 0
-            paste_y = sys_off_y + (i * h_slice)
+        for crop_x1, crop_x2, x_canvas, paste_y in filas:
             row_img = self.safe_crop(master_slice, crop_x1, 0, crop_x2, h_slice)
             sys_canvas.paste(row_img, (int(x_canvas), int(paste_y)))
 
@@ -2410,6 +2397,31 @@ class MegaStripApp(CTkDnD):
         )
         return res, sys_canvas
 
+    @staticmethod
+    def _filas_system(p):
+        """Cómo se reparte el strip en el System File: ([(x_ini, x_fin, x_lienzo, y_lienzo)], (y0, y1) del strip)."""
+        datos, w_total, h_total = p["datos"], p["w_total"], p["h_total"]
+        sys_mask, sys_off_x, sys_off_y = p["sys_mask"], p["sys_off_x"], p["sys_off_y"]
+        is_amplify = datos.get("config", {}).get("amplify", False)
+        if is_amplify and p["row_idx"] is not None:
+            h_slice = h_total // 2
+            v_slice = (h_slice, h_total) if p["row_idx"] == 1 else (0, h_slice)
+        else:
+            h_slice = h_total
+            v_slice = (0, h_total)
+
+        advance = p["sys_w"] - sys_mask
+        total_rows = math.ceil((w_total + sys_off_x) / advance)
+        filas = []
+        for i in range(total_rows):
+            x_m_strip = i * advance - sys_off_x
+            crop_x1 = max(0, x_m_strip)
+            crop_x2 = min(w_total, x_m_strip + advance)
+            if crop_x1 >= crop_x2: continue
+            x_canvas = abs(x_m_strip) if x_m_strip < 0 else 0
+            filas.append((crop_x1, crop_x2, x_canvas, sys_off_y + (i * h_slice)))
+        return filas, v_slice
+
     # ==========================================
     # REPRODUCTOR (v0.35): cada ELEMENT se decodifica una vez y se pinta en todas sus instancias
     # ==========================================
@@ -2417,7 +2429,7 @@ class MegaStripApp(CTkDnD):
         """Corre en el hilo de render. Replica el orden de pintado de _componer_frame_preview."""
         datos, files = p["datos"], p["files"]
         w_total, h_total = p["w_total"], p["h_total"]
-        static_res, _ = self._componer_frame_preview(p, 0.0, memo, capa_estatica=True)
+        static_res, static_sys = self._componer_frame_preview(p, 0.0, memo, capa_estatica=True)
         _, segmentos = segmentos_arquitectura(datos, h_total, w_total)
 
         videos, instancias = {}, []
@@ -2483,14 +2495,19 @@ class MegaStripApp(CTkDnD):
                     if logo_still is not None:
                         instancias.append({"src": logo_still, "x": e["x_absoluta"], "w": e["width"], "mask": True})
 
-        return Escena(static_res, segmentos, h_total, instancias, videos)
+        escena = Escena(static_res, segmentos, h_total, instancias, videos)
+        # v0.39: mismas instancias, colocadas en las filas del System File
+        filas, v_slice = self._filas_system(p)
+        escena_sys = Escena(static_sys, filas, h_total, instancias, videos, v_slice=v_slice)
+        return escena, escena_sys
 
     def _on_player_scene(self, gen, escena):
         if gen != self.render_gen: return
         if escena is None:
             self.player.clear()
         else:
-            self.player.set_escena(escena)
+            escena_strip, escena_sys = escena
+            self.player.set_escena(escena_strip, {self.sys_vista: escena_sys})
         self.player.release(immediate=True)
         self.actualizar_imagen_preview()
 
@@ -2508,6 +2525,28 @@ class MegaStripApp(CTkDnD):
         self.pan_x_strip = max(-max_px, min(max_px, self.pan_x_strip)) if sw > cw else 0
         self.pan_y_strip = max(-max_py, min(max_py, self.pan_y_strip)) if sh > ch else 0
         return {"cw": cw, "ch": ch, "zoom": zoom, "pan_x": self.pan_x_strip, "pan_y": self.pan_y_strip}
+
+    def sys_player_view(self):
+        if not self.pil_sys_images or self.sys_vista.escena is None: return None
+        cw = self.sys_image_container.winfo_width()
+        ch = self.sys_image_container.winfo_height()
+        if cw <= 10 or ch <= 10: return None
+        rw, rh = self.sys_vista.escena.res_size
+        zoom = self.zoom_factor_sys
+        sw, sh = max(1, int(rw * zoom)), max(1, int(rh * zoom))
+        max_px, max_py = max(0, (sw - cw) / 2), max(0, (sh - ch) / 2)
+        self.pan_x_sys = max(-max_px, min(max_px, self.pan_x_sys)) if sw > cw else 0
+        self.pan_y_sys = max(-max_py, min(max_py, self.pan_y_sys)) if sh > ch else 0
+        return {"cw": cw, "ch": ch, "zoom": zoom, "pan_x": self.pan_x_sys, "pan_y": self.pan_y_sys}
+
+    def sys_player_static_view(self, static_sys):
+        v = self.sys_player_view()
+        canvas, _, _ = self.get_panned_image(static_sys, v["zoom"], v["pan_x"], v["pan_y"], v["cw"], v["ch"])
+        return canvas
+
+    def sys_player_show(self, img):
+        self._shown_sys, self._shown_sys_player = img, True
+        self._sys_player_target.show(self.lbl_sys_image._label, self._oscurecer(img) if self.loading_overlay_on else img)
 
     def player_static_view(self, static_res):
         v = self.player_view()
@@ -2666,6 +2705,9 @@ class MegaStripApp(CTkDnD):
             self._shown_strip, self._shown_strip_player = final_strip, False
             self._pintar_label(self.lbl_live_preview, final_strip)
 
+        if self.player.engaged and self.player.ready and self.sys_vista.escena is not None:
+            return  # el System File también lo pinta el reproductor (player.render de arriba)
+
         img_sys = self.pil_sys_images[self.preview_current_idx]
         cw_sys = self.sys_image_container.winfo_width()
         ch_sys = self.sys_image_container.winfo_height()
@@ -2674,7 +2716,7 @@ class MegaStripApp(CTkDnD):
             final_sys, self.pan_x_sys, self.pan_y_sys = self.get_panned_image(
                 img_sys, self.zoom_factor_sys, self.pan_x_sys, self.pan_y_sys, cw_sys, ch_sys
             )
-            self._shown_sys = final_sys
+            self._shown_sys, self._shown_sys_player = final_sys, False
             self._pintar_label(self.lbl_sys_image, final_sys)
 
     def zoom_in_strip(self):
@@ -2745,10 +2787,10 @@ class MegaStripApp(CTkDnD):
             self.actualizar_imagen_preview()
 
     def on_drag_release(self, event, view_type):
-        if not self.is_dragging and view_type == "strip":
+        if not self.is_dragging:
             if self.player.engaged and self.player.ready:
-                self.player.toggle()
-            else:
+                self.player.toggle()  # clic en cualquiera de las dos previews: play / pausa
+            elif view_type == "strip":
                 self.ciclar_preview()
         self.is_dragging = False
 

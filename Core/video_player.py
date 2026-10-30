@@ -10,6 +10,10 @@ Funciona como las instancias de Cinema 4D:
   resolución de pantalla y solo en la parte visible (zoom/arrastre incluidos).
 - Lo estático (textos, logos, center board, fondo si es imagen) se compone una vez como capa base.
 - En pausa se sustituye el proxy por el frame a resolución completa (FRAME_CACHE).
+
+v0.39: el mismo reloj y los mismos proxies pintan varias vistas (Architecture Preview y
+System File Preview). Cada vista tiene su escena (capa base + dónde cae cada tramo del strip)
+y sus callbacks de zoom/pintado; los vídeos se siguen decodificando una sola vez.
 """
 import atexit
 import math
@@ -135,15 +139,107 @@ class ProxyReader:
 class Escena:
     """Lo que hay que pintar: capa estática + instancias de cada ELEMENT."""
 
-    def __init__(self, static_res, segmentos, h_total, instancias, videos):
+    def __init__(self, static_res, segmentos, h_total, instancias, videos, v_slice=None):
         self.static_res = static_res            # PIL RGBA con lo que no se mueve
         self.res_size = static_res.size
         self.segmentos = segmentos              # [(x_ini, x_fin, x_res, y_res)] (motor_distribucion)
         self.h_total = h_total
+        # franja vertical del strip que se pinta en cada segmento (AMPLIFY: media altura en el System File)
+        self.v_slice = v_slice or (0, h_total)
         # instancias en orden de pintado: dict(src=ruta_video | PIL.Image, x=, w=, mask=bool)
         self.instancias = instancias
         self.videos = videos                    # {ruta: info} de los vídeos únicos animados
         self.duration = max([v["duration"] for v in videos.values()] + [1.0 / PLAYER_FPS])
+
+
+class Vista:
+    """Un panel donde pinta el reproductor. view_fn / static_view_fn / show_fn hacen lo mismo que
+    app.player_view / app.player_static_view / app.player_show, pero para este panel."""
+
+    def __init__(self, view_fn, static_view_fn, show_fn):
+        self.view_fn = view_fn
+        self.static_view_fn = static_view_fn
+        self.show_fn = show_fn
+        self.escena = None
+        self.reset()
+
+    def reset(self):
+        self._view_key = None
+        self._base_view = None
+        self._placements = None
+        self._still_memo = {}
+
+    def prepare(self, view):
+        """Devuelve True si la vista ha cambiado (zoom, pan, tamaño o escena)."""
+        escena = self.escena
+        key = (view["cw"], view["ch"], round(view["zoom"], 6), round(view["pan_x"], 2), round(view["pan_y"], 2), id(escena))
+        if key == self._view_key:
+            return False
+        self._view_key = key
+        self._still_memo = {}
+        self._base_view = self.static_view_fn(escena.static_res).convert("RGBA")
+
+        rw, rh = escena.res_size
+        cw, ch, zoom = view["cw"], view["ch"], view["zoom"]
+        sw, sh = max(1, int(rw * zoom)), max(1, int(rh * zoom))
+        px = int((cw - sw) / 2 + view["pan_x"])
+        py = int((ch - sh) / 2 + view["pan_y"])
+        kx, ky = sw / float(rw), sh / float(rh)
+        h_total = escena.h_total
+        sy0, sy1 = escena.v_slice
+        hh = sy1 - sy0
+        # nada fuera de la imagen (p. ej. filas del System File que caen por debajo del lienzo)
+        lim_x0, lim_x1 = max(0, px), min(cw, px + sw)
+        lim_y0, lim_y1 = max(0, py), min(ch, py + sh)
+
+        placements = []
+        for inst in escena.instancias:
+            x, w = inst["x"], inst["w"]
+            subs = []
+            if w > 0:
+                for a, b, rx, ry in escena.segmentos:
+                    lo, hi = max(x, a), min(x + w, b, a + (rw - rx))
+                    if hi <= lo: continue
+                    vx0, vx1 = px + (rx + lo - a) * kx, px + (rx + hi - a) * kx
+                    vy0, vy1 = py + ry * ky, py + (ry + hh) * ky
+                    dx0, dx1 = max(lim_x0, int(round(vx0))), min(lim_x1, int(round(vx1)))
+                    dy0, dy1 = max(lim_y0, int(round(vy0))), min(lim_y1, int(round(vy1)))
+                    if dx1 - dx0 < 1 or dy1 - dy0 < 1: continue
+                    # coordenadas fuente normalizadas (0..1 sobre el frame completo de la instancia)
+                    u0 = ((dx0 - px) / kx - rx + a - x) / w
+                    u1 = ((dx1 - px) / kx - rx + a - x) / w
+                    v0 = (sy0 + (dy0 - py) / ky - ry) / h_total
+                    v1 = (sy0 + (dy1 - py) / ky - ry) / h_total
+                    subs.append((dx0, dy0, dx1 - dx0, dy1 - dy0,
+                                 max(0.0, u0), max(0.0, v0), min(1.0, u1), min(1.0, v1)))
+            placements.append(subs)
+        self._placements = placements
+        return True
+
+    def compose(self, view, t, source):
+        self.prepare(view)
+        canvas = self._base_view.copy()
+        frames = {}
+        memo = {}
+        for inst, subs in zip(self.escena.instancias, self._placements):
+            if not subs: continue
+            src = inst["src"]
+            key_src = src if isinstance(src, str) else id(src)
+            if key_src not in frames:
+                frames[key_src] = source(src, t)
+            img, persistent = frames[key_src]
+            if img is None: continue
+            fw, fh = img.size
+            store = self._still_memo if (persistent and not isinstance(src, str)) else memo
+            for dx, dy, tw, th, u0, v0, u1, v1 in subs:
+                box = (u0 * fw, v0 * fh, u1 * fw, v1 * fh)
+                k = (key_src, round(box[0], 3), round(box[1], 3), round(box[2], 3), round(box[3], 3), tw, th)
+                piece = store.get(k)
+                if piece is None:
+                    piece = img.resize((tw, th), _BILINEAR, box=box)
+                    store[k] = piece
+                canvas.paste(piece, (dx, dy), piece if inst.get("mask", True) else None)
+        return canvas
 
 
 class PreviewPlayer:
@@ -154,6 +250,7 @@ class PreviewPlayer:
       app.player_static_view(img)  -> PIL del tamaño del contenedor (zoom/pan aplicados), para la capa base
       app.player_show(img)         -> pinta el frame en el panel
       app.player_state_changed()   -> refrescar botones / barra / tiempo
+    Vistas extra (System File Preview): add_vista(Vista(...)) y set_escena(escena, {vista: escena}).
     """
 
     def __init__(self, app):
@@ -172,17 +269,27 @@ class PreviewPlayer:
         self._resume_after_interrupt = False
         self._held = False
         self._last_wall = None
-        self._view_key = None
-        self._base_view = None
-        self._placements = None
-        self._still_memo = {}
         self._hq = None                 # (t, {ruta: PIL}) frames a resolución completa para la pausa
         self.last_render_ms = 0.0
+        self.vista = Vista(app.player_view, app.player_static_view, app.player_show)  # Architecture Preview
+        self.vistas = [self.vista]
+
+    def add_vista(self, vista):
+        self.vistas.append(vista)
+        return vista
+
+    def _vistas_activas(self):
+        return [v for v in self.vistas if v.escena is not None]
 
     # ---------- Escena ----------
-    def set_escena(self, escena):
+    def set_escena(self, escena, extras=None):
+        """extras: {vista: escena} para las vistas adicionales (mismos vídeos e instancias)."""
         self.escena = escena
-        self._view_key = None
+        self.vista.escena = escena
+        for v in self.vistas[1:]:
+            v.escena = (extras or {}).get(v)
+        for v in self.vistas:
+            v.reset()
         self._hq = None
         if not escena.videos:
             self.pause()
@@ -204,6 +311,9 @@ class PreviewPlayer:
     def clear(self):
         self.pause()
         self.escena = None
+        for v in self.vistas:
+            v.escena = None
+            v.reset()
         self.engaged = False
         self.app.player_state_changed()
 
@@ -216,10 +326,13 @@ class PreviewPlayer:
         return self.escena.duration if self.escena else 0.0
 
     # ---------- Proxies ----------
-    def _altura_proxy(self, view):
+    def _altura_proxy(self, views):
+        """views: [(vista, view)]. La altura del proxy cubre la vista que más zoom tenga."""
         h = self.escena.h_total
-        rw, rh = self.escena.res_size
-        on_screen = h * max(1, int(rh * view["zoom"])) / float(rh)
+        on_screen = 1
+        for vista, view in views:
+            rh = vista.escena.res_size[1]
+            on_screen = max(on_screen, h * max(1, int(rh * view["zoom"])) / float(rh))
         ladder = sorted({min(h, v) for v in PROXY_LADDER} | {h})
         target = next((v for v in ladder if v >= on_screen), ladder[-1])
         # bajar de escalón si no cabe en el presupuesto de memoria
@@ -234,9 +347,10 @@ class PreviewPlayer:
 
     def _ensure_readers(self):
         if not self.ready: return
-        view = self.app.player_view()
-        if view is None: return
-        h = self._altura_proxy(view)
+        views = [(v, v.view_fn()) for v in self._vistas_activas()]
+        views = [(v, view) for v, view in views if view is not None]
+        if not views: return
+        h = self._altura_proxy(views)
         if self.proxy_h is not None and h <= self.proxy_h and all((p, self.proxy_h) in self.readers for p in self.escena.videos):
             return  # el proxy actual ya tiene resolución de sobra
         self.proxy_h = h
@@ -407,48 +521,6 @@ class PreviewPlayer:
         self.app.player_state_changed()
 
     # ---------- Pintado ----------
-    def _prepare_view(self, view):
-        key = (view["cw"], view["ch"], round(view["zoom"], 6), round(view["pan_x"], 2), round(view["pan_y"], 2), id(self.escena))
-        if key == self._view_key:
-            return
-        self._view_key = key
-        self._still_memo = {}
-        self._base_view = self.app.player_static_view(self.escena.static_res).convert("RGBA")
-        if self.engaged and self.ready:
-            self._ensure_readers()
-            self._gc_readers()
-
-        rw, rh = self.escena.res_size
-        cw, ch, zoom = view["cw"], view["ch"], view["zoom"]
-        sw, sh = max(1, int(rw * zoom)), max(1, int(rh * zoom))
-        px = int((cw - sw) / 2 + view["pan_x"])
-        py = int((ch - sh) / 2 + view["pan_y"])
-        kx, ky = sw / float(rw), sh / float(rh)
-        h_total = self.escena.h_total
-
-        placements = []
-        for inst in self.escena.instancias:
-            x, w = inst["x"], inst["w"]
-            subs = []
-            if w > 0:
-                for a, b, rx, ry in self.escena.segmentos:
-                    lo, hi = max(x, a), min(x + w, b, a + (rw - rx))
-                    if hi <= lo: continue
-                    vx0, vx1 = px + (rx + lo - a) * kx, px + (rx + hi - a) * kx
-                    vy0, vy1 = py + ry * ky, py + (ry + h_total) * ky
-                    dx0, dx1 = max(0, int(round(vx0))), min(cw, int(round(vx1)))
-                    dy0, dy1 = max(0, int(round(vy0))), min(ch, int(round(vy1)))
-                    if dx1 - dx0 < 1 or dy1 - dy0 < 1: continue
-                    # coordenadas fuente normalizadas (0..1 sobre el frame completo de la instancia)
-                    u0 = ((dx0 - px) / kx - rx + a - x) / w
-                    u1 = ((dx1 - px) / kx - rx + a - x) / w
-                    v0 = ((dy0 - py) / ky - ry) / h_total
-                    v1 = ((dy1 - py) / ky - ry) / h_total
-                    subs.append((dx0, dy0, dx1 - dx0, dy1 - dy0,
-                                 max(0.0, u0), max(0.0, v0), min(1.0, u1), min(1.0, v1)))
-            placements.append(subs)
-        self._placements = placements
-
     def _source(self, src, t):
         if not isinstance(src, str):
             return src, True                                  # imagen estática
@@ -461,38 +533,20 @@ class PreviewPlayer:
                 return img, False
         return None, False
 
-    def compose(self, view, t):
-        self._prepare_view(view)
-        canvas = self._base_view.copy()
-        frames = {}
-        memo = {}
-        for inst, subs in zip(self.escena.instancias, self._placements):
-            if not subs: continue
-            src = inst["src"]
-            key_src = src if isinstance(src, str) else id(src)
-            if key_src not in frames:
-                frames[key_src] = self._source(src, t)
-            img, persistent = frames[key_src]
-            if img is None: continue
-            fw, fh = img.size
-            store = self._still_memo if (persistent and not isinstance(src, str)) else memo
-            for dx, dy, tw, th, u0, v0, u1, v1 in subs:
-                box = (u0 * fw, v0 * fh, u1 * fw, v1 * fh)
-                k = (key_src, round(box[0], 3), round(box[1], 3), round(box[2], 3), round(box[3], 3), tw, th)
-                piece = store.get(k)
-                if piece is None:
-                    piece = img.resize((tw, th), _BILINEAR, box=box)
-                    store[k] = piece
-                canvas.paste(piece, (dx, dy), piece if inst.get("mask", True) else None)
-        return canvas
+    def compose(self, view, t, vista=None):
+        vista = vista or self.vista
+        if vista.prepare(view) and self.engaged and self.ready:
+            self._ensure_readers()
+            self._gc_readers()
+        return vista.compose(view, t, self._source)
 
     def render(self):
         if not self.ready or not self.engaged: return
-        view = self.app.player_view()
-        if view is None: return
         t0 = time.perf_counter()
-        img = self.compose(view, self.t)
-        self.app.player_show(img)
+        for vista in self._vistas_activas():
+            view = vista.view_fn()
+            if view is None: continue
+            vista.show_fn(self.compose(view, self.t, vista))
         self.last_render_ms = (time.perf_counter() - t0) * 1000.0
 
 
