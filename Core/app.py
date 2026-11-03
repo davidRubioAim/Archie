@@ -59,6 +59,14 @@ if os.name == "nt":
     except Exception:
         pass
 
+# Validar HTTPS con los certificados de Windows (hoja de configuración, estadios, Gemini). Sin esto, algunos equipos
+# fallan con CERTIFICATE_VERIFY_FAILED. truststore viene en requirements.txt; si no está, se sigue igual.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except Exception:
+    pass
+
 # 2. Cargar variables de entorno desde Config
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
 load_remote_config()  # rellena GEMINI_API_KEY desde la hoja de configuración si no está en .env
