@@ -6,3 +6,4 @@ proglog
 google-genai
 tkinterdnd2
 python-dotenv
+truststore
