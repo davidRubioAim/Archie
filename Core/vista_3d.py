@@ -10,7 +10,7 @@ Unidades: píxeles del perfil del estadio (Width, Goal Line Size, Height). La al
 real (Height en la misma escala que los anchos): para verla más grande, zoom.
 
 Ratón (v0.47):
-  botón izquierdo (o rueda pulsada) y arrastrar = mover la cámara (panear)
+  botón izquierdo (o rueda pulsada) y arrastrar = mover la cámara en paralelo al suelo (v0.50)
   botón derecho y arrastrar                     = rotar la cámara sobre su propio centro (v0.48)
   rueda                                         = zoom de la cámara (cambia el FOV, la cámara no se mueve)
   doble clic                                    = vista inicial
@@ -210,6 +210,31 @@ class Escena3D:
         self.dist = max(self.L / 2 / th, self.W / 2 / tv) * 1.1
         self.target = (0.0, self.top / 2, -self.W * 0.05)
         self._clamp_suelo()
+        self.encuadrar()
+
+    def encuadrar(self, relleno=0.94):
+        """v0.50: con la cámara quieta, centra la U en vertical (inclinando la cámara) y ajusta el FOV
+        para que el estadio ocupe la ventana (relleno = fracción del ancho/alto disponible)."""
+        w, h = self.size
+        hl, hw = self.L / 2, self.W / 2
+        pts = [(x, y, z) for x in (-hl, hl) for z in (-hw, hw) for y in (0.0, self.top)]
+        for _ in range(3):
+            cam = self._camera()
+            cs = [self._to_cam(cam, q) for q in pts]
+            if min(c[2] for c in cs) <= self._near():
+                return
+            pr = [self._proj(cam, c) for c in cs]
+            ys = [p[1] for p in pr]
+            off = (min(ys) + max(ys)) / 2 - h / 2      # >0: el estadio está por debajo del centro
+            self.rotar_camara(0.0, math.atan2(off, cam[4]))
+        cam = self._camera()
+        pr = [self._proj(cam, self._to_cam(cam, q)) for q in pts]
+        ext_x = max(abs(p[0] - w / 2) for p in pr) * 2
+        ext_y = max(abs(p[1] - h / 2) for p in pr) * 2
+        s = min(relleno * w / max(ext_x, 1.0), relleno * h / max(ext_y, 1.0))
+        t = math.tan(math.radians(self.fov) / 2) / s
+        t = max(math.tan(math.radians(FOV_MIN) / 2), min(math.tan(math.radians(FOV_MAX) / 2), t))
+        self.fov = math.degrees(2 * math.atan(t))
 
     def escala_necesaria(self, w_total, k_max):
         """Escalón de TEX_LADDER que da al menos ~1.5 texels por píxel de pantalla en la zona del objetivo."""
@@ -411,12 +436,14 @@ class Escena3D:
         self.target = (eye[0] - o[0] * self.dist, eye[1] - o[1] * self.dist, eye[2] - o[2] * self.dist)
 
     def pan(self, dx, dy):
-        _eye, r, u, _f, focal = self._camera()
+        """v0.50: mueve la cámara en paralelo al suelo (la altura no cambia). El suelo sigue al ratón:
+        arrastrar en horizontal = desplazarse a los lados, en vertical = avanzar / retroceder."""
+        _eye, r, _u, f, focal = self._camera()
         k = self.dist / focal
+        fh = _v_norm((f[0], 0.0, f[2]))                          # adelante, sin componente vertical
+        kz = k / max(math.sin(abs(self.pitch)), 0.2)             # px de pantalla -> distancia sobre el suelo
         tx, ty, tz = self.target
-        self.target = (tx - (r[0] * dx - u[0] * dy) * k, ty - (r[1] * dx - u[1] * dy) * k,
-                       tz - (r[2] * dx - u[2] * dy) * k)
-        self._clamp_suelo()
+        self.target = (tx - r[0] * dx * k + fh[0] * dy * kz, ty, tz - r[2] * dx * k + fh[2] * dy * kz)
 
     def _pick(self, px, py):
         """Punto de la maqueta bajo el puntero (suelo o paredes); si no toca nada, el del plano del objetivo."""
@@ -445,8 +472,8 @@ class Escena3D:
         return tuple(eye[i] + d[i] * t for i in range(3))
 
     def zoom(self, notches, px, py):
-        """Zoom de cámara: cambia el FOV (la cámara no se mueve). notches en unidades de la rueda de
-        Windows (120 = un paso). El punto bajo el puntero se queda bajo el puntero."""
+        """Zoom de cámara: cambia el FOV. notches en unidades de la rueda de Windows (120 = un paso).
+        La cámara mantiene su altura; en horizontal el punto bajo el puntero se queda bajo el puntero."""
         t_old = math.tan(math.radians(self.fov) / 2)
         t_new = t_old * 0.9985 ** notches
         t_new = max(math.tan(math.radians(FOV_MIN) / 2), min(math.tan(math.radians(FOV_MAX) / 2), t_new))
@@ -457,8 +484,9 @@ class Escena3D:
         ox, oy = px - cx, py - cy
         self.fov = math.degrees(2 * math.atan(t_new))
         k = t_old / t_new
-        # tras el zoom el punto que estaba en (ox, oy) aparece en (ox*k, oy*k): se panea la diferencia
-        self.pan(ox - ox * k, oy - oy * k)
+        # tras el zoom el punto que estaba en ox aparece en ox*k: se corrige solo en horizontal,
+        # moviendo la cámara de lado (v0.50: la altura y la inclinación no cambian)
+        self.pan(ox - ox * k, 0.0)
 
 
 # --------------------------------------------------------------------------
