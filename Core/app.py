@@ -438,7 +438,8 @@ class MegaStripApp(CTkDnD):
         # v0.46: SYSTEM FILE PREVIEW y 3D PREVIEW en pestañas (la Architecture Preview de abajo no cambia)
         self.preview_tabs = ctk.CTkTabview(
             self.preview_area,
-            corner_radius=10,
+            corner_radius=0,      # v0.47: sin margen interno -> mismo ancho que la Architecture Preview
+            border_width=0,
             fg_color="transparent",
             segmented_button_fg_color=self.c_light_grey,
             segmented_button_selected_color=self.c_magenta,
@@ -452,6 +453,10 @@ class MegaStripApp(CTkDnD):
         tab_sys = self.preview_tabs.add("SYSTEM FILE PREVIEW")
         tab_3d = self.preview_tabs.add("3D PREVIEW")
         self.preview_tabs.set("SYSTEM FILE PREVIEW")
+        try:
+            self.preview_tabs._segmented_button.configure(corner_radius=8)  # botones redondeados como las otras pestañas
+        except Exception:
+            pass
 
         self.sys_preview_frame = ctk.CTkFrame(
             tab_sys, 
@@ -495,7 +500,7 @@ class MegaStripApp(CTkDnD):
         v3d_header = ctk.CTkFrame(self.v3d_frame, fg_color="transparent")
         v3d_header.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
         ctk.CTkLabel(v3d_header, text="3D PREVIEW", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.c_magenta).pack(side="left")
-        ctk.CTkLabel(v3d_header, text="Drag: orbit · Wheel: zoom · Middle drag: pan · Double click: reset",
+        ctk.CTkLabel(v3d_header, text="Left drag: move · Right drag: rotate · Wheel: zoom · Double click: reset",
                      font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=12)
         ctk.CTkButton(v3d_header, text="Reset view", width=70, height=20, fg_color="#2b2b2b", hover_color="#3a3a3a", border_width=1, border_color="gray", command=lambda: self.visor_3d.reset_view()).pack(side="right", padx=5)
         self.lbl_v3d_info = ctk.CTkLabel(v3d_header, text="", font=ctk.CTkFont(size=11), text_color="gray")
@@ -504,6 +509,7 @@ class MegaStripApp(CTkDnD):
         self.v3d_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.visor_3d = Visor3D(self.v3d_container)
         self.visor_3d.activo = self._v3d_visible
+        self.visor_3d.on_escala = self._on_escala_3d
 
 
 
@@ -540,28 +546,28 @@ class MegaStripApp(CTkDnD):
         # --- REPRODUCTOR DE VÍDEO (v0.35) ---
         self.player_bar = ctk.CTkFrame(self.preview_container, fg_color="transparent")
         self.player_bar.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
-        self.player_bar.grid_columnconfigure(1, weight=1)
+        self.player_bar.grid_columnconfigure(3, weight=1)
         self._player_icons = self._crear_iconos_reproductor()
         self.btn_player_play = ctk.CTkButton(
             self.player_bar, text="", image=self._player_icons["play"], width=34, height=24, fg_color=self.c_magenta, hover_color="#d1077e",
             font=ctk.CTkFont(size=13, weight="bold"), command=self.on_player_toggle, state="disabled")
-        self.btn_player_play.grid(row=0, column=0, padx=(0, 8))
+        self.btn_player_play.grid(row=0, column=0, padx=(0, 6))
+        self.player_loop_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(self.player_bar, text="Loop", width=60, checkbox_width=16, checkbox_height=16,
+                        font=ctk.CTkFont(size=11), text_color="gray", fg_color=self.c_magenta,
+                        variable=self.player_loop_var, command=self.on_player_loop).grid(row=0, column=1, padx=(0, 4))
+        self.lbl_player_time = ctk.CTkLabel(self.player_bar, text="--:--.- / --:--.-", text_color="gray",
+                                            font=ctk.CTkFont(family="Consolas", size=11), width=110)
+        self.lbl_player_time.grid(row=0, column=2, padx=(0, 8))
+        # v0.47: la línea de tiempo llega hasta el borde derecho (sin el texto Proxy / fps / Paused)
         self.player_slider = ctk.CTkSlider(
             self.player_bar, from_=0, to=1, number_of_steps=1000, height=14,
             button_color=self.c_magenta, button_hover_color="#d1077e", progress_color=self.c_magenta,
             command=self.on_player_scrub, state="disabled")
         self.player_slider.set(0)
-        self.player_slider.grid(row=0, column=1, sticky="ew")
+        self.player_slider.grid(row=0, column=3, sticky="ew")
         self.player_slider.bind("<ButtonRelease-1>", self.on_player_scrub_end, add="+")
-        self.lbl_player_time = ctk.CTkLabel(self.player_bar, text="--:--.- / --:--.-", text_color="gray",
-                                            font=ctk.CTkFont(family="Consolas", size=11), width=110)
-        self.lbl_player_time.grid(row=0, column=2, padx=(8, 4))
-        self.player_loop_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(self.player_bar, text="Loop", width=60, checkbox_width=16, checkbox_height=16,
-                        font=ctk.CTkFont(size=11), text_color="gray", fg_color=self.c_magenta,
-                        variable=self.player_loop_var, command=self.on_player_loop).grid(row=0, column=3, padx=(4, 4))
-        self.lbl_player_info = ctk.CTkLabel(self.player_bar, text="", text_color="gray", font=ctk.CTkFont(size=10), width=150, anchor="e")
-        self.lbl_player_info.grid(row=0, column=4, padx=(4, 0))
+        self.lbl_player_info = ctk.CTkLabel(self.player_bar, text="")  # ya no se muestra (se mantiene para no tocar player_state_changed)
         self._player_scrubbing = False
         self._player_scrub_resume = False
         
@@ -915,7 +921,7 @@ class MegaStripApp(CTkDnD):
         self.margin_slider, _, self.margin_val_label = self._create_labeled_slider(
             self.col_left, "Minimum Margin (px)", 
             "Spacing in px between adjacent elements.",
-            0, 100, 100, 20, self.update_margin_label
+            0, 600, 600, 20, self.update_margin_label
         )
         self.margin_val_label.configure(text="20 px")
 
@@ -2617,8 +2623,15 @@ class MegaStripApp(CTkDnD):
         self.pan_y_strip = max(-max_py, min(max_py, self.pan_y_strip)) if sh > ch else 0
         return {"cw": cw, "ch": ch, "zoom": zoom, "pan_x": self.pan_x_strip, "pan_y": self.pan_y_strip}
 
+    def _sys_visible(self):
+        try:
+            return self.preview_tabs.get() == "SYSTEM FILE PREVIEW" and self.sys_image_container.winfo_ismapped()
+        except Exception:
+            return True
+
     def sys_player_view(self):
         if not self.pil_sys_images or self.sys_vista.escena is None: return None
+        if not self._sys_visible(): return None  # v0.47: pestaña oculta, no se pinta
         cw = self.sys_image_container.winfo_width()
         ch = self.sys_image_container.winfo_height()
         if cw <= 10 or ch <= 10: return None
@@ -2685,6 +2698,11 @@ class MegaStripApp(CTkDnD):
         if img is not None:
             self.visor_3d.set_strip(img, self._geo3d[0], self._geo3d[1])
 
+    def _on_escala_3d(self):
+        """La cámara se ha acercado/alejado lo bastante como para pedir otra resolución de textura."""
+        if self.player.engaged and self.player.ready and not self.player.playing and self.vista_3d.escena is not None:
+            self.player.render()
+
     def on_preview_tab_change(self):
         if self.preview_tabs.get() == "3D PREVIEW":
             self.after(30, self._refrescar_3d)
@@ -2695,13 +2713,20 @@ class MegaStripApp(CTkDnD):
         escena = self.vista_3d.escena
         if escena is None or self._geo3d is None or not self._v3d_visible(): return None
         rw, rh = escena.res_size
-        k = escala_textura(rw)
+        # v0.47: resolución de la textura según lo cerca que esté la cámara (escalones, para no recalcular en cada paso de rueda)
+        k = self.visor_3d.escala_necesaria(rw)
         return {"cw": max(1, int(rw * k)), "ch": max(1, int(rh * k)), "zoom": k, "pan_x": 0, "pan_y": 0}
 
     def v3d_player_static_view(self, static_strip):
         v = self.v3d_player_view()
         if v is None or (v["cw"], v["ch"]) == static_strip.size: return static_strip.copy()
-        return static_strip.resize((v["cw"], v["ch"]), PREVIEW_RESAMPLE)
+        cache = getattr(self, "_v3d_static_cache", None)
+        if cache is None or cache[0] is not static_strip:
+            cache = self._v3d_static_cache = (static_strip, {})
+        size = (v["cw"], v["ch"])
+        if size not in cache[1]:
+            cache[1][size] = static_strip.resize(size, PREVIEW_RESAMPLE, reducing_gap=3.0)
+        return cache[1][size]
 
     def v3d_player_show(self, img):
         if self._geo3d is not None:
@@ -2869,6 +2894,8 @@ class MegaStripApp(CTkDnD):
 
         if self.player.engaged and self.player.ready and self.sys_vista.escena is not None:
             return  # el System File también lo pinta el reproductor (player.render de arriba)
+        if not self._sys_visible():
+            return  # v0.47: pestaña oculta
 
         img_sys = self.pil_sys_images[self.preview_current_idx]
         cw_sys = self.sys_image_container.winfo_width()

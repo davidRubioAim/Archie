@@ -9,17 +9,18 @@ igual que Checker lo hace con QTransform.quadToQuad.
 Unidades: píxeles del perfil del estadio (Width, Goal Line Size, Height). La altura de las bandas es la
 real (Height en la misma escala que los anchos): para verla más grande, zoom.
 
-Ratón (como Checker):
-  arrastrar (botón izquierdo o derecho) = orbitar alrededor del centro del campo
-  rueda                                 = zoom hacia el puntero
-  rueda pulsada y arrastrar             = panear
-  doble clic                            = vista inicial
+Ratón (v0.47):
+  botón izquierdo (o rueda pulsada) y arrastrar = mover la cámara (panear)
+  botón derecho y arrastrar                     = rotar alrededor del centro del campo
+  rueda                                         = zoom de la cámara (cambia el FOV, la cámara no se mueve)
+  doble clic                                    = vista inicial
+La cámara nunca baja del suelo.
 """
 import math
 import tkinter as tk
 
 import numpy as np
-from PIL import Image, ImageChops, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 try:
     _NEAREST = Image.Resampling.NEAREST
@@ -28,7 +29,11 @@ try:
 except AttributeError:  # Pillow < 9.1
     _NEAREST, _BILINEAR, _PERSPECTIVE = Image.NEAREST, Image.BILINEAR, Image.PERSPECTIVE
 
-FOV = 45.0
+FOV = 45.0                       # FOV inicial (vertical, grados)
+FOV_MIN, FOV_MAX = 3.0, 75.0     # límites del zoom con la rueda
+PITCH_RESET = math.radians(18)   # inclinación de la vista inicial (v0.47: más baja)
+PITCH_MIN = math.radians(1)      # la cámara no puede bajar del suelo
+TEX_LADDER = (1 / 64, 1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1.0)  # escalones de resolución de la textura
 TEX_STRIP_MAX_W = 16384          # ancho máximo del strip que se usa como textura (el de 40000 px se reduce)
 PITCH_W_MIN = 64.0 / 110.0       # ancho/largo mínimo de un campo reglamentario (110 x 64 m)
 PITCH_W_STD = 68.0 / 105.0       # campo estándar (105 x 68 m), solo si no hay goal line
@@ -154,7 +159,8 @@ class Escena3D:
         self.tex = {}          # key -> PIL RGBA opaca
         self.top = 1.0
         self.size = (800, 400)
-        self.yaw, self.pitch, self.dist = 0.0, math.radians(28), 1000.0
+        self.yaw, self.pitch, self.dist = 0.0, PITCH_RESET, 1000.0
+        self.fov = FOV
         self.target = (0.0, 0.0, 0.0)
         self._bg = None
 
@@ -186,20 +192,40 @@ class Escena3D:
             box = (int(round(x0 * sx)), int(round(v0 * sy)), max(int(round(x0 * sx)) + 1, int(round(x1 * sx))),
                    max(int(round(v0 * sy)) + 1, int(round(v1 * sy))))
             crop = img.crop(box)
-            if crop.mode != "RGBA":
-                crop = crop.convert("RGBA")
-            base = Image.new("RGBA", crop.size, (0, 0, 0, 255))
-            base.alpha_composite(crop)
+            if crop.mode == "RGBA":
+                base = Image.new("RGB", crop.size, (0, 0, 0))   # transparente = LED apagado
+                base.paste(crop, (0, 0), crop)
+            else:
+                base = crop.convert("RGB")
             tex[b["key"]] = base
         self.tex = tex
 
     def reset_view(self):
         w, h = self.size
-        self.yaw, self.pitch = 0.0, math.radians(28)
+        self.yaw, self.pitch = 0.0, PITCH_RESET
+        self.fov = FOV
         tv = math.tan(math.radians(FOV) / 2)
         th = tv * max(w, 1) / max(h, 1)
         self.dist = max(self.L / 2 / th, self.W / 2 / tv) * 1.1
         self.target = (0.0, self.top / 2, -self.W * 0.05)
+        self._clamp_suelo()
+
+    def escala_necesaria(self, w_total, k_max):
+        """Escalón de TEX_LADDER que da al menos ~1.5 texels por píxel de pantalla en la zona del objetivo."""
+        focal = self._camera()[4]
+        s = 1.5 * focal / max(1.0, self.dist)
+        for k in TEX_LADDER:
+            if k >= s or k >= k_max:
+                return min(k, k_max)
+        return k_max
+
+    def _clamp_suelo(self):
+        """El ojo de la cámara siempre por encima del suelo (no se ve el estadio por debajo)."""
+        min_y = max(1.0, self.top * 0.25)
+        eye_y = self.target[1] + self.dist * math.sin(self.pitch)
+        if eye_y < min_y:
+            tx, ty, tz = self.target
+            self.target = (tx, ty + (min_y - eye_y), tz)
 
     # ----- cámara -----
     def _camera(self):
@@ -210,7 +236,7 @@ class Escena3D:
         f = _v_norm(_v_sub(self.target, eye))
         r = _v_norm(_v_cross(f, (0.0, 1.0, 0.0)))
         u = _v_cross(r, f)
-        focal = (self.size[1] / 2) / math.tan(math.radians(FOV) / 2)
+        focal = (self.size[1] / 2) / math.tan(math.radians(self.fov) / 2)
         return eye, r, u, f, focal
 
     @staticmethod
@@ -337,19 +363,18 @@ class Escena3D:
         tw, th = tex.size
         x0, x1 = tw * k / K, tw * (k + 1) / K
         cx0, cx1 = max(0, int(math.floor(x0)) - 1), min(tw, int(math.ceil(x1)) + 1)  # 1 texel de más: sin rendijas
-        crop = tex.crop((cx0, 0, cx1, th))
+        crop = tex.crop((cx0, 0, cx1, th))  # RGB opaca
         local = [(px - bx0, py - by0) for px, py in dst]
         src = [(x0 - cx0, 0), (x1 - cx0, 0), (x1 - cx0, th), (x0 - cx0, th)]
         try:
             coeffs = _coeficientes(local, src)
         except np.linalg.LinAlgError:
             return
-        piece = crop.transform((bx1 - bx0, by1 - by0), _PERSPECTIVE, coeffs, resample, fillcolor=(0, 0, 0, 0))
+        piece = crop.transform((bx1 - bx0, by1 - by0), _PERSPECTIVE, coeffs, resample, fillcolor=(0, 0, 0))
         # máscara con la forma exacta del trozo (fuera de él la proyección no vale)
         mask = Image.new("L", piece.size, 0)
         ImageDraw.Draw(mask).polygon(local, fill=255)
-        mask = ImageChops.multiply(mask, piece.getchannel("A"))
-        img.paste(piece.convert("RGB"), (bx0, by0), mask)
+        img.paste(piece, (bx0, by0), mask)
 
     # ----- interacción -----
     def _offset_dir(self, yaw, pitch):
@@ -363,7 +388,7 @@ class Escena3D:
         ca, sa = math.cos(dyaw), math.sin(dyaw)
         v = (v[0] * ca + v[2] * sa, v[1], -v[0] * sa + v[2] * ca)
         yaw = self.yaw + dyaw
-        pitch = max(math.radians(-10), min(math.radians(89), self.pitch + dpitch))
+        pitch = max(PITCH_MIN, min(math.radians(89), self.pitch + dpitch))
         b = pitch - self.pitch
         if abs(b) > 1e-9:
             o1, o2 = self._offset_dir(yaw, self.pitch), self._offset_dir(yaw, pitch)
@@ -374,6 +399,7 @@ class Escena3D:
             v = tuple(v[i] * cb + kv[i] * sb + kx[i] * kd * (1 - cb) for i in range(3))
         self.target = (c[0] + v[0], c[1] + v[1], c[2] + v[2])
         self.yaw, self.pitch = yaw, pitch
+        self._clamp_suelo()
 
     def pan(self, dx, dy):
         _eye, r, u, _f, focal = self._camera()
@@ -381,6 +407,7 @@ class Escena3D:
         tx, ty, tz = self.target
         self.target = (tx - (r[0] * dx - u[0] * dy) * k, ty - (r[1] * dx - u[1] * dy) * k,
                        tz - (r[2] * dx - u[2] * dy) * k)
+        self._clamp_suelo()
 
     def _pick(self, px, py):
         """Punto de la maqueta bajo el puntero (suelo o paredes); si no toca nada, el del plano del objetivo."""
@@ -409,14 +436,20 @@ class Escena3D:
         return tuple(eye[i] + d[i] * t for i in range(3))
 
     def zoom(self, notches, px, py):
-        """notches en unidades de la rueda de Windows (120 = un paso)."""
-        span = max(self.L, self.W)
-        new = max(span * 0.01, min(span * 8, self.dist * 0.9985 ** notches))
-        if new != self.dist:
-            hp = self._pick(px, py)
-            k = new / self.dist
-            self.target = tuple(hp[i] + (self.target[i] - hp[i]) * k for i in range(3))
-            self.dist = new
+        """Zoom de cámara: cambia el FOV (la cámara no se mueve). notches en unidades de la rueda de
+        Windows (120 = un paso). El punto bajo el puntero se queda bajo el puntero."""
+        t_old = math.tan(math.radians(self.fov) / 2)
+        t_new = t_old * 0.9985 ** notches
+        t_new = max(math.tan(math.radians(FOV_MIN) / 2), min(math.tan(math.radians(FOV_MAX) / 2), t_new))
+        if abs(t_new - t_old) < 1e-12:
+            return
+        # el rayo del puntero no cambia si el desplazamiento respecto al centro se escala igual que tan(FOV/2)
+        cx, cy = self.size[0] / 2, self.size[1] / 2
+        ox, oy = px - cx, py - cy
+        self.fov = math.degrees(2 * math.atan(t_new))
+        k = t_old / t_new
+        # tras el zoom el punto que estaba en (ox, oy) aparece en (ox*k, oy*k): se panea la diferencia
+        self.pan(ox - ox * k, oy - oy * k)
 
 
 # --------------------------------------------------------------------------
@@ -441,6 +474,9 @@ class Visor3D:
         self._sized = False
         self._pending_reset = False
         self.activo = lambda: True   # app.py lo sustituye: solo se pinta si la pestaña está visible
+        self.on_escala = None        # app.py: avisar cuando la cámara pide otra resolución de textura
+        self._escala = None
+        self._w_total = 1
 
         lb = self.label
         lb.bind("<Configure>", self._on_resize)
@@ -464,7 +500,15 @@ class Visor3D:
         self._has_scene = True
         self.request_render()
 
+    def escala_necesaria(self, w_total):
+        """Resolución de textura (fracción del strip) que pide la cámara ahora mismo."""
+        self._w_total = w_total
+        k = self.escena.escala_necesaria(w_total, escala_textura(w_total))
+        self._escala = k
+        return k
+
     def set_strip(self, img, w_total, h_total):
+        self._w_total = w_total
         self.escena.set_strip(img, w_total, h_total)
         if self.placeholder is not None:
             self.placeholder.destroy()
@@ -487,13 +531,19 @@ class Visor3D:
             except Exception:
                 pass
             self._render_id = None
-        if not self._has_scene or not self.activo():
-            return
+        if not self._has_scene or self.placeholder is not None or not self.activo():
+            return  # sin strip todavía no se pinta nada (evita los bloques negros)
         w, h = self.label.winfo_width(), self.label.winfo_height()
         if w <= 10 or h <= 10:
             return
         self.escena.size = (w, h)
         img = self.escena.render(smooth=not self.interacting)
+        # si la cámara se ha acercado/alejado de escalón, pedir la textura a otra resolución
+        if self._escala is not None and self.on_escala is not None and not self.interacting:
+            k = self.escena.escala_necesaria(self._w_total, escala_textura(self._w_total))
+            if k != self._escala:
+                self._escala = k
+                self.label.after_idle(self.on_escala)
         if self._photo is None or (self._photo.width(), self._photo.height()) != img.size:
             self._photo = ImageTk.PhotoImage(img)
             self.label.configure(image=self._photo)
@@ -514,7 +564,7 @@ class Visor3D:
     def _press(self, e, n):
         self._drag = (n, e.x, e.y)
         self.interacting = True
-        self.label.configure(cursor="fleur" if n == 2 else "hand2")
+        self.label.configure(cursor="exchange" if n == 3 else "fleur")
 
     def _motion(self, e):
         if not self._drag:
@@ -522,10 +572,10 @@ class Visor3D:
         n, lx, ly = self._drag
         dx, dy = e.x - lx, e.y - ly
         self._drag = (n, e.x, e.y)
-        if n == 2:
-            self.escena.pan(dx, dy)
-        else:
+        if n == 3:   # botón derecho: rotar
             self.escena.orbit(-math.radians(dx * 0.35), math.radians(dy * 0.3))
+        else:        # izquierdo o rueda pulsada: mover
+            self.escena.pan(dx, dy)
         self.request_render()
 
     def _release(self, _e):
