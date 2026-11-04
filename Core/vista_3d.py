@@ -11,7 +11,7 @@ real (Height en la misma escala que los anchos): para verla más grande, zoom.
 
 Ratón (v0.47):
   botón izquierdo (o rueda pulsada) y arrastrar = mover la cámara (panear)
-  botón derecho y arrastrar                     = rotar alrededor del centro del campo
+  botón derecho y arrastrar                     = rotar la cámara sobre su propio centro (v0.48)
   rueda                                         = zoom de la cámara (cambia el FOV, la cámara no se mueve)
   doble clic                                    = vista inicial
 La cámara nunca baja del suelo.
@@ -401,6 +401,14 @@ class Escena3D:
         self.yaw, self.pitch = yaw, pitch
         self._clamp_suelo()
 
+    def rotar_camara(self, dyaw, dpitch):
+        """v0.48: la cámara gira sobre sí misma (el ojo no se mueve; cambia hacia dónde mira)."""
+        eye = self._camera()[0]
+        self.yaw += dyaw
+        self.pitch = max(math.radians(-60), min(math.radians(89), self.pitch + dpitch))
+        o = self._offset_dir(self.yaw, self.pitch)
+        self.target = (eye[0] - o[0] * self.dist, eye[1] - o[1] * self.dist, eye[2] - o[2] * self.dist)
+
     def pan(self, dx, dy):
         _eye, r, u, _f, focal = self._camera()
         k = self.dist / focal
@@ -572,8 +580,8 @@ class Visor3D:
         n, lx, ly = self._drag
         dx, dy = e.x - lx, e.y - ly
         self._drag = (n, e.x, e.y)
-        if n == 3:   # botón derecho: rotar
-            self.escena.orbit(-math.radians(dx * 0.35), math.radians(dy * 0.3))
+        if n == 3:   # botón derecho: la cámara gira sobre su propio centro
+            self.escena.rotar_camara(math.radians(dx * 0.2), -math.radians(dy * 0.2))
         else:        # izquierdo o rueda pulsada: mover
             self.escena.pan(dx, dy)
         self.request_render()
