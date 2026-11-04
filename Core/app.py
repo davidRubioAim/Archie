@@ -24,6 +24,7 @@ from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
 from auto_import import buscar_elements_hermanos
 from video_player import PreviewPlayer, PhotoTarget, Escena, Vista, PLAYER_FPS
+from vista_3d import Visor3D, geometria_estadio, escala_textura
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -183,6 +184,8 @@ class MegaStripApp(CTkDnD):
         self.preview_timer = None 
         self.pil_preview_images = []
         self.pil_sys_images = []
+        self.pil_strip3d_images = []         # v0.46: strip (sin anotaciones, reducido) de cada key frame, para 3D PREVIEW
+        self._geo3d = None                   # v0.46: (w_total, h_total, L, W) de la maqueta 3D actual
         self.preview_current_idx = 0
         self.zoom_factor_strip = 1.0 
         self.zoom_factor_sys = 1.0 
@@ -208,6 +211,8 @@ class MegaStripApp(CTkDnD):
         # v0.39: el reproductor también pinta en System File Preview (mismo reloj, mismos proxies)
         self._sys_player_target = PhotoTarget()
         self.sys_vista = self.player.add_vista(Vista(self.sys_player_view, self.sys_player_static_view, self.sys_player_show))
+        # v0.46: y en 3D PREVIEW (el strip entero como textura, mismo reloj y mismos proxies)
+        self.vista_3d = self.player.add_vista(Vista(self.v3d_player_view, self.v3d_player_static_view, self.v3d_player_show))
 
         self.pan_x_strip = 0
         self.pan_y_strip = 0
@@ -430,13 +435,31 @@ class MegaStripApp(CTkDnD):
         self.lbl_warning = ctk.CTkLabel(self.preview_area, text="", text_color="#E74C3C", font=ctk.CTkFont(weight="bold", size=13))
         self.lbl_warning.grid(row=0, column=0, sticky="ew", pady=(0, 5))
 
+        # v0.46: SYSTEM FILE PREVIEW y 3D PREVIEW en pestañas (la Architecture Preview de abajo no cambia)
+        self.preview_tabs = ctk.CTkTabview(
+            self.preview_area,
+            corner_radius=10,
+            fg_color="transparent",
+            segmented_button_fg_color=self.c_light_grey,
+            segmented_button_selected_color=self.c_magenta,
+            segmented_button_selected_hover_color="#D1007A",
+            segmented_button_unselected_color=self.c_light_grey,
+            segmented_button_unselected_hover_color="#E0E0E0",
+            text_color=self.c_text_dark,
+            command=self.on_preview_tab_change
+        )
+        self.preview_tabs.grid(row=1, column=0, sticky="nsew", pady=(0, 5))
+        tab_sys = self.preview_tabs.add("SYSTEM FILE PREVIEW")
+        tab_3d = self.preview_tabs.add("3D PREVIEW")
+        self.preview_tabs.set("SYSTEM FILE PREVIEW")
+
         self.sys_preview_frame = ctk.CTkFrame(
-            self.preview_area, 
+            tab_sys, 
             corner_radius=10, 
             border_width=2, 
             border_color=self.c_magenta,
             fg_color="#0c0c0c")
-        self.sys_preview_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 5))
+        self.sys_preview_frame.pack(fill="both", expand=True)
         self.sys_preview_frame.grid_rowconfigure(1, weight=1)
         self.sys_preview_frame.grid_columnconfigure(0, weight=1)
 
@@ -463,6 +486,24 @@ class MegaStripApp(CTkDnD):
         self.lbl_sys_image.place(relx=0.5, rely=0.5, anchor="center")
         self.lbl_sys_placeholder = ctk.CTkLabel(self.sys_image_container, text="System File Preview will appear here.", text_color="gray")
         self.lbl_sys_placeholder.place(relx=0.5, rely=0.5, anchor="center")
+
+        # --- 3D PREVIEW (v0.46): maqueta fake 3D del perímetro, lógica portada de Checker ---
+        self.v3d_frame = ctk.CTkFrame(tab_3d, corner_radius=10, border_width=2, border_color=self.c_magenta, fg_color="#0c0c0c")
+        self.v3d_frame.pack(fill="both", expand=True)
+        self.v3d_frame.grid_rowconfigure(1, weight=1)
+        self.v3d_frame.grid_columnconfigure(0, weight=1)
+        v3d_header = ctk.CTkFrame(self.v3d_frame, fg_color="transparent")
+        v3d_header.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        ctk.CTkLabel(v3d_header, text="3D PREVIEW", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.c_magenta).pack(side="left")
+        ctk.CTkLabel(v3d_header, text="Drag: orbit · Wheel: zoom · Middle drag: pan · Double click: reset",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=12)
+        ctk.CTkButton(v3d_header, text="Reset view", width=70, height=20, fg_color="#2b2b2b", hover_color="#3a3a3a", border_width=1, border_color="gray", command=lambda: self.visor_3d.reset_view()).pack(side="right", padx=5)
+        self.lbl_v3d_info = ctk.CTkLabel(v3d_header, text="", font=ctk.CTkFont(size=11), text_color="gray")
+        self.lbl_v3d_info.pack(side="right", padx=10)
+        self.v3d_container = tk.Frame(self.v3d_frame, bg="#0c0c0c", bd=0, highlightthickness=0)
+        self.v3d_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.visor_3d = Visor3D(self.v3d_container)
+        self.visor_3d.activo = self._v3d_visible
 
 
 
@@ -2252,9 +2293,10 @@ class MegaStripApp(CTkDnD):
 
             self.after(0, self._set_preview_progress, gen, 0.9, "Composing architecture...")
             memo = {}
-            res, sys_canvas = self._componer_frame_preview(p, tiempos[first_idx], memo)
+            out = {}
+            res, sys_canvas = self._componer_frame_preview(p, tiempos[first_idx], memo, strip_out=out)
             if gen != self.render_gen: return
-            self.after(0, self._on_first_preview_frame, gen, first_idx, res, sys_canvas)
+            self.after(0, self._on_first_preview_frame, gen, first_idx, res, sys_canvas, self._strip_3d(out, p), p)
 
             # Escena del reproductor: capa estática + instancias (los vídeos se decodifican aparte, una vez)
             try:
@@ -2269,20 +2311,25 @@ class MegaStripApp(CTkDnD):
             # Resto de frames en segundo plano, sin bloquear la ventana
             for idx in order[1:]:
                 if gen != self.render_gen: return
-                res, sys_canvas = self._componer_frame_preview(p, tiempos[idx], memo)
+                out = {}
+                res, sys_canvas = self._componer_frame_preview(p, tiempos[idx], memo, strip_out=out)
                 if gen != self.render_gen: return
-                self.after(0, self._on_background_preview_frame, gen, idx, res, sys_canvas)
+                self.after(0, self._on_background_preview_frame, gen, idx, res, sys_canvas, self._strip_3d(out, p))
         except Exception as e:
             traceback.print_exc()
             log_error(f"Error en render de preview: {e}")
             self.after(0, self._on_preview_error, gen, e)
 
-    def _on_first_preview_frame(self, gen, idx, res, sys_canvas):
+    def _on_first_preview_frame(self, gen, idx, res, sys_canvas, strip3d=None, p=None):
         if gen != self.render_gen: return
         self.pil_preview_images = [None] * PREVIEW_FRAMES
         self.pil_sys_images = [None] * PREVIEW_FRAMES
+        self.pil_strip3d_images = [None] * PREVIEW_FRAMES
         self.pil_preview_images[idx] = res
         self.pil_sys_images[idx] = sys_canvas
+        self.pil_strip3d_images[idx] = strip3d
+        if p is not None:
+            self._actualizar_maqueta_3d(p)
         self.preview_current_idx = idx
         self.preview_frames_ready = 1
         self._shown_strip = self._shown_sys = None  # no repintar la imagen vieja: la nueva llega enseguida
@@ -2291,10 +2338,12 @@ class MegaStripApp(CTkDnD):
         self.after(100, self.auto_fit_zooms)
         debug("Preview: primer frame listo.")
 
-    def _on_background_preview_frame(self, gen, idx, res, sys_canvas):
+    def _on_background_preview_frame(self, gen, idx, res, sys_canvas, strip3d=None):
         if gen != self.render_gen: return
         self.pil_preview_images[idx] = res
         self.pil_sys_images[idx] = sys_canvas
+        if len(self.pil_strip3d_images) == PREVIEW_FRAMES:
+            self.pil_strip3d_images[idx] = strip3d
         self.preview_frames_ready += 1
         self._update_preview_status_label()
         if self.preview_frames_ready == PREVIEW_FRAMES:
@@ -2315,7 +2364,7 @@ class MegaStripApp(CTkDnD):
         debug(f"{err_txt}")
         self.lbl_preview_status.configure(text=err_txt, text_color="#E74C3C")
 
-    def _componer_frame_preview(self, p, t, memo, capa_estatica=False):
+    def _componer_frame_preview(self, p, t, memo, capa_estatica=False, strip_out=None):
         """Compone un frame de la preview (strip + system). Corre en un hilo: no tocar widgets aquí.
 
         capa_estatica=True: solo lo que no se mueve (base del reproductor); devuelve (res, None).
@@ -2412,6 +2461,8 @@ class MegaStripApp(CTkDnD):
                         logo_img = resized(("logo", logo_path), pil_logo_raw, (e["width"], h_total))
                     master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
 
+        if strip_out is not None:
+            strip_out["master"] = master  # v0.46: el strip tal cual, para 3D PREVIEW
         res = generar_imagen_arquitectura(master, datos, h_total, w_total, p["gl_offset_pct"], bg_color=(0, 0, 0, 0), resample=PREVIEW_RESAMPLE, max_png_width=None)
 
         filas, (src_y_start, src_y_end) = self._filas_system(p)
@@ -2466,7 +2517,8 @@ class MegaStripApp(CTkDnD):
         """Corre en el hilo de render. Replica el orden de pintado de _componer_frame_preview."""
         datos, files = p["datos"], p["files"]
         w_total, h_total = p["w_total"], p["h_total"]
-        static_res, static_sys = self._componer_frame_preview(p, 0.0, memo, capa_estatica=True)
+        out = {}
+        static_res, static_sys = self._componer_frame_preview(p, 0.0, memo, capa_estatica=True, strip_out=out)
         _, segmentos = segmentos_arquitectura(datos, h_total, w_total)
 
         videos, instancias = {}, []
@@ -2536,15 +2588,17 @@ class MegaStripApp(CTkDnD):
         # v0.39: mismas instancias, colocadas en las filas del System File
         filas, v_slice = self._filas_system(p)
         escena_sys = Escena(static_sys, filas, h_total, instancias, videos, v_slice=v_slice)
-        return escena, escena_sys
+        # v0.46: mismas instancias sobre el strip entero (un solo tramo), textura de 3D PREVIEW
+        escena_3d = Escena(out["master"], [(0, w_total, 0, 0)], h_total, instancias, videos)
+        return escena, escena_sys, escena_3d
 
     def _on_player_scene(self, gen, escena):
         if gen != self.render_gen: return
         if escena is None:
             self.player.clear()
         else:
-            escena_strip, escena_sys = escena
-            self.player.set_escena(escena_strip, {self.sys_vista: escena_sys})
+            escena_strip, escena_sys, escena_3d = escena
+            self.player.set_escena(escena_strip, {self.sys_vista: escena_sys, self.vista_3d: escena_3d})
         self.player.release(immediate=True)
         self.actualizar_imagen_preview()
 
@@ -2584,6 +2638,74 @@ class MegaStripApp(CTkDnD):
     def sys_player_show(self, img):
         self._shown_sys, self._shown_sys_player = img, True
         self._sys_player_target.show(self.lbl_sys_image._label, self._oscurecer(img) if self.loading_overlay_on else img)
+
+    # --- 3D PREVIEW (v0.46) ---
+    def _v3d_visible(self):
+        try:
+            return self.preview_tabs.get() == "3D PREVIEW" and self.v3d_container.winfo_ismapped()
+        except Exception:
+            return False
+
+    @staticmethod
+    def _strip_3d(out, p):
+        """Strip limpio de un key frame, reducido a la resolución de textura del 3D. Corre en el hilo de render."""
+        master = out.get("master")
+        if master is None: return None
+        k = escala_textura(p["w_total"])
+        if k >= 1.0: return master.copy()
+        size = (max(1, int(round(master.width * k))), max(1, int(round(master.height * k))))
+        return master.resize(size, PREVIEW_RESAMPLE)
+
+    def _actualizar_maqueta_3d(self, p):
+        """Rehace la U del perímetro con el perfil actual (Width, Goal Line Size, Height) y el modo amplify."""
+        datos = p["datos"]
+        w_total, h_total = p["w_total"], p["h_total"]
+        goal_line = datos["zonas"]["ZONA_1"]["width"]
+        amplify = bool(datos.get("config", {}).get("amplify", False))
+        L, W, bandas = geometria_estadio(w_total, goal_line, h_total, amplify)
+        self._geo3d = (w_total, h_total, L, W)
+        self.visor_3d.set_scene(L, W, bandas)
+        gap = W - goal_line
+        txt = f"Touchline {int(L)} px · Goal Line {goal_line} px"
+        if gap > 0.5:
+            txt += f" · {int(round(gap))} px gap (pitch 110x64 min.)"
+        if amplify:
+            txt += " · 2 rows"
+        self.lbl_v3d_info.configure(text=txt)
+
+    def _refrescar_3d(self):
+        """Pinta en 3D PREVIEW lo mismo que la Architecture Preview: el reproductor o el key frame actual."""
+        if self._geo3d is None or not self._v3d_visible(): return
+        if self.player.engaged and self.player.ready and self.vista_3d.escena is not None:
+            self.player.render()
+            return
+        if not self.pil_strip3d_images: return
+        idx = self.preview_current_idx
+        img = self.pil_strip3d_images[idx] if 0 <= idx < len(self.pil_strip3d_images) else None
+        if img is not None:
+            self.visor_3d.set_strip(img, self._geo3d[0], self._geo3d[1])
+
+    def on_preview_tab_change(self):
+        if self.preview_tabs.get() == "3D PREVIEW":
+            self.after(30, self._refrescar_3d)
+        else:
+            self.after(30, self.auto_fit_zooms)  # el System File estaba oculto: reajustar su zoom
+
+    def v3d_player_view(self):
+        escena = self.vista_3d.escena
+        if escena is None or self._geo3d is None or not self._v3d_visible(): return None
+        rw, rh = escena.res_size
+        k = escala_textura(rw)
+        return {"cw": max(1, int(rw * k)), "ch": max(1, int(rh * k)), "zoom": k, "pan_x": 0, "pan_y": 0}
+
+    def v3d_player_static_view(self, static_strip):
+        v = self.v3d_player_view()
+        if v is None or (v["cw"], v["ch"]) == static_strip.size: return static_strip.copy()
+        return static_strip.resize((v["cw"], v["ch"]), PREVIEW_RESAMPLE)
+
+    def v3d_player_show(self, img):
+        if self._geo3d is not None:
+            self.visor_3d.set_strip(img, self._geo3d[0], self._geo3d[1])
 
     def player_static_view(self, static_res):
         v = self.player_view()
@@ -2741,6 +2863,9 @@ class MegaStripApp(CTkDnD):
             )
             self._shown_strip, self._shown_strip_player = final_strip, False
             self._pintar_label(self.lbl_live_preview, final_strip)
+
+        if not (self.player.engaged and self.player.ready):
+            self._refrescar_3d()  # v0.46: key frame actual en 3D PREVIEW (con el reproductor lo pinta player.render)
 
         if self.player.engaged and self.player.ready and self.sys_vista.escena is not None:
             return  # el System File también lo pinta el reproductor (player.render de arriba)
