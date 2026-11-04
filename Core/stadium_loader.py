@@ -23,13 +23,15 @@ import urllib.request
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 FETCH_TIMEOUT = 6
-DEFAULT_SHEET_ID = "15hfgbbpTAd06OEmSR6Zpad3-xjgN_CiSuLtnS5-ExL0"  # AIM Sport - Atlas Venue Specs
+DEFAULT_SHEET_ID = "1k-DcjAS_4barGv6X280Y6EyryiQVjhbhnae7hlBkkg4"  # TESTS AIM Sport - Atlas Venue Specs
+# Hoja anterior (sin columnas Amplify/Mapping): 15hfgbbpTAd06OEmSR6Zpad3-xjgN_CiSuLtnS5-ExL0
 DEFAULT_SHEET_GID = "1272902361"   # pestaña MASTER ATLAS
 
 # Columna de la hoja (normalizada) -> clave que espera la app
 COLUMN_MAP = {
     "perimeter width": "Width",
-    "perimeter height": "Height",
+    "perimeter height": "Height",   # ya no está en la hoja nueva: se usa Cabinet Height
+    "cabinet height": "Cabinet Height",
     "goal line width": "Goal Line Size",
     "centerboard width": "Center Board Width",
     "canvas width": "Canvas Width",
@@ -39,7 +41,12 @@ COLUMN_MAP = {
     "offset y": "Offset Y",
     "fps": "FPS",
     "competition": "Competition",  # aún no existe en la hoja; se usa si se añade
+    "amplify": "Amplify",          # y/n
+    "mapping": "Mapping",          # nombre del PNG de mapping (texto, se guarda tal cual)
 }
+TEXT_KEYS = ("Competition", "Amplify", "Mapping")
+# 'Deportivo A Coruña - 1st' / '... - 2nd'  -> mismo estadio Amplify, fila 1 o 2
+ROW_SUFFIX = re.compile(r"\s*-\s*(1st|2nd)\s*$", re.IGNORECASE)
 NAME_COLUMN = "club name"
 
 DEFAULTS = {
@@ -47,13 +54,17 @@ DEFAULTS = {
     "Width": 0, "Height": 0, "Goal Line Size": 0, "Center Board Width": 0,
     "Canvas Width": 0, "Canvas Height": 0, "Canvas Mask": 0,  # canvas obligatorio desde la hoja
     "Offset X": 0, "Offset Y": 0, "FPS": 60,
+    "Cabinet Height": 0, "Amplify": False, "Mapping": "",
 }
 REQUIRED = ("Width", "Height", "Canvas Width", "Canvas Height")
+# Columnas que tienen que existir en la cabecera (Height puede salir de Cabinet Height)
+REQUIRED_COLUMNS = ("Width", "Canvas Width", "Canvas Height")
 
 CUSTOM_PROFILE = {
     "Competition": "NONE", "Width": 39456, "Height": 144, "Goal Line Size": 11232,
     "Center Board Width": 1920, "Canvas Width": 3840, "Canvas Height": 2160,
     "Canvas Mask": 96, "Offset X": 0, "Offset Y": 0, "FPS": 60,
+    "Cabinet Height": 144, "Amplify": False, "Mapping": "",
 }
 
 
@@ -93,6 +104,36 @@ def _infer_competition(name):
     return "NONE"
 
 
+def _to_bool(value):
+    return _norm(value) in ("y", "yes", "si", "sí", "true", "1", "x")
+
+
+def _read_row(row, col_for_key):
+    """Fila del CSV -> perfil con DEFAULTS + lo que traiga la hoja (sin validar)."""
+    profile = dict(DEFAULTS)
+    for key, col in col_for_key.items():
+        raw = row[col] if col < len(row) else ""
+        if key in TEXT_KEYS:
+            text = _clean_name(raw)
+            if key == "Amplify":
+                profile[key] = _to_bool(text)
+            elif text and text != "-":
+                profile[key] = text.upper() if key == "Competition" else text
+            continue
+        val = _to_int(raw)
+        if val is not None:
+            profile[key] = val
+    return profile
+
+
+def _fill_height(profile, has_height_col):
+    """Sin columna Perimeter Height: altura = Cabinet Height (x2 en Amplify: lleva las dos filas)."""
+    if has_height_col and profile["Height"]:
+        return
+    cab = profile.get("Cabinet Height") or 0
+    profile["Height"] = cab * 2 if profile.get("Amplify") else cab
+
+
 def parse_sheet_rows(rows):
     """
     rows: lista de listas (CSV ya leído). Detecta la fila de cabecera buscando 'Club Name'
@@ -106,31 +147,37 @@ def parse_sheet_rows(rows):
     name_col = headers.index(NAME_COLUMN)
     col_for_key = {COLUMN_MAP[h]: i for i, h in enumerate(headers) if h in COLUMN_MAP}
 
-    missing = [k for k in REQUIRED if k not in col_for_key]
+    missing = [k for k in REQUIRED_COLUMNS if k not in col_for_key]
+    if "Height" not in col_for_key and "Cabinet Height" not in col_for_key:
+        missing.append("Height (Perimeter Height o Cabinet Height)")
     if missing:
         raise ValueError(f"Faltan columnas obligatorias en la hoja: {missing}")
+    has_height_col = "Height" in col_for_key
 
     stadiums, warnings = {}, []
+    second_rows = []   # (nombre base, perfil, fila) de las filas '- 2nd', se unen al final
     for line_no, row in enumerate(rows[header_idx + 1:], start=header_idx + 2):
         name = _clean_name(row[name_col] if name_col < len(row) else "")
         if not name:
             continue
-
-        profile = dict(DEFAULTS)
-        for key, col in col_for_key.items():
-            raw = row[col] if col < len(row) else ""
-            if key == "Competition":
-                if _clean_name(raw):
-                    profile[key] = _clean_name(raw).upper()
-                continue
-            val = _to_int(raw)
-            if val is not None:
-                profile[key] = val
-        if "Competition" not in col_for_key:
-            profile["Competition"] = _infer_competition(name)
-
         if not any(_to_int(c) for c in row):
             continue  # fila plantilla/vacía (p.ej. 'NUEVO ESTADIO')
+
+        profile = _read_row(row, col_for_key)
+
+        m = ROW_SUFFIX.search(name)
+        if m:
+            base = name[:m.start()].strip()
+            if m.group(1).lower() == "2nd":
+                second_rows.append((base, profile, line_no))
+                continue
+            name = base                 # la '- 1st' da nombre y geometría al estadio
+            profile["Amplify"] = True   # una fila 1st/2nd siempre es Amplify
+
+        if "Competition" not in col_for_key:
+            profile["Competition"] = _infer_competition(name)
+        _fill_height(profile, has_height_col)
+
         bad = [k for k in REQUIRED if not profile[k]]
         if bad:
             warnings.append(f"{name}: falta {', '.join(bad)} (fila {line_no})")
@@ -143,6 +190,15 @@ def parse_sheet_rows(rows):
             warnings.append(f"{name}: nombre duplicado, se usa la primera fila (fila {line_no})")
             continue
         stadiums[name] = profile
+
+    # Filas '- 2nd': Archie pinta la 2nd row con la geometría de la 1st; sus datos propios
+    # (Touchline, Offset X, Mapping...) se guardan en 'Row 2' para usarlos más adelante.
+    for base, row2, line_no in second_rows:
+        if base not in stadiums:
+            warnings.append(f"{base} - 2nd: no hay fila '{base} - 1st' valida (fila {line_no})")
+            continue
+        stadiums[base]["Row 2"] = {k: v for k, v in row2.items()
+                                   if k not in ("Competition", "Amplify") and v not in (0, "")}
 
     return stadiums, warnings
 

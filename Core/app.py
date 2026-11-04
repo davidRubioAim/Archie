@@ -1887,7 +1887,8 @@ class MegaStripApp(CTkDnD):
         data = self.stadium_data[choice]
         is_custom = (choice == "Custom")
         
-        self.amplify_var.set("AMPLIFY" in choice.upper())
+        # v0.51: la hoja trae columna Amplify (y/n); el nombre con "AMPLIFY" se mantiene por compatibilidad
+        self.amplify_var.set(bool(data.get("Amplify")) or "AMPLIFY" in choice.upper())
         self.on_amplify_toggle()
         
         for key, entry in self.inputs.items():

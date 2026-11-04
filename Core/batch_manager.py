@@ -196,7 +196,7 @@ class BatchManager:
             self.app.after(0, lambda n=n, s=stadium_name: self.app.lbl_overlay_status.configure(
                 text=f"QC images {n}/{len(stadiums)}: {s}", text_color="white"))
             stadium_info = self.app.stadium_data[stadium_name]
-            best_config = self.headless_auto_solver(stadium_info)
+            best_config = self.headless_auto_solver(stadium_info, stadium_name)
             
             data = calcular_layout_data(
                 w_total=stadium_info["Width"], h_total=stadium_info["Height"], 
@@ -298,7 +298,7 @@ class BatchManager:
             "qty_gl_under": int(self.app.qty_gl_under_slider.get()),
             "qty_tl_under": int(self.app.qty_tl_under_slider.get()),
             "show_cb": getattr(self.app, "show_cb_var", ctk.BooleanVar(value=True)).get(),
-            "amplify": self.app.amplify_var.get() or ("AMPLIFY" in stadium_name.upper()),
+            "amplify": bool(stadium_info.get("Amplify")) or ("AMPLIFY" in stadium_name.upper()),
             "invert_order": getattr(self.app, "invert_order_var", ctk.BooleanVar(value=False)).get(),
             "hide_extreme_edges": getattr(self.app, "current_hide_edges", False),
             "max_anim_gl": int(self.app.max_anim_gl_slider.get()),
