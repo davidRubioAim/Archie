@@ -38,6 +38,7 @@ TEX_STRIP_MAX_W = 16384          # ancho máximo del strip que se usa como textu
 PITCH_W_MIN = 64.0 / 110.0       # ancho/largo mínimo de un campo reglamentario (110 x 64 m)
 PITCH_W_STD = 68.0 / 105.0       # campo estándar (105 x 68 m), solo si no hay goal line
 SETTLE_MS = 180                  # tras soltar el ratón se repinta con filtrado suave
+ROT_SENS = 0.5                   # v0.49: suavidad de la rotación con clic derecho (1 = la imagen sigue al ratón)
 
 
 # --------------------------------------------------------------------------
@@ -581,7 +582,10 @@ class Visor3D:
         dx, dy = e.x - lx, e.y - ly
         self._drag = (n, e.x, e.y)
         if n == 3:   # botón derecho: la cámara gira sobre su propio centro
-            self.escena.rotar_camara(math.radians(dx * 0.2), -math.radians(dy * 0.2))
+            # v0.49: sensibilidad proporcional al FOV. Con ROT_SENS = 1 la imagen seguiría al ratón 1:1;
+            # por debajo va más suave. Al hacer zoom (FOV menor) gira menos por píxel.
+            k = math.radians(self.escena.fov) / max(1, self.label.winfo_height()) * ROT_SENS
+            self.escena.rotar_camara(dx * k, -dy * k)
         else:        # izquierdo o rueda pulsada: mover
             self.escena.pan(dx, dy)
         self.request_render()
