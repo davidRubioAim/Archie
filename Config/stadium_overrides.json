@@ -1,0 +1,52 @@
+{
+    "_formato": "Ver Core/edge_cases.py. Todo en px. tramos = [x_ini_strip, x_fin_strip, x_lienzo, y_lienzo]. zonas_negras = [x_ini, x_fin] del strip. Goal Position = px absolutos desde el inicio del strip (GLR en espejo).",
+    "TSG Hoffenheim": {
+        "alias": [
+            "TSG Hoffenheim FEM",
+            "TSG Hoffenheim Women"
+        ],
+        "nota": "System file en 2 bloques: A (x=0, 3072 px, cabinets 1-176) y B (x=3072, 768 px, cabinets 177-205). Brands reservados al inicio del GLL y al final del GLR.",
+        "perfil": {
+            "Competition": "NONE",
+            "Width": 39360,
+            "Height": 192,
+            "Cabinet Height": 192,
+            "Goal Line Size": 10560,
+            "Center Board Width": 0,
+            "Canvas Width": 3840,
+            "Canvas Height": 2160,
+            "Canvas Mask": 0,
+            "Offset X": 0,
+            "Offset Y": 0,
+            "FPS": 60,
+            "Amplify": false,
+            "Mapping": "01_TSG_HOFFENHEIM FEM_MAPPING_NO CB_4K.png",
+            "Goal Position": 4992
+        },
+        "zonas_negras": [
+            [0, 3200],
+            [36160, 39360]
+        ],
+        "tramos": [
+            [0, 3072, 0, 0],
+            [3072, 6144, 0, 192],
+            [6144, 9216, 0, 384],
+            [9216, 12288, 0, 576],
+            [12288, 15360, 0, 768],
+            [15360, 18432, 0, 960],
+            [18432, 21504, 0, 1152],
+            [21504, 24576, 0, 1344],
+            [24576, 27648, 0, 1536],
+            [27648, 30720, 0, 1728],
+            [30720, 33792, 0, 1920],
+            [33792, 34560, 3072, 0],
+            [34560, 35328, 3072, 192],
+            [35328, 36096, 3072, 384],
+            [36096, 36864, 3072, 576],
+            [36864, 37632, 3072, 768],
+            [37632, 38400, 3072, 960],
+            [38400, 39168, 3072, 1152],
+            [39168, 39360, 3072, 1344]
+        ]
+    }
+}
