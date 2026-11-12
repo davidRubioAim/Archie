@@ -10,6 +10,9 @@ Orden de fuentes:
   3. Config/stadium_library.json         -> JSON legacy, por si acaso
   4. Perfil "Custom" mínimo hardcodeado
 
+v0.52: después, Config/stadium_overrides.json (edge cases: Hoffenheim...) sustituye el perfil de esos
+estadios, venga de donde venga el resto. La hoja no se toca. Ver edge_cases.py.
+
 Configuración: usa DEFAULT_SHEET_ID / DEFAULT_SHEET_GID; se pueden sobrescribir en Config/.env
   STADIUM_SHEET_ID=<id de la URL: docs.google.com/spreadsheets/d/<ID>/edit>
   STADIUM_SHEET_GID=<gid de la pestaña: ...#gid=<GID>>
@@ -20,6 +23,8 @@ import json
 import os
 import re
 import urllib.request
+
+from edge_cases import cargar_overrides, aplicar_overrides
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 FETCH_TIMEOUT = 6
@@ -240,6 +245,14 @@ def _log_summary(log, stadiums, warnings, previous):
 
 
 def load_stadium_library(config_dir, log=print, fallback_dirs=()):
+    """v0.52: carga normal + overrides de edge cases (la copia local de Config/ gana a la de la versión)."""
+    data, source = _load_base_library(config_dir, log, fallback_dirs)
+    overrides = cargar_overrides([*reversed(fallback_dirs), config_dir], log)
+    data = _with_custom(aplicar_overrides({k: v for k, v in data.items() if k != "Custom"}, overrides, DEFAULTS, log))
+    return data, source
+
+
+def _load_base_library(config_dir, log=print, fallback_dirs=()):
     """
     Devuelve (stadium_data, source) donde source ∈ {'sheets', 'cache', 'json', 'default'}.
     stadium_data mantiene el formato de stadium_library.json, con 'Custom' siempre primero.

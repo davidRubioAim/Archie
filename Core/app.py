@@ -16,6 +16,7 @@ from google import genai
 from google.genai import types
 
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura, segmentos_arquitectura
+from edge_cases import edge_de, filas_system, restar_zonas, pintar_zonas_negras
 from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios
@@ -1886,6 +1887,11 @@ class MegaStripApp(CTkDnD):
             
         data = self.stadium_data[choice]
         is_custom = (choice == "Custom")
+        # v0.52: edge case (Config/stadium_overrides.json): tramos del system file, zonas negras y Goal Position
+        self.edge_case_actual = None if is_custom else data.get("Edge Case")
+        if self.edge_case_actual:
+            debug(f"Edge case activo: {choice} ({len(self.edge_case_actual.get('tramos') or [])} tramos, "
+                  f"zonas negras {self.edge_case_actual.get('zonas_negras')})")
         
         # v0.51: la hoja trae columna Amplify (y/n); el nombre con "AMPLIFY" se mantiene por compatibilidad
         self.amplify_var.set(bool(data.get("Amplify")) or "AMPLIFY" in choice.upper())
@@ -1978,7 +1984,8 @@ class MegaStripApp(CTkDnD):
                 "amplify": self.amplify_var.get(),
                 "max_anim_gl": int(self.max_anim_gl_slider.get()),
                 "max_anim_tl": int(self.max_anim_tl_slider.get()),
-                "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get()
+                "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
+                "edge_case": getattr(self, "edge_case_actual", None),
             }
             res = calcular_layout_data(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, config)
             if res:
@@ -2001,6 +2008,11 @@ class MegaStripApp(CTkDnD):
                         "height": sys_h
                     }
                 }
+                edge = config["edge_case"] or {}
+                if edge.get("tramos"):
+                    res["system_file"]["tramos"] = edge["tramos"]
+                if edge.get("zonas_negras"):
+                    res["zonas_negras"] = edge["zonas_negras"]
             return res
         except Exception as e:
             traceback.print_exc()
@@ -2468,6 +2480,8 @@ class MegaStripApp(CTkDnD):
                         logo_img = resized(("logo", logo_path), pil_logo_raw, (e["width"], h_total))
                     master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
 
+        pintar_zonas_negras(master, edge_de(datos).get("zonas_negras"))  # v0.52: brands reservados
+
         if strip_out is not None:
             strip_out["master"] = master  # v0.46: el strip tal cual, para 3D PREVIEW
         res = generar_imagen_arquitectura(master, datos, h_total, w_total, p["gl_offset_pct"], bg_color=(0, 0, 0, 0), resample=PREVIEW_RESAMPLE, max_png_width=None)
@@ -2505,16 +2519,8 @@ class MegaStripApp(CTkDnD):
             h_slice = h_total
             v_slice = (0, h_total)
 
-        advance = p["sys_w"] - sys_mask
-        total_rows = math.ceil((w_total + sys_off_x) / advance)
-        filas = []
-        for i in range(total_rows):
-            x_m_strip = i * advance - sys_off_x
-            crop_x1 = max(0, x_m_strip)
-            crop_x2 = min(w_total, x_m_strip + advance)
-            if crop_x1 >= crop_x2: continue
-            x_canvas = abs(x_m_strip) if x_m_strip < 0 else 0
-            filas.append((crop_x1, crop_x2, x_canvas, sys_off_y + (i * h_slice)))
+        # v0.52: el reparto vive en edge_cases.filas_system (estándar o tramos explícitos del edge case)
+        filas = filas_system(w_total, h_slice, p["sys_w"], sys_mask, sys_off_x, sys_off_y, edge_de(datos))
         return filas, v_slice
 
     # ==========================================
@@ -2591,12 +2597,14 @@ class MegaStripApp(CTkDnD):
                     if logo_still is not None:
                         instancias.append({"src": logo_still, "x": e["x_absoluta"], "w": e["width"], "mask": True})
 
-        escena = Escena(static_res, segmentos, h_total, instancias, videos)
+        # v0.52: el reproductor no pinta vídeo sobre las zonas negras (edge cases)
+        negras = edge_de(datos).get("zonas_negras")
+        escena = Escena(static_res, restar_zonas(segmentos, negras), h_total, instancias, videos)
         # v0.39: mismas instancias, colocadas en las filas del System File
         filas, v_slice = self._filas_system(p)
-        escena_sys = Escena(static_sys, filas, h_total, instancias, videos, v_slice=v_slice)
+        escena_sys = Escena(static_sys, restar_zonas(filas, negras), h_total, instancias, videos, v_slice=v_slice)
         # v0.46: mismas instancias sobre el strip entero (un solo tramo), textura de 3D PREVIEW
-        escena_3d = Escena(out["master"], [(0, w_total, 0, 0)], h_total, instancias, videos)
+        escena_3d = Escena(out["master"], restar_zonas([(0, w_total, 0, 0)], negras), h_total, instancias, videos)
         return escena, escena_sys, escena_3d
 
     def _on_player_scene(self, gen, escena):

@@ -7,6 +7,7 @@ from moviepy import VideoFileClip
 
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from log_utils import debug, log_error
+from edge_cases import edge_de, pintar_zonas_negras
 
 try:
     RESAMPLE_METHOD = Image.Resampling.LANCZOS
@@ -233,6 +234,11 @@ class BatchManager:
                     "height": sys_h
                 }
             }
+            edge = stadium_info.get("Edge Case") or {}
+            if edge.get("tramos"):
+                data["system_file"]["tramos"] = edge["tramos"]
+            if edge.get("zonas_negras"):
+                data["zonas_negras"] = edge["zonas_negras"]
 
             self.generate_reference_pngs(data, stadium_name, base_filename, out_dir, cancel_check=cancelado)
             preparados.append((data, stadium_name))
@@ -302,7 +308,8 @@ class BatchManager:
             "invert_order": getattr(self.app, "invert_order_var", ctk.BooleanVar(value=False)).get(),
             "hide_extreme_edges": getattr(self.app, "current_hide_edges", False),
             "max_anim_gl": int(self.app.max_anim_gl_slider.get()),
-            "max_anim_tl": int(self.app.max_anim_tl_slider.get())
+            "max_anim_tl": int(self.app.max_anim_tl_slider.get()),
+            "edge_case": stadium_info.get("Edge Case"),  # v0.52: stadium_overrides.json
         }
 
         logo_path = self.app.archivos_cargados.get("static_logo")
@@ -455,6 +462,7 @@ class BatchManager:
                             logo_img = pil_logo_raw.resize((e["width"], h_total), RESAMPLE_METHOD)
                         master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
 
+            pintar_zonas_negras(master, edge_de(datos).get("zonas_negras"))  # v0.52
             res = generar_imagen_arquitectura(master, datos, h_total, w_total, gl_offset_pct, bg_color=(235, 235, 235, 255))
             
             ref_filename = f"{base_filename}_{stadium_clean}_QC_Ref_{idx+1}.png"

@@ -5,6 +5,7 @@ from moviepy import VideoFileClip
 from PIL import Image, ImageDraw, ImageFont
 from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE
+from edge_cases import reservas_laterales
 
 
 class Distribuidor:
@@ -23,6 +24,12 @@ class Distribuidor:
     self.archivos = archivos
     self.config = config
     self.anim_counter = 0
+
+    # v0.52: edge cases (stadium_overrides.json). Zonas negras en los extremos del strip que el motor
+    # no puede ocupar, y Goal Position absoluta (px desde el inicio del strip; el GLR va en espejo).
+    edge = config.get("edge_case") or {}
+    self.res_izq, self.res_der = reservas_laterales(edge, w_total)
+    self.goal_pos = edge.get("goal_position")
 
     self.logo_w, self.logo_h = self.get_dimensions(
         archivos.get("static_logo"), 1000, 200
@@ -257,13 +264,13 @@ class Distribuidor:
           if dist > max_distorsion:
             max_distorsion = dist
 
-    bound_izq = 0
-    bound_der_izq = cb_start if self.cb_width > 0 else self.w_total
+    bound_izq = self.res_izq
+    bound_der_izq = cb_start if self.cb_width > 0 else self.w_total - self.res_der
     procesar_bloque(elementos_izq, bound_izq, bound_der_izq)
 
     if self.cb_width > 0:
       bound_der = cb_end
-      bound_der_der = self.w_total
+      bound_der_der = self.w_total - self.res_der
       procesar_bloque(elementos_der, bound_der, bound_der_der)
 
     if max_distorsion > 1.15 and "stretch_fit_15" not in warnings:
@@ -386,18 +393,18 @@ class Distribuidor:
 
       if not hide_extreme_edges and qty_corner > 0:
         zonas["ZONA_1"]["elementos"].extend(
-            self.place_logos(m_half, qty_corner)
+            self.place_logos(self.res_izq + m_half, qty_corner)
         )
         zonas["ZONA_5"]["elementos"].extend(
             self.place_logos(
-                (self.w_total - m_half) - w_corner, qty_corner
+                (self.w_total - self.res_der - m_half) - w_corner, qty_corner
             )
         )
-        z1_left_bound = m_half + w_corner
-        z5_right_bound = (self.w_total - m_half) - w_corner
+        z1_left_bound = self.res_izq + m_half + w_corner
+        z5_right_bound = (self.w_total - self.res_der - m_half) - w_corner
       else:
-        z1_left_bound = m_half
-        z5_right_bound = self.w_total - m_half
+        z1_left_bound = self.res_izq + m_half
+        z5_right_bound = self.w_total - self.res_der - m_half
 
       if corner_logo_split and qty_corner > 0:
         c1_start = z1_w - (w_corner / 2.0)
@@ -440,6 +447,8 @@ class Distribuidor:
 
       gl_offset_pct = self.config.get("gl_offset", 0) / 100.0
       anchor_1 = z1_w * (0.5 + gl_offset_pct)
+      if self.goal_pos is not None:  # v0.52: portería en posición absoluta (ignora la zona negra)
+        anchor_1 = self.goal_pos + z1_w * gl_offset_pct
 
       if qty_goal > 0:
         gl1_start = anchor_1 - (w_goal / 2.0)
@@ -525,6 +534,8 @@ class Distribuidor:
 
       anchor_5 = z5_w * (0.5 - gl_offset_pct)
       anchor_5_abs = z5_start + anchor_5
+      if self.goal_pos is not None:
+        anchor_5_abs = self.w_total - self.goal_pos - z5_w * gl_offset_pct
 
       if qty_goal > 0:
         gl5_start = anchor_5_abs - (w_goal / 2.0)
@@ -608,7 +619,7 @@ class Distribuidor:
           lu_z1_start = (
               z1_left_bound
               if (not hide_extreme_edges and qty_corner > 0)
-              else 0
+              else self.res_izq
           )
           lu_c1_start = c1_start if qty_corner > 0 else z1_w
           lu_c1_end = c1_end if qty_corner > 0 else z2_start
@@ -617,7 +628,7 @@ class Distribuidor:
           lu_z5_end = (
               z5_right_bound
               if (not hide_extreme_edges and qty_corner > 0)
-              else self.w_total
+              else self.w_total - self.res_der
           )
 
           # 2. GENERACIÓN UNIFORME PURA SIN SUBDIVISIÓN DE PORTERÍAS NI CLÚSTERES
@@ -849,10 +860,10 @@ class Distribuidor:
         zonas[z_name]["elementos"].append(elem)
         cx += item["w"] + G
 
-    fill_zone_flexbox("ZONA_1", z1_w, 0, qty_goal)
+    fill_zone_flexbox("ZONA_1", z1_w - self.res_izq, self.res_izq, qty_goal)
     fill_zone_flexbox("ZONA_2", z2_w, z2_start, qty_tl)
     fill_zone_flexbox("ZONA_4", z4_w, z4_start, qty_tl)
-    fill_zone_flexbox("ZONA_5", z5_w, z5_start, qty_goal)
+    fill_zone_flexbox("ZONA_5", z5_w - self.res_der, z5_start, qty_goal)
 
     return {
         "proyecto": "AE_EXPORT",
@@ -888,11 +899,11 @@ class Distribuidor:
           "x_absoluta": int(cb_start),
       })
 
-    left_w = cb_start
+    left_w = cb_start - self.res_izq
     n_left = int((left_w + self.margin) // (self.anim_w + self.margin))
     if n_left > 0:
       gap = (left_w - n_left * self.anim_w) / max(1, n_left)
-      cx = gap / 2.0
+      cx = self.res_izq + gap / 2.0
       for _ in range(n_left):
         zonas["ZONA_FALLBACK"]["elementos"].append({
             "tipo": "anim_zone",
@@ -902,7 +913,7 @@ class Distribuidor:
         })
         cx += self.anim_w + gap
 
-    right_w = self.w_total - cb_end
+    right_w = self.w_total - self.res_der - cb_end
     n_right = int((right_w + self.margin) // (self.anim_w + self.margin))
     if n_right > 0:
       gap = (right_w - n_right * self.anim_w) / max(1, n_right)
@@ -1038,6 +1049,10 @@ def generar_imagen_arquitectura(
 
   cx_g1 = x_c1 + int(z1_w * (0.5 + gl_offset_pct))
   cx_g5 = x_c5 + int(z5_w * (0.5 - gl_offset_pct))
+  goal_pos = ((datos.get("config") or {}).get("edge_case") or {}).get("goal_position")
+  if goal_pos is not None:  # v0.52: misma posición absoluta que usa el motor
+    cx_g1 = x_c1 + int(goal_pos + z1_w * gl_offset_pct) - segs[0][0]
+    cx_g5 = x_c5 + int(w_total - goal_pos - z5_w * gl_offset_pct) - segs[2][0]
 
   text_y1 = y1 - int(h_total * 1.3)
   text_y2 = y2 - int(h_total * 0.5)

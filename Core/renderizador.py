@@ -7,6 +7,7 @@ from PIL import Image
 from moviepy import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, VideoClip, concatenate_videoclips
 from proglog import ProgressBarLogger
 from log_utils import debug, log_error
+from edge_cases import edge_de, filas_system
 
 class UILogger(ProgressBarLogger):
     def __init__(self, ui_callback, cancel_check=None):
@@ -230,6 +231,12 @@ def construir_mega_strip(datos):
 
                 lista_composicion.append(clip)
 
+    # v0.52: zonas negras del edge case (brands reservados), encima de todo
+    for a, b in (edge_de(datos).get("zonas_negras") or []):
+        a, b = max(0, a), min(w_total, b)
+        if b > a:
+            lista_composicion.append(ColorClip(size=(b - a, h_total), color=(0, 0, 0), duration=duracion_video).with_position((a, 0)))
+
     mega_strip_clip = CompositeVideoClip(lista_composicion, size=(w_total, h_total))
     debug("Composición base de Mega Strip finalizada.")
     return mega_strip_clip, w_total, h_total, duracion_video
@@ -268,21 +275,16 @@ def renderizar_system_file_moviepy(json_path, output_filename="resultado_system.
         h_slice = h_total
         src_y_start, src_y_end = 0, h_total
 
-    advance = sys_w - sys_mask
-    total_rows = math.ceil((w_total + sys_off_x) / max(1, advance))
+    # v0.52: filas estándar o tramos explícitos del edge case
+    filas = filas_system(w_total, h_slice, sys_w, sys_mask, sys_off_x, sys_off_y, edge_de(datos))
     
     def make_system_frame(t):
         mega_frame = mega_strip_clip.get_frame(t)
         sys_frame = np.zeros((sys_h, sys_w, 3), dtype=np.uint8)
         
-        for i in range(total_rows):
-            x_m_strip = i * advance - sys_off_x
-            crop_x1 = max(0, x_m_strip)
-            crop_x2 = min(w_total, x_m_strip + advance)
+        for crop_x1, crop_x2, x_canvas, paste_y in filas:
+            crop_x2 = min(crop_x2, crop_x1 + max(0, sys_w - x_canvas))
             if crop_x1 >= crop_x2: continue 
-            
-            x_canvas = abs(x_m_strip) if x_m_strip < 0 else 0
-            paste_y = sys_off_y + (i * h_slice)
             
             y1, y2 = paste_y, paste_y + h_slice
             cur_src_y1, cur_src_y2 = src_y_start, src_y_end

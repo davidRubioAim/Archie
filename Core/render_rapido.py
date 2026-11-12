@@ -28,6 +28,7 @@ from moviepy.tools import cross_platform_popen_params
 from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
 
 from log_utils import debug, log_error
+from edge_cases import edge_de, filas_system
 
 RENDER_FPS = 25
 ENCODER = "auto"        # "auto": GPU si hay y funciona, si no CPU · "cpu": siempre libx264 · o un codec concreto ("h264_nvenc"...)
@@ -169,6 +170,8 @@ class _Escena:
         self.fps = fps
         self.w = datos["dimensiones_globales"]["width"]
         self.h = datos["dimensiones_globales"]["height"]
+        # v0.52: zonas negras del edge case (brands reservados), se pintan encima de todo en cada frame
+        self.negras = [(max(0, a), min(self.w, b)) for a, b in (edge_de(datos).get("zonas_negras") or []) if b > a]
         archivos = datos["archivos_fuente"]
         h = self.h
 
@@ -320,6 +323,8 @@ class _Escena:
                     im = imgs[key][slot]
                     for bx in range(0, self.w, bw):
                         strip.paste(im, (bx, 0))
+            for a, b in self.negras:
+                strip.paste((0, 0, 0), (a, 0, b, self.h))
             yield strip
 
     def close(self):
@@ -491,16 +496,13 @@ def renderizar_system_file(json_path, output_filename, progress_callback=None, c
             src_y_start, src_y_end = 0, h_total
 
         # Recortes precalculados (misma geometría que el motor MoviePy)
-        advance = sys_w - sys_mask
-        total_rows = math.ceil((w_total + sys_off_x) / max(1, advance))
+        # v0.52: filas estándar o tramos explícitos del edge case (edge_cases.filas_system)
         cortes = []
-        for i in range(total_rows):
-            x_m_strip = i * advance - sys_off_x
-            crop_x1, crop_x2 = max(0, x_m_strip), min(w_total, x_m_strip + advance)
+        for crop_x1, crop_x2, x_canvas, y1 in filas_system(w_total, h_slice, sys_w, sys_mask, sys_off_x, sys_off_y,
+                                                           edge_de(datos)):
+            crop_x2 = min(crop_x2, crop_x1 + max(0, sys_w - x_canvas))  # nada fuera del lienzo por la derecha
             if crop_x1 >= crop_x2:
                 continue
-            x_canvas = abs(x_m_strip) if x_m_strip < 0 else 0
-            y1 = sys_off_y + i * h_slice
             y2 = y1 + h_slice
             s1, s2 = src_y_start, src_y_end
             if y1 < 0:
