@@ -42,6 +42,10 @@ SYSTEM_BUFSIZE = "30000k"
 # Sin esto ffmpeg convierte RGB->YUV con la matriz BT.601 por defecto y no etiqueta el archivo: los players
 # "adivinan" la matriz por resolución y en lienzos raros (ultra-wide) el color se desplaza.
 VF_REC709 = "scale=out_color_matrix=bt709:out_range=tv:flags=accurate_rnd+full_chroma_int"
+# v0.56: con ffmpeg 7.1 (el de Archie) las opciones -color_primaries/-color_trc se pierden: el encoder toma esos
+# valores de los frames filtrados (que llegan "unspecified") y el átomo colr del MP4 salía 2/2/1. setparams los
+# fija en los frames, así coinciden SPS (VUI), codecpar y colr.
+SETPARAMS_REC709 = "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
 TAGS_REC709 = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"]
 # Reescribe el VUI del SPS H.264 (por si un encoder por GPU no lo hace) y fuerza el átomo 'colr' del MP4
 BSF_REC709 = ["-bsf:v", "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1:video_full_range_flag=0",
@@ -50,7 +54,7 @@ BSF_REC709 = ["-bsf:v", "h264_metadata=colour_primaries=1:transfer_characteristi
 
 def args_rec709(pix_fmt="yuv420p"):
     """Argumentos de salida de ffmpeg para un H.264 Rec.709 limpio (entrada rgb24)."""
-    return ["-vf", f"{VF_REC709},format={pix_fmt}", *TAGS_REC709, *BSF_REC709]
+    return ["-vf", f"{VF_REC709},format={pix_fmt},{SETPARAMS_REC709}", *TAGS_REC709, *BSF_REC709]
 
 
 VIDEO_EXTS = (".mov", ".mp4", ".m4v", ".avi")
