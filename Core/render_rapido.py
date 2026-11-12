@@ -18,6 +18,7 @@ import os
 import queue
 import re
 import subprocess
+import tempfile
 import threading
 
 import numpy as np
@@ -37,8 +38,25 @@ X264_PRESET = "veryfast"
 SYSTEM_BITRATE = "15000k"
 SYSTEM_BUFSIZE = "30000k"
 
+# v0.55: color Rec.709 explícito (SDR, rango limitado 16-235).
+# Sin esto ffmpeg convierte RGB->YUV con la matriz BT.601 por defecto y no etiqueta el archivo: los players
+# "adivinan" la matriz por resolución y en lienzos raros (ultra-wide) el color se desplaza.
+VF_REC709 = "scale=out_color_matrix=bt709:out_range=tv:flags=accurate_rnd+full_chroma_int"
+TAGS_REC709 = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"]
+# Reescribe el VUI del SPS H.264 (por si un encoder por GPU no lo hace) y fuerza el átomo 'colr' del MP4
+BSF_REC709 = ["-bsf:v", "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1:video_full_range_flag=0",
+              "-movflags", "+write_colr"]
+
+
+def args_rec709(pix_fmt="yuv420p"):
+    """Argumentos de salida de ffmpeg para un H.264 Rec.709 limpio (entrada rgb24)."""
+    return ["-vf", f"{VF_REC709},format={pix_fmt}", *TAGS_REC709, *BSF_REC709]
+
+
 VIDEO_EXTS = (".mov", ".mp4", ".m4v", ".avi")
 _ALPHA_PIX = re.compile(r"Video:.*?\b(yuva\w*|rgba\w*|argb\w*|bgra\w*|abgr\w*|gbrap\w*|ya8|ya16\w*|pal8)\b")
+_VIDEO_LINE = re.compile(r"Stream #\S+.*?Video:\s*(.*)")
+_MATRICES = ("bt709", "bt470bg", "smpte170m", "bt2020nc", "bt2020c", "smpte240m", "fcc")
 
 
 class RenderCancelled(Exception):
@@ -58,9 +76,32 @@ def _popen(cmd, **kw):
 
 # ---------------------------------------------------------------- Metadatos
 _info_cache = {}
+_yuv_cache = {}
+
+
+def _scale_in(path):
+    """Sufijo para scale=...: matriz y rango del fuente (solo afecta a fuentes YUV; RGB/PNG lo ignoran)."""
+    if os.path.abspath(path) not in _yuv_cache:
+        try:
+            _info(path)
+        except Exception:
+            return ":in_color_matrix=bt709:in_range=tv"
+    return _yuv_cache.get(os.path.abspath(path), ":in_color_matrix=bt709:in_range=tv")
+
+def _yuv_in(err):
+    """Opciones de entrada para el scale (YUV->RGB) según las etiquetas del vídeo fuente.
+    Si el fuente no trae matriz/rango se asume Rec.709 limitado (ffmpeg asumiría BT.601)."""
+    m = _VIDEO_LINE.search(err)
+    line = m.group(1) if m else ""
+    paren = re.search(r",\s*\w+\(([^)]*)\)", line)  # el paréntesis del pix_fmt: "yuv420p(tv, bt709, progressive)"
+    tags = [t.strip() for t in paren.group(1).split(",")] if paren else []
+    matrix = next((t.split("/")[0] for t in tags if t.split("/")[0] in _MATRICES), "bt709")
+    rng = "pc" if "pc" in tags else "tv"
+    return f":in_color_matrix={matrix}:in_range={rng}"
+
 
 def _info(path):
-    """(duración, (w, h), tiene_alfa) de un vídeo."""
+    """(duración, (w, h), tiene_alfa) de un vídeo. Las opciones YUV de entrada quedan en _yuv_cache."""
     st = os.stat(path)
     key = (os.path.abspath(path), st.st_size, int(st.st_mtime))
     if key not in _info_cache:
@@ -69,8 +110,10 @@ def _info(path):
         size = tuple(raw.get("video_size") or (0, 0))
         proc = _popen([FFMPEG_BINARY, "-hide_banner", "-i", path])
         _, err = proc.communicate()
-        alpha = bool(_ALPHA_PIX.search(err.decode("utf8", "ignore")))
+        txt = err.decode("utf8", "ignore")
+        alpha = bool(_ALPHA_PIX.search(txt))
         _info_cache[key] = (dur, size, alpha)
+        _yuv_cache[os.path.abspath(path)] = _yuv_in(txt)
     return _info_cache[key]
 
 
@@ -78,7 +121,7 @@ def _frame(path, t, w, h, alpha):
     """Un frame suelto de un vídeo, escalado a (w, h), como PIL RGBA o RGB."""
     pix, mode, bpp = ("rgba", "RGBA", 4) if alpha else ("rgb24", "RGB", 3)
     cmd = [FFMPEG_BINARY, "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", path, "-frames:v", "1",
-           "-vf", f"scale={w}:{h}:flags=lanczos", "-f", "rawvideo", "-pix_fmt", pix, "-"]
+           "-vf", f"scale={w}:{h}:flags=lanczos{_scale_in(path)},format={pix}", "-f", "rawvideo", "-pix_fmt", pix, "-"]
     out, err = _popen(cmd).communicate()
     if len(out) < w * h * bpp:
         raise RuntimeError(f"ffmpeg no devolvió frame de {os.path.basename(path)} @ {t:.2f}s: {err.decode('utf8', 'ignore')[-200:]}")
@@ -99,11 +142,12 @@ class _Decoder:
         dur = _info(path)[0]
         loop = ["-stream_loop", "-1"] if dur and dur < n_frames / fps else []
         k = len(self.widths)
+        cin = _scale_in(path)  # v0.55: YUV->RGB con la matriz real del fuente (Rec.709 si no viene etiquetado)
         if k == 1:
-            graph = f"[0:v]fps={fps},scale={self.widths[0]}:{h}:flags=lanczos,format={pix}[out]"
+            graph = f"[0:v]fps={fps},scale={self.widths[0]}:{h}:flags=lanczos{cin},format={pix}[out]"
         else:
             parts = [f"[0:v]fps={fps},split={k}" + "".join(f"[s{i}]" for i in range(k))]
-            parts += [f"[s{i}]scale={w}:{h}:flags=lanczos[r{i}]" for i, w in enumerate(self.widths)]
+            parts += [f"[s{i}]scale={w}:{h}:flags=lanczos{cin},format={pix}[r{i}]" for i, w in enumerate(self.widths)]
             parts.append("".join(f"[r{i}]" for i in range(k)) + f"hstack=inputs={k},format={pix}[out]")
             graph = ";".join(parts)
         cmd = [FFMPEG_BINARY, "-v", "error", *loop, "-i", path, "-an", "-sn", "-filter_complex", graph,
@@ -336,25 +380,33 @@ class _Escena:
 _hw_cache = {}
 
 def _probar_encoder(codec, args):
-    cmd = [FFMPEG_BINARY, "-v", "error", "-f", "lavfi", "-i", "color=black:s=3840x2160:r=25:d=0.2",
-           "-c:v", codec, *args, "-f", "null", "-"]
+    # Se prueba con la misma cadena de color que el render real (incluido el bsf h264_metadata)
+    # (a un .mp4 temporal: el muxer mp4 necesita poder hacer seek, con NUL fallaría siempre)
+    tmp = os.path.join(tempfile.gettempdir(), f"archie_probe_{codec}_{os.getpid()}.mp4")
+    cmd = [FFMPEG_BINARY, "-y", "-v", "error", "-f", "lavfi", "-i", "color=black:s=3840x2160:r=25:d=0.2,format=rgb24",
+           "-c:v", codec, *args, tmp]
     try:
         proc = _popen(cmd)
         proc.communicate(timeout=20)
         return proc.returncode == 0
     except Exception:
         return False
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _hw_args(codec):
     rate = ["-b:v", SYSTEM_BITRATE, "-minrate", SYSTEM_BITRATE, "-maxrate", SYSTEM_BITRATE, "-bufsize", SYSTEM_BUFSIZE]
     if codec == "h264_nvenc":
-        return ["-preset", "p4", "-rc", "cbr", *rate, "-pix_fmt", "yuv420p"]
+        return ["-preset", "p4", "-rc", "cbr", *rate, "-pix_fmt", "yuv420p", *args_rec709("yuv420p")]
     if codec == "h264_qsv":
-        return ["-preset", "veryfast", *rate, "-pix_fmt", "nv12"]
+        return ["-preset", "veryfast", *rate, "-pix_fmt", "nv12", *args_rec709("nv12")]
     if codec == "h264_amf":
-        return ["-quality", "speed", "-rc", "cbr", *rate, "-pix_fmt", "yuv420p"]
-    return [*rate, "-pix_fmt", "yuv420p"]
+        return ["-quality", "speed", "-rc", "cbr", *rate, "-pix_fmt", "yuv420p", *args_rec709("yuv420p")]
+    return [*rate, "-pix_fmt", "yuv420p", *args_rec709("yuv420p")]
 
 
 def elegir_encoder():
@@ -379,7 +431,7 @@ def _cmd_encoder(codec, w, h, fps, out):
             "-i", "-", "-an"]
     if codec == "libx264":
         enc = ["-c:v", "libx264", "-preset", X264_PRESET, "-b:v", SYSTEM_BITRATE, "-minrate", SYSTEM_BITRATE,
-               "-maxrate", SYSTEM_BITRATE, "-bufsize", SYSTEM_BUFSIZE, "-pix_fmt", "yuv420p"]
+               "-maxrate", SYSTEM_BITRATE, "-bufsize", SYSTEM_BUFSIZE, "-pix_fmt", "yuv420p", *args_rec709("yuv420p")]
     else:
         enc = ["-c:v", codec, *_hw_args(codec)]
     return head + enc + [out]
