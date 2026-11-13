@@ -31,7 +31,7 @@ from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
 from log_utils import debug, log_error
 from edge_cases import edge_de, filas_system
 
-RENDER_FPS = 25
+RENDER_FPS = 25        # v0.57: solo para JSON antiguos sin "fps"; el fps sale del perfil del estadio (columna FPS de la hoja)
 ENCODER = "auto"        # "auto": GPU si hay y funciona, si no CPU · "cpu": siempre libx264 · o un codec concreto ("h264_nvenc"...)
 X264_PRESET = "veryfast"
 
@@ -498,7 +498,7 @@ def _render(escena, out, w, h, make_frame, progress_callback, cancel_check):
     n = escena.n_frames
     frames = escena.frames()
     for intento, codec in enumerate(codecs):
-        enc = _Encoder(_cmd_encoder(codec, w, h, RENDER_FPS, out))
+        enc = _Encoder(_cmd_encoder(codec, w, h, escena.fps, out))
         last_pct = -1.0
         try:
             for i in range(n):
@@ -521,16 +521,29 @@ def _render(escena, out, w, h, make_frame, progress_callback, cancel_check):
                 log_error(f"[Render rápido] {codec} falló ({e}); repitiendo con libx264")
                 _hw_cache["auto"] = "libx264"
                 escena.close()
-                escena.__init__(escena.datos, RENDER_FPS)
+                escena.__init__(escena.datos, escena.fps)
                 frames = escena.frames()
                 continue
             raise
 
 
+def fps_de(datos):
+    """v0.57: fps del render = columna FPS de la hoja (datos["fps"]). JSON antiguos o valor raro -> RENDER_FPS."""
+    try:
+        fps = float(datos.get("fps") or 0)
+    except (TypeError, ValueError):
+        fps = 0
+    if not 1 <= fps <= 120:
+        return RENDER_FPS
+    return int(fps) if fps == int(fps) else fps
+
+
 def _cargar(json_path):
     with open(json_path, "r", encoding="utf-8") as f:
         datos = json.load(f)
-    return datos, _Escena(datos, RENDER_FPS)
+    fps = fps_de(datos)
+    debug(f"[Render rápido] {fps} fps")
+    return datos, _Escena(datos, fps)
 
 
 def renderizar_system_file(json_path, output_filename, progress_callback=None, cancel_check=None, row_target=None):
@@ -588,3 +601,87 @@ def renderizar_system_file(json_path, output_filename, progress_callback=None, c
     finally:
         escena.close()
 
+
+
+# ---------------------------------------------------------------- v0.58: previsualización 3D (campañas)
+PREVIEW3D_SIZE = (1920, 1080)
+PREVIEW3D_FPS = 25
+
+
+def _fuente_titulo(px):
+    from PIL import ImageFont
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for cand in (os.path.join(base, "Assets", "Montserrat-Bold.ttf"),
+                 os.path.join(os.path.dirname(os.path.dirname(base)), "Assets", "Montserrat-Bold.ttf")):
+        if os.path.isfile(cand):
+            try:
+                return ImageFont.truetype(cand, px)
+            except Exception:
+                pass
+    try:
+        return ImageFont.load_default(size=px)
+    except TypeError:   # Pillow < 10.1
+        return ImageFont.load_default()
+
+
+def renderizar_preview_3d(json_path, output_filename, progress_callback=None, cancel_check=None,
+                          size=PREVIEW3D_SIZE, titulo=None, filas_planas=6):
+    """Vídeo MP4 de validación de una campaña: arriba la maqueta 3D del estadio (la misma vista inicial que
+    3D PREVIEW) y abajo el strip completo en plano, partido en `filas_planas` filas.
+
+    Usa la misma escena que el System File (mismos decodificadores y composición) y vista_3d.Escena3D
+    (PIL puro, sin ventana) para proyectar cada frame. Se renderiza a 25 fps: es solo para validar.
+    """
+    from PIL import ImageDraw
+    from vista_3d import Escena3D, geometria_estadio, escala_textura
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        datos = json.load(f)
+    escena = _Escena(datos, PREVIEW3D_FPS)
+    try:
+        W_out, H_out = size
+        w_total, h_total = escena.w, escena.h
+        pad = max(8, H_out // 54)
+
+        # Strip en plano: n filas del ancho útil
+        n = max(1, int(filas_planas))
+        row_w = W_out - 2 * pad
+        row_h = max(2, int(round(h_total * row_w * n / float(w_total))))
+        gap = max(4, pad // 2)
+        flat_h = n * row_h + (n - 1) * gap if n else 0
+        alto_3d = H_out - flat_h - 2 * pad if n else H_out
+
+        goal_line = datos["zonas"]["ZONA_1"]["width"]
+        amplify = bool(datos.get("config", {}).get("amplify", False))
+        L, W, bandas = geometria_estadio(w_total, goal_line, h_total, amplify)
+        e3d = Escena3D()
+        e3d.size = (W_out, alto_3d)
+        e3d.set_scene(L, W, bandas, reset=True)
+        k = escala_textura(w_total)
+        tex_size = (max(1, int(round(w_total * k))), max(1, int(round(h_total * k))))
+
+        if titulo is None:
+            meta = datos.get("archie") or {}
+            titulo = "  ·  ".join(t for t in (meta.get("campaign"), meta.get("stadium")) if t)
+        font = _fuente_titulo(max(14, H_out // 40))
+        lienzo = Image.new("RGB", (W_out, H_out), (38, 40, 44))
+
+        def make_frame(strip):
+            tex = strip.resize(tex_size, Image.Resampling.BILINEAR) if k < 1.0 else strip
+            e3d.set_strip(tex, w_total, h_total)
+            lienzo.paste(e3d.render(smooth=True).convert("RGB"), (0, 0))
+            if n:
+                plano = strip.resize((row_w * n, row_h), Image.Resampling.BILINEAR)
+                y = alto_3d + pad
+                for i in range(n):
+                    lienzo.paste(plano.crop((i * row_w, 0, (i + 1) * row_w, row_h)), (pad, y))
+                    y += row_h + gap
+            if titulo:
+                ImageDraw.Draw(lienzo).text((pad * 2, pad * 2), titulo, fill=(255, 255, 255), font=font)
+            return lienzo.tobytes()
+
+        debug(f"[Render rápido] PREVIEW 3D {W_out}x{H_out} @ {PREVIEW3D_FPS} fps, textura {tex_size}, "
+              f"{n} filas planas de {row_h}px")
+        _render(escena, output_filename, W_out, H_out, make_frame, progress_callback, cancel_check)
+    finally:
+        escena.close()

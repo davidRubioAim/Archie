@@ -8,7 +8,7 @@ from moviepy import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, Vid
 from proglog import ProgressBarLogger
 from log_utils import debug, log_error
 from edge_cases import edge_de, filas_system
-from render_rapido import args_rec709  # v0.55: misma cadena de color Rec.709 que el motor rápido
+from render_rapido import args_rec709, fps_de  # v0.55: color Rec.709 · v0.57: fps del perfil del estadio
 
 class UILogger(ProgressBarLogger):
     def __init__(self, ui_callback, cancel_check=None):
@@ -249,7 +249,7 @@ def renderizar_megastrip(json_path, output_filename="resultado_megastrip.mov", p
 
     debug("Iniciando MoviePy write_videofile (MEGASTRIP)...")
     mega_strip_clip.write_videofile(
-        output_filename, fps=25, codec="libx264", audio=False, ffmpeg_params=["-pix_fmt", "yuv420p", *args_rec709()], logger=logger
+        output_filename, fps=fps_de(datos), codec="libx264", audio=False, ffmpeg_params=["-pix_fmt", "yuv420p", *args_rec709()], logger=logger
     )
     mega_strip_clip.close()
     debug("Render MEGASTRIP finalizado.")
@@ -308,7 +308,7 @@ def renderizar_system_file_moviepy(json_path, output_filename="resultado_system.
 
     debug(f"Iniciando MoviePy write_videofile (SYSTEM - {row_target or 'FULL'})...")
     system_clip_final.write_videofile(
-        output_filename, fps=25, codec="libx264", bitrate="15000k", audio=False, 
+        output_filename, fps=fps_de(datos), codec="libx264", bitrate="15000k", audio=False, 
         ffmpeg_params=["-minrate", "15000k", "-maxrate", "15000k", "-bufsize", "30000k", "-pix_fmt", "yuv420p", *args_rec709()], logger=logger
     )
     

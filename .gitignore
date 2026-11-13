@@ -17,3 +17,7 @@ launcher_2.py
 build/
 dist/
 *.spec
+# v0.58: archivos locales de cada PC (índice del NAS, carpeta local de arquitecturas, lista de campañas)
+Config/nas_index.json
+Config/archie_settings.json
+Config/campaign_cache.json

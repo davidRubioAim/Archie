@@ -20,7 +20,8 @@ CONFIG_SHEET_GID = "0"
 FETCH_TIMEOUT = 6
 
 
-def load_remote_config(keys=("GEMINI_API_KEY",), log=print):
+def load_remote_config(keys=("GEMINI_API_KEY",), log=print, optional=()):
+    """optional (v0.58): claves que se cargan si están en la hoja, sin avisar si faltan."""
     sheet_id = (os.getenv("CONFIG_SHEET_ID") or CONFIG_SHEET_ID).strip()
     if not sheet_id:
         return
@@ -46,3 +47,7 @@ def load_remote_config(keys=("GEMINI_API_KEY",), log=print):
             log(f"  [WARN] {k} no está en la hoja; se usa la clave local.")
         else:
             log(f"  [WARN] {k} no está en la hoja de configuración.")
+    for k in optional:
+        if values.get(k):
+            os.environ[k] = values[k]
+            log(f"  [OK] {k} cargada desde la hoja de configuración.")

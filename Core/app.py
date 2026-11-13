@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinterdnd2 import TkinterDnD, DND_FILES
 import os
 import json
+import copy
 import math
 import traceback
 import numpy as np
@@ -24,6 +25,8 @@ from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
 from auto_import import buscar_elements_hermanos
+from auto_solver import resolver as resolver_arquitectura, CONFIG_KEYS
+from campaign_panel import CampaignPanel  # v0.58: pestaña CAMPAIGNS (batch de campañas por estadio)
 from video_player import PreviewPlayer, PhotoTarget, Escena, Vista, PLAYER_FPS
 from vista_3d import Visor3D, geometria_estadio, escala_textura
 
@@ -71,7 +74,7 @@ except Exception:
 
 # 2. Cargar variables de entorno desde Config
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
-load_remote_config()  # rellena GEMINI_API_KEY desde la hoja de configuración si no está en .env
+load_remote_config(optional=("CAMPAIGN_SHEET_CSV_URL",))  # GEMINI_API_KEY (+ v0.58: URL CSV de la lista de campañas)
 api_key = os.getenv("GEMINI_API_KEY")
 
 try:
@@ -321,12 +324,24 @@ class MegaStripApp(CTkDnD):
 
         self.col_media = ctk.CTkFrame(self.top_left_container, fg_color=self.c_white, corner_radius=15, border_width=0)
         self.col_media.pack(fill="x", expand=False)
-        ctk.CTkLabel(self.col_media, text="MEDIA ASSETS", font=self.font_t2, text_color=self.c_text_dark).pack(anchor="w", padx=20, pady=(10, 5))
+        media_header = ctk.CTkFrame(self.col_media, fg_color="transparent")
+        media_header.pack(fill="x", padx=20, pady=(10, 5))
+        ctk.CTkLabel(media_header, text="MEDIA ASSETS", font=self.font_t2, text_color=self.c_text_dark).pack(side="left")
+        # v0.58: FILES = zonas de drop de siempre · CAMPAIGNS = batch de campañas para el estadio seleccionado
+        self.media_mode = ctk.CTkSegmentedButton(
+            media_header, values=["FILES", "CAMPAIGNS"], command=self.on_media_mode,
+            selected_color=self.c_magenta, selected_hover_color="#D1007A",
+            unselected_color=self.c_light_grey, unselected_hover_color="#E0E0E0",
+            fg_color=self.c_light_grey, text_color=self.c_text_dark, font=self.font_t2, height=24)
+        self.media_mode.set("FILES")
+        self.media_mode.pack(side="right")
 
         self.drop_labels = {}
         self.archivos_cargados = {"background": None, "center_board": None, "static_logo": None, "anim_zone": None, "anim_zones": []}
         
-        self.drop_zones_frame = ctk.CTkFrame(self.col_media, fg_color="transparent")
+        self.media_body = ctk.CTkFrame(self.col_media, fg_color="transparent")
+        self.media_body.pack(fill="x", expand=False)
+        self.drop_zones_frame = ctk.CTkFrame(self.media_body, fg_color="transparent")
         self.drop_zones_frame.pack(fill="x", expand=False, padx=10, pady=(0, 5))
         self.drop_zones_frame.grid_columnconfigure(0, weight=1)
         self.drop_zones_frame.grid_columnconfigure(1, weight=1)
@@ -359,6 +374,9 @@ class MegaStripApp(CTkDnD):
         )
         self.anim_scroll.pack(fill="both", expand=True)
         self.add_anim_zone()
+
+        # v0.58: pestaña CAMPAIGNS (se muestra en lugar de las zonas de drop)
+        self.campaign_panel = CampaignPanel(self, self.media_body, CONFIG_DIR)
 
         # --- NUEVO BLOQUE DE ACCIONES (CREATE + RESET + UNDO/REDO) ---
         self.actions_arch_frame = ctk.CTkFrame(self.col_media, fg_color="transparent")
@@ -423,6 +441,7 @@ class MegaStripApp(CTkDnD):
         
         self.inputs = {}
         self.setup_manual_edit_tab()
+        self._ui_defaults = self._capture_ui_state()   # v0.58: valores por defecto para campañas nuevas
         self.setup_ai_assistant_tab()
         self.init_ai_session()
 
@@ -1041,7 +1060,7 @@ class MegaStripApp(CTkDnD):
 
         # --- SYSTEM FILE SETUP ---
         ctk.CTkLabel(self.col_right, text="SYSTEM FILE SETUP", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.c_magenta).pack(anchor="w", padx=20, pady=(5, 5))
-        fields_system = [("Canvas Width (px)", "Canvas Width"), ("Canvas Height (px)", "Canvas Height"), ("Right Mask (px)", "Canvas Mask"), ("Offset X (px)", "Offset X"), ("Offset Y (px)", "Offset Y")]
+        fields_system = [("Canvas Width (px)", "Canvas Width"), ("Canvas Height (px)", "Canvas Height"), ("Right Mask (px)", "Canvas Mask"), ("Offset X (px)", "Offset X"), ("Offset Y (px)", "Offset Y"), ("Frame Rate (fps)", "FPS")]
         for label_text, key in fields_system:
             ctk.CTkLabel(self.col_right, text=label_text, anchor="w", font=ctk.CTkFont(size=11, weight="bold")).pack(padx=20, pady=(1, 0), fill="x")
             entry = ctk.CTkEntry(self.col_right, height=22)
@@ -1210,88 +1229,28 @@ class MegaStripApp(CTkDnD):
         self._actualizar_sliders_desde_ia(*slider_args)
         self.append_chat("System AI", msg)
         self.start_preview_render()
+        if getattr(self, "campaign_panel", None): self.campaign_panel.on_solver_done(msg)  # v0.58
 
     def _native_auto_solver(self, gen=None):
-        stadium = self.stadium_selector_global.get()
-        logo_path = self.archivos_cargados.get("static_logo")
-        is_wide = False
-        
-        if logo_path:
-            try:
-                logo_w, logo_h = FRAME_CACHE.dimensions(logo_path)
-                if logo_h > 0:
-                    ratio = logo_w / logo_h
-                    is_wide = ratio > 3.0
-            except Exception as e: 
-                log_error(f"Error midiendo logo: {e}")
-
+        # v0.58: el algoritmo vive en auto_solver.resolver (lo usa también el export de campañas sin interfaz)
         w_total = int(self.inputs["Width"].get() or 0)
         h_total = int(self.inputs["Height"].get() or 0)
         goal_line = int(self.inputs["Goal Line Size"].get() or 0)
         cb_width = int(self.inputs["Center Board Width"].get() or 0)
         margin = int(self.margin_slider.get())
-        gl_offset = int(self.offset_slider.get())
-
-        best_config = None
-        msg = ""
-
-        if self.amplify_var.get():
-            intentos = [
-                {"qty_goal": 1, "qty_corner": 0, "qty_cb": 0, "qty_tl": 1, "stretch_limit": 10, "corner_logo": False, "hide_extreme_edges": True, "msg": "AMPLIFY: Maximum alternation throughout the stadium (Goal Line + Touchline)"},
-                {"qty_goal": 1, "qty_corner": 0, "qty_cb": 0, "qty_tl": 0, "stretch_limit": 10, "corner_logo": False, "hide_extreme_edges": True, "msg": "AMPLIFY: Narrow Touchline detected. Logo Priority applied to Goal Lines."},
-                {"qty_goal": 0, "qty_corner": 0, "qty_cb": 0, "qty_tl": 0, "stretch_limit": 15, "corner_logo": False, "hide_extreme_edges": True, "msg": "AMPLIFY: Extreme compression mode (Anim Zones only)"}
-            ]
-        elif is_wide:
-            intentos = [
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 1, "stretch_limit": 15, "corner_logo": False, "hide_extreme_edges": False, "msg": "WIDE Logo: Full logos in corners and maximum Anim Zones density."},
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 1, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": False, "msg": "WIDE Logo: Split Corner activated (1/2 logo) to free up space."},
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 1, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True, "msg": "WIDE Logo: Absolute edges cleared."},
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 0, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True, "msg": "WIDE Logo: Reduction to 1 Anim Zone in Touchline."}
-            ]
-        else:
-            intentos = [
-                {"qty_goal": 5, "qty_corner": 3, "qty_cb": 2, "qty_tl": 3, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": False, "msg": "NARROW Logo: Maximum density fitted perfectly."},
-                {"qty_goal": 5, "qty_corner": 3, "qty_cb": 2, "qty_tl": 3, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True, "msg": "NARROW Logo: Edges cleared to save the 5-logo layout in Goal Lines."},
-                {"qty_goal": 5, "qty_corner": 1, "qty_cb": 2, "qty_tl": 2, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True, "msg": "NARROW Logo: Reduction in Corners and Touchlines."},
-                {"qty_goal": 3, "qty_corner": 1, "qty_cb": 1, "qty_tl": 2, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True, "msg": "NARROW Logo: Reduction of Goal Lines to 3 logos."},
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 1, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True, "msg": "NARROW Logo: Minimalist mode activated due to lack of space."}
-            ]
-
-        for config in intentos:
-            is_under = self.logo_under_var.get()
-            c_logo = self.corner_logo_var.get() if is_under else config["corner_logo"]
-            q_corner = (1 if c_logo else 0) if is_under else config["qty_corner"]
-
-            test_conf = {
-                "stretch_limit": config.get("stretch_limit", 15), "squash_logos": False, 
-                "qty_goal": config["qty_goal"], "qty_corner": q_corner, 
-                "qty_cb": config["qty_cb"], "qty_tl": config["qty_tl"], 
-                "gl_offset": gl_offset, "corner_logo": c_logo,
-                "hide_extreme_edges": config["hide_extreme_edges"],
-                "logo_under": is_under,
-                "qty_gl_under": int(self.qty_gl_under_slider.get()),
-                "qty_tl_under": int(self.qty_tl_under_slider.get()),
-                "show_cb": self.show_cb_var.get(),
-                "amplify": self.amplify_var.get(),
-                "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
-                "max_anim_gl": int(self.max_anim_gl_slider.get()),
-                "max_anim_tl": int(self.max_anim_tl_slider.get())
-            }
-            
-            try:
-                datos = calcular_layout_data(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, test_conf)
-                warnings = datos.get("warnings", []) if datos else ["error"]
-                
-                if "goal_overlap" not in warnings and "touchline_overlap" not in warnings:
-                    best_config = test_conf
-                    msg = "Auto-Solver: " + config["msg"]
-                    break
-            except Exception as e:
-                debug(f"Auto-Solver trial failed: {e}")
-                
-        if not best_config:
-            best_config = test_conf
-            msg = "Auto-Solver: WARNING - Stadium too small or crowded. Overlap will occur."
+        base = {
+            "gl_offset": int(self.offset_slider.get()),
+            "logo_under": self.logo_under_var.get(),
+            "corner_logo": self.corner_logo_var.get(),
+            "qty_gl_under": int(self.qty_gl_under_slider.get()),
+            "qty_tl_under": int(self.qty_tl_under_slider.get()),
+            "show_cb": self.show_cb_var.get(),
+            "amplify": self.amplify_var.get(),
+            "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
+            "max_anim_gl": int(self.max_anim_gl_slider.get()),
+            "max_anim_tl": int(self.max_anim_tl_slider.get()),
+        }
+        best_config, msg = resolver_arquitectura(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, base)
 
         self.current_hide_edges = best_config["hide_extreme_edges"]
 
@@ -1881,6 +1840,8 @@ class MegaStripApp(CTkDnD):
 
     def on_stadium_change(self, choice):
         if choice == "No matches found" or choice not in self.stadium_data: return
+        panel = getattr(self, "campaign_panel", None)
+        if panel: panel.before_stadium_change()  # v0.58: la campaña activa pertenece al estadio anterior
         
         if hasattr(self, "stadium_search_var") and self.stadium_search_var.get() != "":
             self.stadium_search_var.set("")
@@ -1906,6 +1867,7 @@ class MegaStripApp(CTkDnD):
             else: 
                 entry.configure(state="normal", text_color=self.c_text_dark, fg_color=self.c_white)
         self.trigger_update()
+        if panel: panel.after_stadium_change()
 
     def select_output_path(self):
         if folder := ctk.filedialog.askdirectory(title="Select Destination"): self.output_path_var.set(folder)
@@ -1958,6 +1920,110 @@ class MegaStripApp(CTkDnD):
             debug(f"Autoimport {tipo}: {ruta}")
         return toco_anim
 
+    def fps_actual(self):
+        """v0.57: fps del estadio seleccionado (campo Frame Rate, que se rellena con la columna FPS de la hoja)."""
+        try:
+            fps = float(str(self.inputs["FPS"].get()).replace(",", "."))
+        except (KeyError, ValueError):
+            fps = 0
+        if not 1 <= fps <= 120:
+            return 25
+        return int(fps) if fps == int(fps) else fps
+
+    def _config_ui(self):
+        """Config de calcular_layout_data con lo que hay ahora en Manual Edit (v0.58: sacado de calcular_layout)."""
+        return {
+            "stretch_limit": self.stretch_slider.get(),
+            "squash_logos": self.squash_logos_var.get(),
+            "stretch_fit_per": self.stretch_fit_var.get(),
+            "qty_goal": int(self.qty_goal_slider.get()),
+            "qty_corner": int(self.qty_corner_slider.get()),
+            "qty_cb": int(self.qty_cb_slider.get()),
+            "qty_tl": int(self.qty_tl_slider.get()),
+            "gl_offset": self.offset_slider.get(),
+            "corner_logo": self.corner_logo_var.get(),
+            "hide_extreme_edges": getattr(self, "current_hide_edges", False),
+            "logo_under": self.logo_under_var.get(),
+            "qty_gl_under": int(self.qty_gl_under_slider.get()),
+            "qty_tl_under": int(self.qty_tl_under_slider.get()),
+            "show_cb": self.show_cb_var.get(),
+            "amplify": self.amplify_var.get(),
+            "max_anim_gl": int(self.max_anim_gl_slider.get()),
+            "max_anim_tl": int(self.max_anim_tl_slider.get()),
+            "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
+            "edge_case": getattr(self, "edge_case_actual", None),
+        }
+
+    # ---------------------------------------------------------------- v0.58: campañas
+    def config_actual(self):
+        """Config de la arquitectura actual para guardarla por campaña (sin edge_case, con margin)."""
+        cfg = {k: v for k, v in self._config_ui().items() if k in CONFIG_KEYS}
+        cfg["margin"] = int(self.margin_slider.get())
+        return cfg
+
+    def ui_defaults_campana(self):
+        """Valores por defecto de la interfaz (al abrir Archie) para calcular campañas sin abrirlas."""
+        d = self._ui_defaults
+        return {"margin": d["sliders"]["margin"], "gl_offset": d["sliders"]["offset"],
+                "corner_logo": d["vars"]["corner_logo"], "logo_under": d["vars"]["logo_under"],
+                "qty_gl_under": d["sliders"]["qty_gl_under"], "qty_tl_under": d["sliders"]["qty_tl_under"],
+                "max_anim_gl": d["sliders"]["max_anim_gl"], "max_anim_tl": d["sliders"]["max_anim_tl"],
+                "invert_order": d["vars"]["invert_order"], "stretch_fit": d["vars"]["stretch_fit"]}
+
+    def on_media_mode(self, mode):
+        if mode == "CAMPAIGNS":
+            self.drop_zones_frame.pack_forget()
+            self.campaign_panel.frame.pack(fill="x", expand=False, padx=10, pady=(0, 5))
+        else:
+            self.campaign_panel.frame.pack_forget()
+            self.drop_zones_frame.pack(fill="x", expand=False, padx=10, pady=(0, 5))
+
+    def cargar_archivos_campana(self, files):
+        """Pone los ELEMENTS de una campaña en las zonas de FILES (sin autoimport: ya vienen clasificados)."""
+        files = files or {}
+        anims = [a for a in files.get("anim_zones") or [] if a] or ([files["anim_zone"]] if files.get("anim_zone") else [])
+        self.archivos_cargados = {
+            "background": files.get("background"), "center_board": files.get("center_board"),
+            "static_logo": files.get("static_logo"),
+            "anim_zone": anims[0] if anims else None, "anim_zones": list(anims) or [None],
+        }
+        for key in ("background", "center_board", "static_logo"):
+            ruta = self.archivos_cargados[key]
+            if ruta:
+                self.drop_labels[key].configure(text=f"Loaded:\n{os.path.basename(ruta)}", text_color="#2CC985")
+            else:
+                self.drop_labels[key].configure(text="Drop file here", text_color="gray")
+        self.refresh_anim_zones_ui()
+        self.reset_zooms_and_pan()
+        self.pil_preview_images, self.pil_sys_images, self.pil_strip3d_images = [], [], []
+        self.preview_current_idx = 0
+        self.undo_stack, self.redo_stack = [], []
+
+    def aplicar_config_campana(self, cfg):
+        """Carga en Manual Edit la arquitectura guardada de una campaña y la pinta."""
+        self.current_hide_edges = bool(cfg.get("hide_extreme_edges", False))
+        self.architecture_created = True
+        self.arch_stadium = self.stadium_selector_global.get()
+        self.preview_enabled = True
+        self._actualizar_sliders_desde_ia(
+            cfg["qty_goal"], cfg["qty_corner"], cfg["qty_cb"], cfg["qty_tl"], cfg["stretch_limit"],
+            cfg["squash_logos"], cfg.get("stretch_fit_per", False), cfg["gl_offset"], cfg["corner_logo"],
+            cfg["logo_under"], cfg["qty_gl_under"], cfg["qty_tl_under"], cfg.get("show_cb", True),
+            self.amplify_var.get(), cfg.get("invert_order", False), cfg.get("max_anim_gl", 0),
+            cfg.get("max_anim_tl", 0), margin=cfg.get("margin", 20))
+        self._init_history_state()
+        self.start_preview_render()
+
+    def preparar_campana_nueva(self):
+        """Manual Edit a los valores por defecto (nada se hereda de la campaña anterior) antes del auto-solver."""
+        estado = copy.deepcopy(self._ui_defaults)
+        estado["inputs"] = {}                                   # el perfil del estadio no se toca
+        estado["vars"]["amplify"] = self.amplify_var.get()      # amplify es del estadio
+        self.architecture_created = False
+        self._apply_ui_state(estado)
+        self.check_and_activate_logo_under(self.archivos_cargados.get("static_logo"))
+        self._init_history_state()
+
     def calcular_layout(self):
         try:
             w_total = int(self.inputs["Width"].get() or 0)
@@ -1966,30 +2032,11 @@ class MegaStripApp(CTkDnD):
             cb_width = int(self.inputs["Center Board Width"].get() or 0)
             margin = int(self.margin_slider.get())
             
-            config = {
-                "stretch_limit": self.stretch_slider.get(),
-                "squash_logos": self.squash_logos_var.get(),
-                "stretch_fit_per": self.stretch_fit_var.get(),
-                "qty_goal": int(self.qty_goal_slider.get()),
-                "qty_corner": int(self.qty_corner_slider.get()),
-                "qty_cb": int(self.qty_cb_slider.get()),
-                "qty_tl": int(self.qty_tl_slider.get()),
-                "gl_offset": self.offset_slider.get(),
-                "corner_logo": self.corner_logo_var.get(),
-                "hide_extreme_edges": getattr(self, "current_hide_edges", False),
-                "logo_under": self.logo_under_var.get(),
-                "qty_gl_under": int(self.qty_gl_under_slider.get()),
-                "qty_tl_under": int(self.qty_tl_under_slider.get()),
-                "show_cb": self.show_cb_var.get(),
-                "amplify": self.amplify_var.get(),
-                "max_anim_gl": int(self.max_anim_gl_slider.get()),
-                "max_anim_tl": int(self.max_anim_tl_slider.get()),
-                "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
-                "edge_case": getattr(self, "edge_case_actual", None),
-            }
+            config = self._config_ui()
             res = calcular_layout_data(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, config)
             if res:
                 res["config"] = config
+                res["fps"] = self.fps_actual()  # v0.57: fps del render, de la columna FPS de la hoja
                 # NUEVO BLOQUE: system_file para After Effects
                 sys_w = int(self.inputs["Canvas Width"].get() or 3840)
                 sys_h = int(self.inputs["Canvas Height"].get() or 2160)
@@ -2026,6 +2073,7 @@ class MegaStripApp(CTkDnD):
     def trigger_update(self, event=None, *args):
         """Marca la preview como pendiente y, si ya hay arquitectura, la recalcula sola tras una pausa corta."""
         if not hasattr(self, "lbl_preview_status"): return
+        if getattr(self, "campaign_panel", None): self.campaign_panel.on_ui_change()  # v0.58
         self.preview_dirty = True
         self.player.interrupt()  # pausa mientras se tocan parámetros; reanuda al soltar
         if self._auto_update_enabled():

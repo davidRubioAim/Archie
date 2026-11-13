@@ -209,6 +209,12 @@ class BatchManager:
             
             if data:
                 data["config"] = best_config
+                # v0.57: fps del render desde la columna FPS de la hoja (25 si falta o no es válido)
+                try:
+                    fps = float(stadium_info.get("FPS") or 0)
+                except (TypeError, ValueError):
+                    fps = 0
+                data["fps"] = (int(fps) if fps == int(fps) else fps) if 1 <= fps <= 120 else 25
             
             sys_w = stadium_info["Canvas Width"]
             sys_h = stadium_info["Canvas Height"]

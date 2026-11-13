@@ -7,6 +7,7 @@ import time
 import customtkinter as ctk
 from moviepy import VideoFileClip
 from renderizador import renderizar_megastrip, renderizar_system_file
+from render_rapido import renderizar_preview_3d  # v0.58: vídeo de previsualización 3D de cada campaña
 from log_utils import debug, log_error
 
 class QueueManager:
@@ -83,12 +84,25 @@ class QueueManager:
             safe_filename = self.generate_safe_filename(base_name, preset, render_type, ext, out_dir)
             job = {
                 "id": str(uuid.uuid4()), "type": render_type, "data": data, "out_dir": out_dir,
-                "ext": ext, "status": "Pending", "info": f"{duracion}s | {fps} FPS"
+                "ext": ext, "status": "Pending", "info": f"{duracion}s | {data.get('fps', fps)} FPS"
             }
             self.build_queue_ui_item(job, safe_filename)
             self.render_queue.append(job)
             
         self.app.queue_panel.pack(fill="x", pady=(5, 10))
+
+    def add_job(self, job_type, data, out_dir, filename, info="", json_path=None, row_target=None):
+        """v0.58: trabajo con nombre y carpeta ya decididos (export de campañas).
+        json_path: JSON ya escrito que lee el render (no se reescribe ni se crea otro junto al vídeo).
+        job_type: "SYSTEM" o "PREVIEW3D"."""
+        ext = os.path.splitext(filename)[1] or ".mp4"
+        label = {"1ST_ROW": "SYS-1ST", "2ND_ROW": "SYS-2ND"}.get(row_target, job_type) if job_type == "SYSTEM" else "3D PREV"
+        job = {"id": str(uuid.uuid4()), "type": label, "kind": job_type, "data": data, "out_dir": out_dir,
+               "ext": ext, "status": "Pending", "info": info, "json_path": json_path, "row_target": row_target}
+        self.build_queue_ui_item(job, filename)
+        self.render_queue.append(job)
+        self.app.queue_panel.pack(fill="x", pady=(5, 10))
+        return job
 
     def build_queue_ui_item(self, job, initial_filename):
         color = self.app.c_magenta if "SYS" in job["type"] or job["type"] == "SYSTEM" else "#3498DB"
@@ -179,11 +193,17 @@ class QueueManager:
                 
                 if not final_name.lower().endswith(job["ext"]): final_name += job["ext"]
                 out_path = os.path.join(job["out_dir"], final_name)
-                json_path = out_path.replace(job["ext"], ".json")
+                os.makedirs(job["out_dir"], exist_ok=True)
+                # v0.58: los trabajos de campañas traen su JSON ya escrito (el de la arquitectura)
+                json_path = job.get("json_path")
+                if not json_path or not os.path.exists(json_path):
+                    json_path = out_path.replace(job["ext"], ".json")
+                    with open(json_path, 'w', encoding='utf-8') as f: json.dump(job["data"], f, indent=4, ensure_ascii=False)
                 
-                with open(json_path, 'w', encoding='utf-8') as f: json.dump(job["data"], f, indent=4, ensure_ascii=False)
-                
-                if job["type"] in ["MEGASTRIP", "AE_EXPORT", "ARCHIEtoAE"]: 
+                if job.get("kind") == "PREVIEW3D":
+                    renderizar_preview_3d(json_path, out_path, progress_callback=update_progress,
+                                          cancel_check=lambda: self.cancel_queue_flag)
+                elif job["type"] in ["MEGASTRIP", "AE_EXPORT", "ARCHIEtoAE"]: 
                     job["data"]["proyecto"] = "AE_EXPORT"
                     with open(json_path, 'w', encoding='utf-8') as f:
                         json.dump(job["data"], f, indent=4, ensure_ascii=False)
@@ -191,7 +211,7 @@ class QueueManager:
                     renderizar_system_file(
                         json_path, out_path, progress_callback=update_progress, 
                         cancel_check=lambda: self.cancel_queue_flag,
-                        row_target=job["data"].get("row_target")
+                        row_target=job.get("row_target") or job["data"].get("row_target")
                     )
                 
                 self.app.after(0, lambda j=job: self.update_job_ui(j, "Completed!", 1.0, done=True))
