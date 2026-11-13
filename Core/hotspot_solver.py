@@ -308,9 +308,27 @@ def _firma(paths):
 _CACHE = {"firma": None, "refs": []}
 
 
+def carpetas_referencias(config_dir=None):
+    """v0.62: 1) Config\\referencias de la instalación (las que guarda ★ en este PC);
+    2) Config\\referencias de la propia versión (las que van en el repo de GitHub y llegan con cada versión).
+    Si un fichero está en las dos, gana el local."""
+    local = os.path.join(_cfg_dir(config_dir), REFS_DIR)
+    version = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Config", REFS_DIR)
+    carpetas = [local]
+    if os.path.normcase(os.path.abspath(version)) != os.path.normcase(os.path.abspath(local)):
+        carpetas.append(version)
+    return carpetas
+
+
 def cargar_referencias(config_dir=None):
-    carpeta = os.path.join(_cfg_dir(config_dir), REFS_DIR)
-    paths = [p for p in glob.glob(os.path.join(carpeta, "*.json")) if not os.path.basename(p).startswith("_")]
+    paths, vistos = [], set()
+    for carpeta in carpetas_referencias(config_dir):
+        for p in sorted(glob.glob(os.path.join(carpeta, "*.json"))):
+            nombre = os.path.basename(p)
+            if nombre.startswith("_") or nombre.lower() in vistos:
+                continue
+            vistos.add(nombre.lower())
+            paths.append(p)
     firma = _firma(paths)
     if firma != _CACHE["firma"]:
         refs = [r for r in (leer_referencia(p) for p in paths) if r]
@@ -325,8 +343,18 @@ def guardar_referencia(datos, nombre, config_dir=None):
     limpio = "".join(c if c.isalnum() or c in "-_ ." else "_" for c in nombre).strip() or "referencia"
     path = os.path.join(carpeta, f"{limpio}.json")
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(datos, f, indent=2, ensure_ascii=False)
+        json.dump(limpiar_referencia(datos), f, indent=2, ensure_ascii=False)
     return path
+
+
+def limpiar_referencia(datos):
+    """v0.62: quita las rutas de los media (NAS, nombres de cliente). El solver solo usa la geometría,
+    así que la referencia se puede subir a GitHub sin exponer rutas."""
+    doc = copy.deepcopy(datos)
+    doc["archivos_fuente"] = {}
+    if isinstance(doc.get("archie"), dict):
+        doc["archie"].pop("files", None)
+    return doc
 
 
 # ---------------------------------------------------------------- búsqueda
@@ -538,6 +566,7 @@ def _misma(cand, r):
 def _guardar_aprendizaje(config_dir, firma, pesos, lineas):
     try:
         path = os.path.join(_cfg_dir(config_dir), REFS_DIR, LEARN_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"firma": firma, "pesos": pesos, "informe": lineas,
                        "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f, indent=2, ensure_ascii=False)

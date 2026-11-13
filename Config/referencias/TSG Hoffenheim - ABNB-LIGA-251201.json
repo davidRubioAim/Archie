@@ -1,0 +1,470 @@
+{
+  "proyecto": "AE_EXPORT",
+  "dimensiones_globales": {
+    "width": 39360,
+    "height": 192
+  },
+  "archivos_fuente": {},
+  "zonas": {
+    "ZONA_1": {
+      "x_inicio": 0,
+      "width": 10560,
+      "elementos": [
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "x_absoluta": 3210
+        },
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "x_absoluta": 9697
+        },
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "x_absoluta": 4565
+        },
+        {
+          "tipo": "anim_zone",
+          "width": 2986,
+          "offset_x": 646.25,
+          "anim_idx": 0,
+          "x_absoluta": 6064
+        }
+      ]
+    },
+    "ZONA_2": {
+      "x_inicio": 10560,
+      "width": 9120,
+      "elementos": [
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "x_absoluta": 10570
+        },
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "x_absoluta": 19253
+        },
+        {
+          "tipo": "anim_zone",
+          "width": 2986,
+          "offset_x": 160.91666666666666,
+          "anim_idx": 1,
+          "x_absoluta": 11583
+        },
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "offset_x": 3488.75,
+          "is_fill": true,
+          "x_absoluta": 14911
+        },
+        {
+          "tipo": "anim_zone",
+          "width": 2986,
+          "offset_x": 4683.583333333333,
+          "anim_idx": 2,
+          "x_absoluta": 16106
+        }
+      ]
+    },
+    "ZONA_3": {
+      "x_inicio": 19680,
+      "width": 0,
+      "elementos": []
+    },
+    "ZONA_4": {
+      "x_inicio": 19680,
+      "width": 9120,
+      "elementos": [
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "x_absoluta": 27937
+        },
+        {
+          "tipo": "anim_zone",
+          "width": 2986,
+          "offset_x": 160.91666666666666,
+          "anim_idx": 3,
+          "x_absoluta": 20267
+        },
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "offset_x": 3488.75,
+          "is_fill": true,
+          "x_absoluta": 23595
+        },
+        {
+          "tipo": "anim_zone",
+          "width": 2986,
+          "offset_x": 4683.583333333333,
+          "anim_idx": 4,
+          "x_absoluta": 24790
+        }
+      ]
+    },
+    "ZONA_5": {
+      "x_inicio": 28800,
+      "width": 10560,
+      "elementos": [
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "x_absoluta": 35297
+        },
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "x_absoluta": 28810
+        },
+        {
+          "tipo": "static_logo",
+          "width": 853,
+          "x_absoluta": 33941
+        },
+        {
+          "tipo": "anim_zone",
+          "width": 2986,
+          "offset_x": 646.25,
+          "anim_idx": 5,
+          "x_absoluta": 30309
+        }
+      ]
+    }
+  },
+  "warnings": [],
+  "config": {
+    "stretch_limit": 15.0,
+    "squash_logos": false,
+    "stretch_fit_per": false,
+    "qty_goal": 1,
+    "qty_corner": 1,
+    "qty_cb": 1,
+    "qty_tl": 1,
+    "gl_offset": 0.0,
+    "corner_logo": false,
+    "hide_extreme_edges": false,
+    "logo_under": false,
+    "qty_gl_under": 1,
+    "qty_tl_under": 1,
+    "show_cb": true,
+    "amplify": false,
+    "max_anim_gl": 0,
+    "max_anim_tl": 0,
+    "invert_order": false,
+    "edge_case": {
+      "nombre": "TSG Hoffenheim",
+      "zonas_negras": [
+        [
+          0,
+          3200
+        ],
+        [
+          36160,
+          39360
+        ]
+      ],
+      "tramos": [
+        [
+          0,
+          3072,
+          0,
+          0
+        ],
+        [
+          3072,
+          6144,
+          0,
+          192
+        ],
+        [
+          6144,
+          9216,
+          0,
+          384
+        ],
+        [
+          9216,
+          12288,
+          0,
+          576
+        ],
+        [
+          12288,
+          15360,
+          0,
+          768
+        ],
+        [
+          15360,
+          18432,
+          0,
+          960
+        ],
+        [
+          18432,
+          21504,
+          0,
+          1152
+        ],
+        [
+          21504,
+          24576,
+          0,
+          1344
+        ],
+        [
+          24576,
+          27648,
+          0,
+          1536
+        ],
+        [
+          27648,
+          30720,
+          0,
+          1728
+        ],
+        [
+          30720,
+          33792,
+          0,
+          1920
+        ],
+        [
+          33792,
+          34560,
+          3072,
+          0
+        ],
+        [
+          34560,
+          35328,
+          3072,
+          192
+        ],
+        [
+          35328,
+          36096,
+          3072,
+          384
+        ],
+        [
+          36096,
+          36864,
+          3072,
+          576
+        ],
+        [
+          36864,
+          37632,
+          3072,
+          768
+        ],
+        [
+          37632,
+          38400,
+          3072,
+          960
+        ],
+        [
+          38400,
+          39168,
+          3072,
+          1152
+        ],
+        [
+          39168,
+          39360,
+          3072,
+          1344
+        ]
+      ],
+      "goal_position": 4992
+    }
+  },
+  "fps": 60,
+  "system_setup": {
+    "canvas_width": 3840,
+    "canvas_height": 2160,
+    "canvas_mask": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  },
+  "system_file": {
+    "width": 3840,
+    "height": 2160,
+    "offset": {
+      "x": 0,
+      "y": 0
+    },
+    "mask": {
+      "x": 3840,
+      "y": 0,
+      "width": 0,
+      "height": 2160
+    },
+    "tramos": [
+      [
+        0,
+        3072,
+        0,
+        0
+      ],
+      [
+        3072,
+        6144,
+        0,
+        192
+      ],
+      [
+        6144,
+        9216,
+        0,
+        384
+      ],
+      [
+        9216,
+        12288,
+        0,
+        576
+      ],
+      [
+        12288,
+        15360,
+        0,
+        768
+      ],
+      [
+        15360,
+        18432,
+        0,
+        960
+      ],
+      [
+        18432,
+        21504,
+        0,
+        1152
+      ],
+      [
+        21504,
+        24576,
+        0,
+        1344
+      ],
+      [
+        24576,
+        27648,
+        0,
+        1536
+      ],
+      [
+        27648,
+        30720,
+        0,
+        1728
+      ],
+      [
+        30720,
+        33792,
+        0,
+        1920
+      ],
+      [
+        33792,
+        34560,
+        3072,
+        0
+      ],
+      [
+        34560,
+        35328,
+        3072,
+        192
+      ],
+      [
+        35328,
+        36096,
+        3072,
+        384
+      ],
+      [
+        36096,
+        36864,
+        3072,
+        576
+      ],
+      [
+        36864,
+        37632,
+        3072,
+        768
+      ],
+      [
+        37632,
+        38400,
+        3072,
+        960
+      ],
+      [
+        38400,
+        39168,
+        3072,
+        1152
+      ],
+      [
+        39168,
+        39360,
+        3072,
+        1344
+      ]
+    ]
+  },
+  "zonas_negras": [
+    [
+      0,
+      3200
+    ],
+    [
+      36160,
+      39360
+    ]
+  ],
+  "archie": {
+    "version": "v0.60",
+    "campaign": "ABNB-LIGA-251201",
+    "campaign_name": "",
+    "stadium": "TSG Hoffenheim",
+    "saved_at": "2026-11-13 13:15:08",
+    "saved_by": "AIMSPORT",
+    "reviewed": true,
+    "config": {
+      "stretch_limit": 15.0,
+      "squash_logos": false,
+      "stretch_fit_per": false,
+      "qty_goal": 1,
+      "qty_corner": 1,
+      "qty_cb": 1,
+      "qty_tl": 1,
+      "gl_offset": 0.0,
+      "corner_logo": false,
+      "hide_extreme_edges": false,
+      "logo_under": false,
+      "qty_gl_under": 1,
+      "qty_tl_under": 1,
+      "show_cb": true,
+      "amplify": false,
+      "max_anim_gl": 0,
+      "max_anim_tl": 0,
+      "invert_order": false,
+      "margin": 20
+    },
+    "note": "Keep these architecture JSON files and share them with the Studio whenever you need feedback applied. The Studio imports them into After Effects, so the approved architecture is preserved and your feedback can be applied accurately."
+  }
+}
