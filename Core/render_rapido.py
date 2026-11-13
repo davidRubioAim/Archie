@@ -29,7 +29,7 @@ from moviepy.tools import cross_platform_popen_params
 from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
 
 from log_utils import debug, log_error
-from edge_cases import edge_de, filas_system
+from edge_cases import edge_de, filas_system, logos_bajo_anims
 
 RENDER_FPS = 25        # v0.57: solo para JSON antiguos sin "fps"; el fps sale del perfil del estadio (columna FPS de la hoja)
 ENCODER = "auto"        # "auto": GPU si hay y funciona, si no CPU · "cpu": siempre libx264 · o un codec concreto ("h264_nvenc"...)
@@ -241,20 +241,31 @@ class _Escena:
 
         self._fondo(archivos.get("background"))
 
+        # v0.61: en Logo Under los logos van debajo de las ANIM ZONES (se añaden antes)
+        logos_debajo = logos_bajo_anims(datos)
+
+        def capas_anims():
+            for zona in datos["zonas"].values():
+                for e in zona["elementos"]:
+                    if e["tipo"] == "anim_zone" and anims:
+                        self._fuente(anims[e.get("anim_idx", 0) % len(anims)], e["x_absoluta"], max(1, e["width"]), frozen=False)
+
         for zona in datos["zonas"].values():
             for e in zona["elementos"]:
                 x, w = e["x_absoluta"], max(1, e["width"])
                 if e["tipo"] == "center_board":
                     self._center_board(archivos.get("center_board"), datos.get("config", {}).get("show_cb", True), x, w,
                                        aplicar_letterbox_pil)
-                elif e["tipo"] == "anim_zone" and anims:
-                    self._fuente(anims[e.get("anim_idx", 0) % len(anims)], x, w, frozen=False)
+        if not logos_debajo:
+            capas_anims()
         logo = archivos.get("static_logo")
         if logo:
             for zona in datos["zonas"].values():
                 for e in zona["elementos"]:
                     if e["tipo"] == "static_logo":
                         self._fuente(logo, e["x_absoluta"], max(1, e["width"]), frozen=e.get("logo_under_type") == "frozen")
+        if logos_debajo:
+            capas_anims()
 
         # Capa base: todo lo estático que queda por debajo de la primera capa animada
         self.base = Image.new("RGB", (self.w, h), (0, 0, 0))

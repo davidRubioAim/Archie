@@ -17,7 +17,7 @@ from google import genai
 from google.genai import types
 
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura, segmentos_arquitectura
-from edge_cases import edge_de, filas_system, restar_zonas, pintar_zonas_negras
+from edge_cases import edge_de, filas_system, restar_zonas, pintar_zonas_negras, logos_bajo_anims
 from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios
@@ -26,6 +26,7 @@ from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
 from auto_import import buscar_elements_hermanos
 from auto_solver import resolver as resolver_arquitectura, CONFIG_KEYS
+import hotspot_solver  # v0.61: auto-solver por hotspots + referencias JSON aprobadas
 from campaign_panel import CampaignPanel  # v0.58: pestaña CAMPAIGNS (batch de campañas por estadio)
 from video_player import PreviewPlayer, PhotoTarget, Escena, Vista, PLAYER_FPS
 from vista_3d import Visor3D, geometria_estadio, escala_textura
@@ -41,6 +42,7 @@ else:
     MASTER_DIR = BASE_DIR
 
 CONFIG_DIR = os.path.join(MASTER_DIR, "Config")
+hotspot_solver.configurar(CONFIG_DIR)
 ASSETS_DIR = os.path.join(MASTER_DIR, "Assets")
 
 
@@ -416,6 +418,15 @@ class MegaStripApp(CTkDnD):
         )
         self.btn_redo.grid(row=0, column=3, sticky="ew", padx=(0, 0))
 
+        # v0.61: guarda la arquitectura actual como referencia aprobada (Config/referencias)
+        self.actions_arch_frame.grid_columnconfigure(4, weight=0)
+        self.btn_ref = ctk.CTkButton(
+            self.actions_arch_frame, text="★", font=ctk.CTkFont(size=18, weight="bold"),
+            width=40, height=40, corner_radius=10, fg_color="#2b2b2b", text_color="#FFC83D",
+            hover_color="#404040", command=self.guardar_como_referencia
+        )
+        self.btn_ref.grid(row=0, column=4, sticky="ew", padx=(5, 0))
+
         # --- Inicialización de Historial ---
         self.undo_stack = []
         self.redo_stack = []
@@ -779,6 +790,7 @@ class MegaStripApp(CTkDnD):
             "inputs": {k: v.get() for k, v in self.inputs.items()},
             "sliders": {
                 "margin": self.margin_slider.get(),
+                "margin_tl": self.margin_tl_slider.get(),
                 "offset": self.offset_slider.get(),
                 "stretch": self.stretch_slider.get(),
                 "qty_goal": self.qty_goal_slider.get(),
@@ -812,6 +824,8 @@ class MegaStripApp(CTkDnD):
         sl = state["sliders"]
         self.margin_slider.set(sl["margin"])
         self.update_margin_label(sl["margin"])
+        self.margin_tl_slider.set(sl.get("margin_tl", sl["margin"]))
+        self.update_margin_tl_label(sl.get("margin_tl", sl["margin"]))
         self.offset_slider.set(sl["offset"])
         self.update_offset_label(sl["offset"])
         self.stretch_slider.set(sl["stretch"])
@@ -939,11 +953,19 @@ class MegaStripApp(CTkDnD):
         ctk.CTkLabel(self.col_left, text="CONTENT SETUP", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.c_magenta).pack(anchor="w", padx=20, pady=(10, 5))
 
         self.margin_slider, _, self.margin_val_label = self._create_labeled_slider(
-            self.col_left, "Minimum Margin (px)", 
-            "Spacing in px between adjacent elements.",
+            self.col_left, "Goal Line Margin (px)", 
+            "Spacing in px between adjacent elements on the Goal Lines.",
             0, 600, 600, 20, self.update_margin_label
         )
         self.margin_val_label.configure(text="20 px")
+
+        # v0.61: margen independiente para la Touchline
+        self.margin_tl_slider, _, self.margin_tl_val_label = self._create_labeled_slider(
+            self.col_left, "Touchline Margin (px)",
+            "Spacing in px between adjacent elements on the Touchline.",
+            0, 600, 600, 20, self.update_margin_tl_label
+        )
+        self.margin_tl_val_label.configure(text="20 px")
 
         self.offset_slider, _, self.offset_val_label = self._create_labeled_slider(
             self.col_left, "Goal Line Offset (%)", 
@@ -1084,6 +1106,7 @@ class MegaStripApp(CTkDnD):
 
         # --- BINDINGS DE HISTORIAL PARA SLIDERS ---
         self.margin_slider.bind("<ButtonRelease-1>", self.save_history_state)
+        self.margin_tl_slider.bind("<ButtonRelease-1>", self.save_history_state)
         self.offset_slider.bind("<ButtonRelease-1>", self.save_history_state)
         self.stretch_slider.bind("<ButtonRelease-1>", self.save_history_state)
         self.qty_goal_slider.bind("<ButtonRelease-1>", self.save_history_state)
@@ -1159,7 +1182,7 @@ class MegaStripApp(CTkDnD):
         CORE ENGINE PHYSICS & RULES:
         1. INDIRECT ANIM ZONE GENERATION (Crucial): You CANNOT directly create or set the quantity of "Anim Zones". The Python mathematical engine generates them automatically by filling remaining empty space after placing Static Logos.
         2. LOGOS AS SPACERS: To add Anim Zones, you MUST REDUCE static logo quantities (`qty_goal`, `qty_tl`, etc.) to free up physical pixels. To create visual separators between Anim Zones, you MUST INCREASE logo quantities. For example, to get "2 logos between animations in touchline", set `qty_tl`: 2.
-        3. SPACING & MARGINS: To add more empty/black space or distance between elements, INCREASE `margin` (e.g., from 20 to 40 or 60 px). To compact elements, DECREASE `margin`.
+        3. SPACING & MARGINS: To add more empty/black space or distance between elements, INCREASE `margin` (e.g., from 20 to 40 or 60 px). To compact elements, DECREASE `margin`. `margin` is the Goal Line spacing and `margin_tl` the Touchline spacing: change only the one the user refers to (both if unspecified).
         4. STRETCH FIT vs. GAPS: If the user explicitly asks to eliminate gaps, remove black spaces, or "stretch fit", set `stretch_fit_per`: true and MANDATORILY set `stretch_limit`: 0.
         5. AMPLIFY MODE (Symmetry & Alternation): When `amplify`: true, traditional zone rules are disabled. The engine uses a Flexbox-like alternating distribution.
            - To change the visual sequence or flip sides symmetrically, toggle or set `invert_order`: true.
@@ -1174,7 +1197,7 @@ class MegaStripApp(CTkDnD):
 
         CRITICAL OUTPUT FORMAT:
         You are a strict configuration API. Return a MINIMAL valid JSON object containing ONLY the keys that need to be modified from the current state. Do NOT use markdown code blocks if possible, just pure JSON.
-        Valid keys you can include: "qty_goal", "qty_corner", "qty_cb", "qty_tl", "margin", "stretch_limit", "squash_logos", "stretch_fit_per", "gl_offset", "corner_logo", "logo_under", "qty_gl_under", "qty_tl_under", "show_cb", "amplify", "invert_order", "max_anim_gl", "max_anim_tl", "explicacion".
+        Valid keys you can include: "qty_goal", "qty_corner", "qty_cb", "qty_tl", "margin", "margin_tl", "stretch_limit", "squash_logos", "stretch_fit_per", "gl_offset", "corner_logo", "logo_under", "qty_gl_under", "qty_tl_under", "show_cb", "amplify", "invert_order", "max_anim_gl", "max_anim_tl", "explicacion".
         
         The "explicacion" key MUST be included: a single, clear, professional sentence explaining the architectural change made.
         """
@@ -1249,10 +1272,13 @@ class MegaStripApp(CTkDnD):
             "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
             "max_anim_gl": int(self.max_anim_gl_slider.get()),
             "max_anim_tl": int(self.max_anim_tl_slider.get()),
+            "margin_tl": int(self.margin_tl_slider.get()),               # v0.61
+            "edge_case": getattr(self, "edge_case_actual", None),        # v0.61: respeta las zonas negras
         }
         best_config, msg = resolver_arquitectura(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, base)
 
         self.current_hide_edges = best_config["hide_extreme_edges"]
+        self.current_under_hotspots = best_config.get("under_hotspots", True)  # v0.61
 
         slider_args = (
                    best_config["qty_goal"], best_config["qty_corner"], 
@@ -1263,14 +1289,15 @@ class MegaStripApp(CTkDnD):
                    best_config["logo_under"], best_config["qty_gl_under"], best_config["qty_tl_under"],
                    best_config.get("show_cb", True), best_config["amplify"],
                    getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
-                   best_config.get("max_anim_gl", 0), best_config.get("max_anim_tl", 0))
+                   best_config.get("max_anim_gl", 0), best_config.get("max_anim_tl", 0),
+                   margin, False, best_config.get("margin_tl", margin))  # v0.61: conserva los márgenes usados
         
         self.preview_enabled = True 
         
         # Sliders, chat y preview se aplican juntos en el hilo principal (y nada si se canceló)
         self.after(0, self._on_solver_done, gen, slider_args, msg)
 
-    def aplicar_parametros_ia(self, qty_goal: int, qty_corner: int, qty_cb: int, qty_tl: int, stretch_limit: int, squash_logos: bool, stretch_fit_per: bool, gl_offset: int, corner_logo: bool, logo_under: bool = False, qty_gl_under: int = 1, qty_tl_under: int = 1, show_cb: bool = True, amplify: bool = False, invert_order: bool = False, max_anim_gl: int = 0, max_anim_tl: int = 0, margin: int = 20) -> dict:
+    def aplicar_parametros_ia(self, qty_goal: int, qty_corner: int, qty_cb: int, qty_tl: int, stretch_limit: int, squash_logos: bool, stretch_fit_per: bool, gl_offset: int, corner_logo: bool, logo_under: bool = False, qty_gl_under: int = 1, qty_tl_under: int = 1, show_cb: bool = True, amplify: bool = False, invert_order: bool = False, max_anim_gl: int = 0, max_anim_tl: int = 0, margin: int = 20, margin_tl: int = -1) -> dict:
         self.reset_zooms_and_pan()
         config_prueba = {
             "stretch_limit": stretch_limit, "squash_logos": squash_logos, "stretch_fit_per": stretch_fit_per,
@@ -1279,7 +1306,10 @@ class MegaStripApp(CTkDnD):
             "hide_extreme_edges": getattr(self, "current_hide_edges", False),
             "logo_under": logo_under, "qty_gl_under": qty_gl_under, "qty_tl_under": qty_tl_under,
             "show_cb": show_cb, "amplify": amplify,
-            "max_anim_gl": max_anim_gl, "max_anim_tl": max_anim_tl
+            "max_anim_gl": max_anim_gl, "max_anim_tl": max_anim_tl,
+            "margin_tl": int(margin_tl) if margin_tl is not None and int(margin_tl) >= 0 else int(margin),
+            "under_hotspots": getattr(self, "current_under_hotspots", True),
+            "edge_case": getattr(self, "edge_case_actual", None),
         }
         
         w_total = int(self.inputs["Width"].get() or 0)
@@ -1298,7 +1328,7 @@ class MegaStripApp(CTkDnD):
                     "mensaje": "You have requested to add more elements than can fit. To fulfill your instructions, we need to modify the rest of the elements to avoid overlapping. Are you sure you want to proceed by indicating what to sacrifice?"
                 }
             
-            self.after(0, self._actualizar_sliders_desde_ia, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under, qty_gl_under, qty_tl_under, show_cb, amplify, invert_order, max_anim_gl, max_anim_tl, margin_simulado, True)
+            self.after(0, self._actualizar_sliders_desde_ia, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under, qty_gl_under, qty_tl_under, show_cb, amplify, invert_order, max_anim_gl, max_anim_tl, margin_simulado, True, config_prueba["margin_tl"])
             
             return {
                 "status": "SUCCESS", 
@@ -1309,12 +1339,15 @@ class MegaStripApp(CTkDnD):
             log_error(f"Error in aplicar_parametros_ia: {e}")
             return {"status": "ERROR", "mensaje": f"Math engine failed: {e}"}
     
-    def _actualizar_sliders_desde_ia(self, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under=False, qty_gl_under=1, qty_tl_under=1, show_cb=True, amplify=False, invert_order=False, max_anim_gl=0, max_anim_tl=0, margin=20, render_now=False):
+    def _actualizar_sliders_desde_ia(self, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under=False, qty_gl_under=1, qty_tl_under=1, show_cb=True, amplify=False, invert_order=False, max_anim_gl=0, max_anim_tl=0, margin=20, render_now=False, margin_tl=None):
         if hasattr(self, "invert_order_var"):
             self.invert_order_var.set(invert_order)
             
         self.margin_slider.set(margin)
         self.update_margin_label(margin)
+        if margin_tl is not None:  # v0.61 (None: el TL no se toca)
+            self.margin_tl_slider.set(margin_tl)
+            self.update_margin_tl_label(margin_tl)
             
         self.qty_goal_slider.set(qty_goal)
         self.qty_corner_slider.set(qty_corner)
@@ -1383,6 +1416,7 @@ class MegaStripApp(CTkDnD):
             },
             "ui": {
                 "margin": int(self.margin_slider.get()),
+                "margin_tl": int(self.margin_tl_slider.get()),
                 "q_gl": int(self.qty_goal_slider.get()),
                 "q_cor": int(self.qty_corner_slider.get()),
                 "q_cb": int(self.qty_cb_slider.get()),
@@ -1429,6 +1463,7 @@ class MegaStripApp(CTkDnD):
                     
                     resultado = self.aplicar_parametros_ia(
                         margin=datos_ia.get("margin", int(self.margin_slider.get())),
+                        margin_tl=datos_ia.get("margin_tl", int(self.margin_tl_slider.get())),
                         qty_goal=datos_ia.get("qty_goal", int(self.qty_goal_slider.get())),
                         qty_corner=datos_ia.get("qty_corner", int(self.qty_corner_slider.get())),
                         qty_cb=datos_ia.get("qty_cb", int(self.qty_cb_slider.get())),
@@ -1621,6 +1656,12 @@ class MegaStripApp(CTkDnD):
         else:
             self.trigger_update()
     
+    def update_margin_tl_label(self, value, *args):
+        self.margin_tl_val_label.configure(text=f"{int(value)} px")
+        if getattr(self, "logo_under_var", None) and self.logo_under_var.get():
+            self.update_qty_under_labels(self.qty_tl_under_slider.get(), "tl_under")
+        self.trigger_update()
+
     def update_margin_label(self, value, *args): 
         self.margin_val_label.configure(text=f"{int(value)} px")
         if getattr(self, "logo_under_var", None) and self.logo_under_var.get():
@@ -1767,9 +1808,10 @@ class MegaStripApp(CTkDnD):
             z2_w = cb_start - goal_line
             
             denom = logo_w + margin
+            margin_tl = int(self.margin_tl_slider.get())  # v0.61
             if denom > 0:
                 max_gl = max(1, math.floor((goal_line + margin) / denom))
-                max_tl = max(1, math.floor((z2_w + margin) / denom))
+                max_tl = max(1, math.floor((z2_w + margin_tl) / (logo_w + margin_tl)))
             else:
                 max_gl = max(1, math.floor(goal_line / logo_w))
                 max_tl = max(1, math.floor(z2_w / logo_w))
@@ -1952,9 +1994,31 @@ class MegaStripApp(CTkDnD):
             "max_anim_tl": int(self.max_anim_tl_slider.get()),
             "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
             "edge_case": getattr(self, "edge_case_actual", None),
+            "margin_tl": int(self.margin_tl_slider.get()),                        # v0.61
+            "under_hotspots": getattr(self, "current_under_hotspots", True),      # v0.61
         }
 
     # ---------------------------------------------------------------- v0.58: campañas
+    def guardar_como_referencia(self):
+        """v0.61 (★): guarda la arquitectura actual como referencia aprobada. El auto-solver aprende de
+        Config/referencias la próxima vez que calcula (plantillas por similitud + pesos de la puntuación)."""
+        if not self.architecture_created:
+            self.append_chat("Archie", "★ Create the architecture first, then save it as a reference.")
+            return
+        datos = self.calcular_layout()
+        if not datos:
+            return
+        estadio = self.stadium_selector_global.get() or "stadium"
+        logo = os.path.splitext(os.path.basename(self.archivos_cargados.get("static_logo") or "logo"))[0]
+        try:
+            path = hotspot_solver.guardar_referencia(datos, f"{estadio} - {logo}", CONFIG_DIR)
+            n = len(hotspot_solver.cargar_referencias(CONFIG_DIR)[0])
+            self.append_chat("Archie", f"★ Saved as approved reference ({n} in total): {os.path.basename(path)}. "
+                                       "The Auto-Solver will learn from it on the next Create Architecture.")
+        except Exception as e:
+            log_error(f"No se pudo guardar la referencia: {e}")
+            self.append_chat("Archie", f"★ Could not save the reference: {e}")
+
     def config_actual(self):
         """Config de la arquitectura actual para guardarla por campaña (sin edge_case, con margin)."""
         cfg = {k: v for k, v in self._config_ui().items() if k in CONFIG_KEYS}
@@ -1964,7 +2028,8 @@ class MegaStripApp(CTkDnD):
     def ui_defaults_campana(self):
         """Valores por defecto de la interfaz (al abrir Archie) para calcular campañas sin abrirlas."""
         d = self._ui_defaults
-        return {"margin": d["sliders"]["margin"], "gl_offset": d["sliders"]["offset"],
+        return {"margin": d["sliders"]["margin"], "margin_tl": d["sliders"].get("margin_tl", d["sliders"]["margin"]),
+                "gl_offset": d["sliders"]["offset"],
                 "corner_logo": d["vars"]["corner_logo"], "logo_under": d["vars"]["logo_under"],
                 "qty_gl_under": d["sliders"]["qty_gl_under"], "qty_tl_under": d["sliders"]["qty_tl_under"],
                 "max_anim_gl": d["sliders"]["max_anim_gl"], "max_anim_tl": d["sliders"]["max_anim_tl"],
@@ -2002,6 +2067,7 @@ class MegaStripApp(CTkDnD):
     def aplicar_config_campana(self, cfg):
         """Carga en Manual Edit la arquitectura guardada de una campaña y la pinta."""
         self.current_hide_edges = bool(cfg.get("hide_extreme_edges", False))
+        self.current_under_hotspots = bool(cfg.get("under_hotspots", False))  # JSON antiguos: como antes
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
         self.preview_enabled = True
@@ -2010,7 +2076,8 @@ class MegaStripApp(CTkDnD):
             cfg["squash_logos"], cfg.get("stretch_fit_per", False), cfg["gl_offset"], cfg["corner_logo"],
             cfg["logo_under"], cfg["qty_gl_under"], cfg["qty_tl_under"], cfg.get("show_cb", True),
             self.amplify_var.get(), cfg.get("invert_order", False), cfg.get("max_anim_gl", 0),
-            cfg.get("max_anim_tl", 0), margin=cfg.get("margin", 20))
+            cfg.get("max_anim_tl", 0), margin=cfg.get("margin", 20),
+            margin_tl=cfg.get("margin_tl", cfg.get("margin", 20)))
         self._init_history_state()
         self.start_preview_render()
 
@@ -2493,6 +2560,8 @@ class MegaStripApp(CTkDnD):
 
         cb_path = files["center_board"]
         anim_paths = files["anims"] or [None]
+        logos_debajo = logos_bajo_anims(datos)  # v0.61: Logo Under -> ANIM ZONES encima de los logos
+        anims_diferidas = []
         for zona in ([] if solo_textos else datos["zonas"].values()):
             for e in zona["elementos"]:
                 if e["tipo"] == "center_board" and e["width"] > 0:
@@ -2513,7 +2582,10 @@ class MegaStripApp(CTkDnD):
                     if k not in frame_memo:
                         frame_memo[k] = pil_anims_frames[a_idx].resize((e["width"], h_total), PREVIEW_RESAMPLE)
                     anim_img = frame_memo[k]
-                    master.paste(anim_img, (e["x_absoluta"], 0), anim_img)
+                    if logos_debajo:
+                        anims_diferidas.append((anim_img, e["x_absoluta"]))
+                    else:
+                        master.paste(anim_img, (e["x_absoluta"], 0), anim_img)
 
         for zona in ([] if solo_textos else datos["zonas"].values()):
             for e in zona["elementos"]:
@@ -2527,6 +2599,9 @@ class MegaStripApp(CTkDnD):
                     else:
                         logo_img = resized(("logo", logo_path), pil_logo_raw, (e["width"], h_total))
                     master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
+
+        for anim_img, ax in anims_diferidas:
+            master.paste(anim_img, (ax, 0), anim_img)
 
         pintar_zonas_negras(master, edge_de(datos).get("zonas_negras"))  # v0.52: brands reservados
 
@@ -2610,6 +2685,8 @@ class MegaStripApp(CTkDnD):
 
         anims = files["anims"]
         cb_path = files["center_board"]
+        logos_debajo = logos_bajo_anims(datos)  # v0.61: Logo Under -> las ANIM ZONES se apilan después de los logos
+        inst_anims = [] if logos_debajo else instancias
         for zona in datos["zonas"].values():
             for e in zona["elementos"]:
                 if e["width"] <= 0: continue
@@ -2626,11 +2703,11 @@ class MegaStripApp(CTkDnD):
                     path = anims[e.get("anim_idx", 0) % len(anims)]
                     if is_video(path):
                         if path in videos or video(path):
-                            instancias.append({"src": path, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                            inst_anims.append({"src": path, "x": e["x_absoluta"], "w": e["width"], "mask": True})
                     elif bg_video:
                         img = still(path)
                         if img is not None:
-                            instancias.append({"src": img, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                            inst_anims.append({"src": img, "x": e["x_absoluta"], "w": e["width"], "mask": True})
 
         logo_path = files["static_logo"]
         logo_still = None
@@ -2644,6 +2721,8 @@ class MegaStripApp(CTkDnD):
                     if logo_still is None: logo_still = still(logo_path)
                     if logo_still is not None:
                         instancias.append({"src": logo_still, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+        if logos_debajo:
+            instancias.extend(inst_anims)
 
         # v0.52: el reproductor no pinta vídeo sobre las zonas negras (edge cases)
         negras = edge_de(datos).get("zonas_negras")

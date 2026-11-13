@@ -1,5 +1,5 @@
 """
-auto_solver.py (v0.58)
+auto_solver.py (v0.58, v0.61: hotspots)
 Arquitectura por defecto ("Create Architecture") sin tocar la interfaz.
 
 Es la lógica de MegaStripApp._native_auto_solver sacada a funciones puras, para poder calcular la
@@ -7,6 +7,7 @@ arquitectura de una campaña que el PM todavía no ha abierto (export de campañ
 los mismos intentos que el botón. app.py usa resolver() para que no haya dos copias del algoritmo.
 """
 import math
+import os
 
 from motor_distribucion import calcular_layout_data
 from frame_cache import FRAME_CACHE
@@ -15,7 +16,13 @@ from log_utils import debug, log_error
 # Claves de la config de calcular_layout_data que se guardan por campaña (más "margin")
 CONFIG_KEYS = ("stretch_limit", "squash_logos", "stretch_fit_per", "qty_goal", "qty_corner", "qty_cb", "qty_tl",
                "gl_offset", "corner_logo", "hide_extreme_edges", "logo_under", "qty_gl_under", "qty_tl_under",
-               "show_cb", "amplify", "max_anim_gl", "max_anim_tl", "invert_order")
+               "show_cb", "amplify", "max_anim_gl", "max_anim_tl", "invert_order",
+               "margin_tl", "under_hotspots")  # v0.61
+
+
+def solver_legacy():
+    """v0.61: ARCHIE_SOLVER=legacy en Config/.env vuelve a la lista fija de intentos de v0.58."""
+    return os.getenv("ARCHIE_SOLVER", "hotspots").strip().lower() == "legacy"
 
 
 def logo_es_ancho(logo_path):
@@ -53,6 +60,18 @@ def intentos_por_defecto(amplify, is_wide):
 
 
 def resolver(w_total, h_total, goal_line, cb_width, margin, archivos, base):
+    """v0.61: por defecto, solver por hotspots (hotspot_solver.py). Amplify, sin logo o ARCHIE_SOLVER=legacy:
+    la lista fija de intentos de siempre."""
+    if not base.get("amplify") and archivos.get("static_logo") and not solver_legacy():
+        try:
+            from hotspot_solver import resolver as resolver_hotspots
+            return resolver_hotspots(w_total, h_total, goal_line, cb_width, margin, archivos, base)
+        except Exception as e:
+            log_error(f"Hotspot solver falló, uso el solver clásico: {e}")
+    return resolver_legacy(w_total, h_total, goal_line, cb_width, margin, archivos, base)
+
+
+def resolver_legacy(w_total, h_total, goal_line, cb_width, margin, archivos, base):
     """Prueba los intentos por defecto y devuelve (config, msg) del primero sin solapes.
 
     base: ajustes que el solver no decide (los toma de la interfaz o de los valores por defecto):
@@ -79,6 +98,8 @@ def resolver(w_total, h_total, goal_line, cb_width, margin, archivos, base):
             "invert_order": base["invert_order"],
             "max_anim_gl": int(base["max_anim_gl"]),
             "max_anim_tl": int(base["max_anim_tl"]),
+            "margin_tl": base.get("margin_tl"),
+            "edge_case": base.get("edge_case"),
         }
         try:
             datos = calcular_layout_data(w_total, h_total, goal_line, cb_width, margin, archivos, test_conf)
@@ -92,6 +113,9 @@ def resolver(w_total, h_total, goal_line, cb_width, margin, archivos, base):
     if not best_config:
         best_config = test_conf
         msg = "Auto-Solver: WARNING - Stadium too small or crowded. Overlap will occur."
+    if best_config:
+        best_config = dict(best_config)
+        best_config.pop("edge_case", None)
     return best_config, msg
 
 
@@ -146,6 +170,8 @@ def config_campana(perfil, nombre_estadio, archivos, defaults):
         "invert_order": bool(defaults.get("invert_order", False)),
         "max_anim_gl": int(defaults["max_anim_gl"]),
         "max_anim_tl": int(defaults["max_anim_tl"]),
+        "margin_tl": defaults.get("margin_tl"),            # v0.61
+        "edge_case": perfil.get("Edge Case"),               # v0.61: el solver respeta las zonas negras
     }
     if under and es_logo_under(logo):
         max_gl, max_tl = max_logos_under(w_total, h_total, goal_line, cb_width, margin, logo)

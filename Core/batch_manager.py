@@ -8,6 +8,7 @@ from moviepy import VideoFileClip
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from log_utils import debug, log_error
 from edge_cases import edge_de, pintar_zonas_negras
+from auto_solver import resolver as resolver_arquitectura  # v0.61
 
 try:
     RESAMPLE_METHOD = Image.Resampling.LANCZOS
@@ -316,16 +317,9 @@ class BatchManager:
             "max_anim_gl": int(self.app.max_anim_gl_slider.get()),
             "max_anim_tl": int(self.app.max_anim_tl_slider.get()),
             "edge_case": stadium_info.get("Edge Case"),  # v0.52: stadium_overrides.json
+            "margin_tl": int(self.app.margin_tl_slider.get()),          # v0.61
+            "under_hotspots": getattr(self.app, "current_under_hotspots", True),
         }
-
-        logo_path = self.app.archivos_cargados.get("static_logo")
-        is_wide = False
-        if logo_path:
-            try:
-                img = self.app.obtener_frame_pil(logo_path)
-                if img and img.height > 0:
-                    if (img.width / img.height) > 3.0: is_wide = True
-            except: pass
 
         w_total = stadium_info["Width"]
         h_total = stadium_info["Height"]
@@ -333,52 +327,26 @@ class BatchManager:
         cb_width = stadium_info["Center Board Width"]
         margin = int(self.app.margin_slider.get())
 
-        intentos = [ui_config]
+        # 1) la config de Manual Edit tal cual, si cabe en este estadio
+        datos = calcular_layout_data(w_total, h_total, goal_line, cb_width, margin, self.app.archivos_cargados, ui_config)
+        warnings = datos.get("warnings", []) if datos else ["error"]
+        if "goal_overlap" not in warnings and "touchline_overlap" not in warnings:
+            return ui_config
 
-        if ui_config["amplify"]:
-            fallbacks = [
-                {"qty_goal": 2, "qty_corner": 0, "qty_cb": 0, "qty_tl": 2, "stretch_limit": 10, "corner_logo": False, "hide_extreme_edges": True},
-                {"qty_goal": 1, "qty_corner": 0, "qty_cb": 0, "qty_tl": 1, "stretch_limit": 10, "corner_logo": False, "hide_extreme_edges": True},
-                {"qty_goal": 0, "qty_corner": 0, "qty_cb": 0, "qty_tl": 0, "stretch_limit": 10, "corner_logo": False, "hide_extreme_edges": True}
-            ]
-        elif is_wide:
-            fallbacks = [
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 1, "stretch_limit": 15, "corner_logo": False, "hide_extreme_edges": False},
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 1, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": False},
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 1, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True},
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 0, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True}
-            ]
-        else:
-            fallbacks = [
-                {"qty_goal": 5, "qty_corner": 3, "qty_cb": 2, "qty_tl": 3, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": False},
-                {"qty_goal": 5, "qty_corner": 3, "qty_cb": 2, "qty_tl": 3, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True},
-                {"qty_goal": 5, "qty_corner": 1, "qty_cb": 2, "qty_tl": 2, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True},
-                {"qty_goal": 3, "qty_corner": 1, "qty_cb": 1, "qty_tl": 2, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True},
-                {"qty_goal": 1, "qty_corner": 1, "qty_cb": 1, "qty_tl": 1, "stretch_limit": 15, "corner_logo": True, "hide_extreme_edges": True}
-            ]
-        
-        intentos.extend(fallbacks)
-
-        best_config = None
-        for config in intentos:
-            # --- BLINDAJE ARCHIE EN BATCH: Respetar apagado de Corner Logo en modo Logo Under ---
-            is_under = ui_config["logo_under"]
-            c_logo = ui_config["corner_logo"] if is_under else config["corner_logo"]
-            q_corner = (1 if c_logo else 0) if is_under else config["qty_corner"]
-
-            test_conf = ui_config.copy()
-            test_conf.update(config)
-            test_conf["corner_logo"] = c_logo
-            test_conf["qty_corner"] = q_corner
-            
-            datos = calcular_layout_data(w_total, h_total, goal_line, cb_width, margin, self.app.archivos_cargados, test_conf)
-            warnings = datos.get("warnings", []) if datos else ["error"]
-            
-            if "goal_overlap" not in warnings and "touchline_overlap" not in warnings:
-                best_config = test_conf
-                break
-                
-        return best_config if best_config else ui_config
+        # 2) v0.61: si no cabe, el mismo auto-solver que Create Architecture (hotspots; amplify -> clásico)
+        base = {k: ui_config[k] for k in ("gl_offset", "logo_under", "corner_logo", "qty_gl_under", "qty_tl_under",
+                                          "show_cb", "amplify", "invert_order", "max_anim_gl", "max_anim_tl",
+                                          "margin_tl", "edge_case")}
+        best_config, msg = resolver_arquitectura(w_total, h_total, goal_line, cb_width, margin,
+                                                 self.app.archivos_cargados, base)
+        debug(f"Batch {stadium_name}: {msg}")
+        if not best_config:
+            return ui_config
+        conf = ui_config.copy()
+        conf.update(best_config)
+        conf["edge_case"] = ui_config["edge_case"]
+        conf["stretch_fit_per"] = ui_config["stretch_fit_per"]
+        return conf
 
     def generate_reference_pngs(self, datos, stadium_name, base_filename, out_dir, cancel_check=None):
         w_total = datos["dimensiones_globales"]["width"]

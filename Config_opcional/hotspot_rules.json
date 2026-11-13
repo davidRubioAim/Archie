@@ -1,0 +1,25 @@
+{
+  "aspect_ancho": 4.0,
+  "aspect_medio": 2.2,
+  "objetivo_goal": {
+    "ancho": 1,
+    "medio": 3,
+    "pequeno": 5
+  },
+  "objetivo_corner_lado": {
+    "ancho": 1,
+    "medio": 1,
+    "pequeno": 2
+  },
+  "objetivo_centro_lado": {
+    "ancho": 1,
+    "medio": 1,
+    "pequeno": 2
+  },
+  "gl_offsets": [
+    0,
+    5,
+    10,
+    15
+  ]
+}

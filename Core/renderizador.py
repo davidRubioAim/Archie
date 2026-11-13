@@ -7,7 +7,7 @@ from PIL import Image
 from moviepy import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, VideoClip, concatenate_videoclips
 from proglog import ProgressBarLogger
 from log_utils import debug, log_error
-from edge_cases import edge_de, filas_system
+from edge_cases import edge_de, filas_system, logos_bajo_anims
 from render_rapido import args_rec709, fps_de  # v0.55: color Rec.709 · v0.57: fps del perfil del estadio
 
 class UILogger(ProgressBarLogger):
@@ -178,6 +178,9 @@ def construir_mega_strip(datos):
     lista_composicion = [fondo_base]
 
     clip_logo_base = obtener_clip_fuente(logo_path, h_total, duracion_video)
+    # v0.61: en Logo Under los logos se pintan antes que las ANIM ZONES (quedan debajo)
+    logos_debajo = logos_bajo_anims(datos)
+    capas_anim = []
 
     for nombre_zona, datos_zona in datos["zonas"].items():
         for elemento in datos_zona["elementos"]:
@@ -211,7 +214,7 @@ def construir_mega_strip(datos):
                 a_idx = elemento.get("anim_idx", 0) % len(anim_clips_base)
                 if anim_clips_base[a_idx]:
                     clip = anim_clips_base[a_idx].resized((w_elem, h_total)).with_position((pos_x, 0))
-                    lista_composicion.append(clip)
+                    (capas_anim if logos_debajo else lista_composicion).append(clip)
                 
     for nombre_zona, datos_zona in datos["zonas"].items():
         for elemento in datos_zona["elementos"]:
@@ -231,6 +234,8 @@ def construir_mega_strip(datos):
                     clip = clip_logo_base.resized((w_elem, h_total)).with_position((pos_x, 0))
 
                 lista_composicion.append(clip)
+
+    lista_composicion.extend(capas_anim)  # v0.61: Logo Under -> ANIM ZONES encima de los logos
 
     # v0.52: zonas negras del edge case (brands reservados), encima de todo
     for a, b in (edge_de(datos).get("zonas_negras") or []):

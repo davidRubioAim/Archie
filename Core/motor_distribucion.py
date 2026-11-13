@@ -21,6 +21,11 @@ class Distribuidor:
     self.goal_line = goal_line
     self.cb_width = cb_width
     self.margin = margin
+    # v0.61: margen independiente para Goal Lines (margin) y Touchline (config["margin_tl"]).
+    # Sin margin_tl (JSON antiguos) el TL usa el mismo margen que el GL: misma distribución que antes.
+    self.m_gl = margin
+    m_tl = config.get("margin_tl")
+    self.m_tl = margin if m_tl is None or m_tl < 0 else m_tl
     self.archivos = archivos
     self.config = config
     self.anim_counter = 0
@@ -31,17 +36,26 @@ class Distribuidor:
     self.res_izq, self.res_der = reservas_laterales(edge, w_total)
     self.goal_pos = edge.get("goal_position")
 
-    self.logo_w, self.logo_h = self.get_dimensions(
-        archivos.get("static_logo"), 1000, 200
-    )
+    # v0.61: config["dims"] = {"static_logo": [w, h], "anim": [w, h]} evita leer los ficheros
+    # (lo usa el hotspot_solver para las referencias JSON, cuyos media pueden no estar accesibles).
+    dims = config.get("dims") or {}
+    if dims.get("static_logo"):
+      self.logo_w, self.logo_h = dims["static_logo"]
+    else:
+      self.logo_w, self.logo_h = self.get_dimensions(
+          archivos.get("static_logo"), 1000, 200
+      )
 
     self.anim_files = [f for f in archivos.get("anim_zones", []) if f is not None]
     if not self.anim_files and archivos.get("anim_zone"):
       self.anim_files = [archivos["anim_zone"]]
 
-    self.anim_w, self.anim_h = self.get_dimensions(
-        self.anim_files[0] if self.anim_files else None, 3000, 200
-    )
+    if dims.get("anim"):
+      self.anim_w, self.anim_h = dims["anim"]
+    else:
+      self.anim_w, self.anim_h = self.get_dimensions(
+          self.anim_files[0] if self.anim_files else None, 3000, 200
+      )
 
     if self.logo_h > 0:
       self.logo_w = int(self.logo_w * (self.h_total / self.logo_h))
@@ -112,9 +126,15 @@ class Distribuidor:
 
     max_k = max(0, max_k)
 
+    # v0.61: el ancho del grupo separador se calcula con el margen vigente (GL o TL)
+    w_sep = (
+        self.qty_tl * self.logo_w + max(0, self.qty_tl - 1) * self.margin
+        if self.qty_tl > 0
+        else 0
+    )
     for k in range(max_k, -1, -1):
       req_anim = (k + 1) * self.anim_w
-      req_logo = k * self.w_tl
+      req_logo = k * w_sep
       req_marg = (2 * k) * self.margin
 
       if req_anim + req_logo + req_marg <= w_avail:
@@ -359,7 +379,10 @@ class Distribuidor:
       corner_logo_split = self.config.get("corner_logo", False)
 
       # --- BLINDAJE ARCHIE: Si Logo Under está ON, anulamos esquinas por defecto ---
-      if self.config.get("logo_under", False) and not corner_logo_split:
+      # v0.61: salvo que la config pida reservar los hotspots ("under_hotspots"): entonces el hueco de los
+      # corners se respeta y las ANIM ZONES no se colocan encima de ellos (los logos se purgan igual abajo).
+      if (self.config.get("logo_under", False) and not corner_logo_split
+          and not self.config.get("under_hotspots", False)):
         qty_corner = 0
 
       max_anim_gl = self.config.get("max_anim_gl", 0)
@@ -367,29 +390,20 @@ class Distribuidor:
       cap_gl = max_anim_gl if max_anim_gl > 0 else None
       cap_tl = max_anim_tl if max_anim_tl > 0 else None
 
-      w_goal = (
-          qty_goal * self.logo_w + max(0, qty_goal - 1) * self.margin
-          if qty_goal > 0
-          else 0
-      )
-      w_cb = (
-          qty_cb * self.logo_w + max(0, qty_cb - 1) * self.margin
-          if qty_cb > 0
-          else 0
-      )
-      self.w_tl = (
-          self.qty_tl * self.logo_w + max(0, self.qty_tl - 1) * self.margin
-          if self.qty_tl > 0
-          else 0
-      )
-      w_corner = (
-          qty_corner * self.logo_w + max(0, qty_corner - 1) * self.margin
-          if qty_corner > 0
-          else 0
-      )
+      def ancho_cluster(n, m):
+        return n * self.logo_w + max(0, n - 1) * m if n > 0 else 0
+
+      # v0.61: GL (zonas 1 y 5) con m_gl, TL (zonas 2 y 4, logos del CB) con m_tl
+      m_gl, m_tl = self.m_gl, self.m_tl
+      w_goal = ancho_cluster(qty_goal, m_gl)
+      w_cb = ancho_cluster(qty_cb, m_tl)
+      w_corner = ancho_cluster(qty_corner, m_gl)      # lado GL del corner (y extremos)
+      w_corner_tl = ancho_cluster(qty_corner, m_tl)   # lado TL del corner
 
       hide_extreme_edges = self.config.get("hide_extreme_edges", False)
-      m_half = self.margin / 2.0
+      self.margin = m_gl
+      m_half = m_gl / 2.0
+      m_half_tl = m_tl / 2.0
 
       if not hide_extreme_edges and qty_corner > 0:
         zonas["ZONA_1"]["elementos"].extend(
@@ -419,30 +433,33 @@ class Distribuidor:
             self.place_logos(c2_start, qty_corner)
         )
       elif qty_corner > 0:
+        # corner del fondo: un cluster en el GL (margen GL) y otro en el TL (margen TL)
         c1_start = (z1_w - m_half) - w_corner
-        c1_end_logo = z2_start + m_half
-        c2_start = (z5_start - m_half) - w_corner
+        c1_end_logo = z2_start + m_half_tl
+        c2_start = (z5_start - m_half_tl) - w_corner_tl
         c2_end_logo = z5_start + m_half
 
         zonas["ZONA_1"]["elementos"].extend(
             self.place_logos(c1_start, qty_corner)
         )
+        self.margin = m_tl
         zonas["ZONA_2"]["elementos"].extend(
             self.place_logos(c1_end_logo, qty_corner)
         )
         zonas["ZONA_4"]["elementos"].extend(
             self.place_logos(c2_start, qty_corner)
         )
+        self.margin = m_gl
         zonas["ZONA_5"]["elementos"].extend(
             self.place_logos(c2_end_logo, qty_corner)
         )
 
-        c1_end = c1_end_logo + w_corner
+        c1_end = c1_end_logo + w_corner_tl
         c2_end = c2_end_logo + w_corner
       else:
         c1_start = z1_w - m_half
-        c1_end = z2_start + m_half
-        c2_start = z5_start - m_half
+        c1_end = z2_start + m_half_tl
+        c2_start = z5_start - m_half_tl
         c2_end = z5_start + m_half
 
       gl_offset_pct = self.config.get("gl_offset", 0) / 100.0
@@ -475,6 +492,8 @@ class Distribuidor:
             self.place_fill(w_avail_1R, gl1_end, max_anims=cap_gl)
         )
 
+      self.margin = m_tl
+      m_half = m_half_tl
       if self.cb_width == 0:
         cb_center = self.w_total / 2.0
         if qty_cb > 0:
@@ -532,6 +551,8 @@ class Distribuidor:
             self.place_fill(w_avail_4, tl_right_start, max_anims=cap_tl)
         )
 
+      self.margin = m_gl
+      m_half = m_gl / 2.0
       anchor_5 = z5_w * (0.5 - gl_offset_pct)
       anchor_5_abs = z5_start + anchor_5
       if self.goal_pos is not None:
@@ -630,6 +651,18 @@ class Distribuidor:
               if (not hide_extreme_edges and qty_corner > 0)
               else self.w_total - self.res_der
           )
+
+          # v0.61: con hotspots reservados la rejilla cubre la zona entera (también el hueco de corners y CB,
+          # que es justo donde queremos ver la marca); las ANIM ZONES ya se han apartado de esos huecos.
+          if self.config.get("under_hotspots", False):
+            lu_z1_start = self.res_izq
+            lu_c1_start = z1_w
+            lu_c1_end = z2_start
+            lu_c2_start = z5_start
+            lu_c2_end = z5_start
+            lu_z5_end = self.w_total - self.res_der
+            tl_left_end = cb_start if self.cb_width > 0 else self.w_total / 2.0
+            tl_right_start = cb_end if self.cb_width > 0 else self.w_total / 2.0
 
           # 2. GENERACIÓN UNIFORME PURA SIN SUBDIVISIÓN DE PORTERÍAS NI CLÚSTERES
           # ZONA 1: De extremo izquierdo hasta frontera de corner/zona 2

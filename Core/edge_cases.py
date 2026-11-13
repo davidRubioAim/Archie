@@ -192,3 +192,16 @@ def pintar_zonas_negras(img, zonas):
     for x1, x2 in zonas:
         d.rectangle([x1, 0, x2 - 1, img.height - 1], fill=negro)
     return img
+
+
+# ---------------------------------------------------------------- v0.61: orden de capas
+def logos_bajo_anims(datos):
+    """True si la arquitectura es Logo Under: los logos van DEBAJO de las ANIM ZONES (render, previews y AE).
+    En el resto de modos los logos no se solapan con las ANIM ZONES y el orden da igual."""
+    if (datos.get("config") or {}).get("logo_under"):
+        return True
+    for zona in (datos.get("zonas") or {}).values():
+        for e in zona.get("elementos", []):
+            if e.get("tipo") == "static_logo" and e.get("logo_under_type") == "animated":
+                return True
+    return False
