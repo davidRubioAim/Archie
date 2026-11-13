@@ -309,15 +309,26 @@ _CACHE = {"firma": None, "refs": []}
 
 
 def carpetas_referencias(config_dir=None):
-    """v0.62: 1) Config\\referencias de la instalación (las que guarda ★ en este PC);
+    """v0.64: 0) carpetas de ARCHIE_REFERENCIAS (Config\\.env); v0.62: 1) Config\\referencias de la instalación (las que guarda ★ en este PC);
     2) Config\\referencias de la propia versión (las que van en el repo de GitHub y llegan con cada versión).
     Si un fichero está en las dos, gana el local."""
     local = os.path.join(_cfg_dir(config_dir), REFS_DIR)
     version = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Config", REFS_DIR)
-    carpetas = [local]
-    if os.path.normcase(os.path.abspath(version)) != os.path.normcase(os.path.abspath(local)):
-        carpetas.append(version)
-    return carpetas
+    carpetas = []
+    # v0.64: carpeta(s) maestra(s) compartidas, en Config\\.env: ARCHIE_REFERENCIAS=ruta1;ruta2
+    # (p. ej. la carpeta del repo o una del NAS). Tienen prioridad: es la "memoria master".
+    for extra in (os.getenv("ARCHIE_REFERENCIAS") or "").split(";"):
+        extra = extra.strip().strip('"')
+        if extra and os.path.isdir(extra):
+            carpetas.append(extra)
+    carpetas += [local, version]
+    unicas, vistas = [], set()
+    for c in carpetas:
+        k = os.path.normcase(os.path.abspath(c))
+        if k not in vistas:
+            vistas.add(k)
+            unicas.append(c)
+    return unicas
 
 
 def cargar_referencias(config_dir=None):
@@ -337,8 +348,11 @@ def cargar_referencias(config_dir=None):
 
 
 def guardar_referencia(datos, nombre, config_dir=None):
-    """Guarda la arquitectura actual como referencia aprobada (botón ★ de Manual Edit)."""
-    carpeta = os.path.join(_cfg_dir(config_dir), REFS_DIR)
+    """Guarda la arquitectura actual como referencia aprobada (botón ★ de Manual Edit).
+    v0.64: si hay carpeta maestra (ARCHIE_REFERENCIAS), se guarda allí; si no, en Config\\referencias local."""
+    maestras = [c.strip().strip('"') for c in (os.getenv("ARCHIE_REFERENCIAS") or "").split(";") if c.strip()]
+    maestras = [c for c in maestras if os.path.isdir(c)]
+    carpeta = maestras[0] if maestras else os.path.join(_cfg_dir(config_dir), REFS_DIR)
     os.makedirs(carpeta, exist_ok=True)
     limpio = "".join(c if c.isalnum() or c in "-_ ." else "_" for c in nombre).strip() or "referencia"
     path = os.path.join(carpeta, f"{limpio}.json")
