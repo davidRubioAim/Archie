@@ -72,6 +72,19 @@ def resolver(w_total, h_total, goal_line, cb_width, margin, archivos, base):
     return resolver_legacy(w_total, h_total, goal_line, cb_width, margin, archivos, base)
 
 
+def completar_goal(w_total, h_total, goal_line, cb_width, margin, archivos, config):
+    """v0.66: con una config que no ha salido del auto-solver, prueba sola a meter tras la portería los logos
+    que pide el tamaño del logo (ver hotspot_solver.completar_goal). -> (config, msg o None)"""
+    if solver_legacy() or not config:
+        return config, None
+    try:
+        from hotspot_solver import completar_goal as _completar
+        return _completar(w_total, h_total, goal_line, cb_width, margin, archivos, config)
+    except Exception as e:
+        log_error(f"completar_goal falló: {e}")
+        return config, None
+
+
 def resolver_legacy(w_total, h_total, goal_line, cb_width, margin, archivos, base):
     """Prueba los intentos por defecto y devuelve (config, msg) del primero sin solapes.
 

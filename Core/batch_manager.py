@@ -8,7 +8,7 @@ from moviepy import VideoFileClip
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from log_utils import debug, log_error
 from edge_cases import edge_de, pintar_zonas_negras
-from auto_solver import resolver as resolver_arquitectura  # v0.61
+from auto_solver import resolver as resolver_arquitectura, completar_goal  # v0.61 / v0.66
 
 try:
     RESAMPLE_METHOD = Image.Resampling.LANCZOS
@@ -332,7 +332,12 @@ class BatchManager:
         datos = calcular_layout_data(w_total, h_total, goal_line, cb_width, margin, self.app.archivos_cargados, ui_config)
         warnings = datos.get("warnings", []) if datos else ["error"]
         if "goal_overlap" not in warnings and "touchline_overlap" not in warnings:
-            return ui_config
+            # v0.66: y si en este estadio caben más logos tras la portería, los mete solo
+            conf, msg = completar_goal(w_total, h_total, goal_line, cb_width, margin,
+                                       self.app.archivos_cargados, ui_config)
+            if msg:
+                debug(f"Batch {stadium_name}: {msg}")
+            return conf
 
         # 2) v0.61: si no cabe, el mismo auto-solver que Create Architecture (hotspots; amplify -> clásico)
         base = {k: ui_config[k] for k in ("gl_offset", "logo_under", "corner_logo", "qty_gl_under", "qty_tl_under",

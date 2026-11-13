@@ -643,6 +643,86 @@ def resolver(w_total, h_total, goal_line, cb_width, margin, archivos, base, conf
     return _limpiar(mejor["conf"]), _mensaje(mejor, info)
 
 
+def completar_goal(w_total, h_total, goal_line, cb_width, margin, archivos, config, config_dir=None):
+    """v0.66: si una config que no viene del auto-solver (chat, batch con la config de Manual Edit, logo
+    cambiado...) deja tras la portería menos logos que el objetivo del logo (1 ancho / 3 medio / 5 pequeño,
+    o lo que diga la plantilla), prueba sola a subir qty_goal: mismo resto de la config, logos del goal
+    desplazados hacia el corner del fondo y ANIM ZONES comprimidas hasta el stretch_limit de las reglas,
+    con el espaciado repartido. Solo acepta si no hay solapes y no se pierde ninguna ANIM ZONE ni ningún
+    hotspot. -> (config, mensaje o None si no cambia nada)"""
+    conf0 = dict(config or {})
+    if conf0.get("amplify") or conf0.get("logo_under") or not (archivos or {}).get("static_logo"):
+        return config, None
+    qg0 = int(conf0.get("qty_goal", 0) or 0)
+    if qg0 <= 0:
+        return config, None
+    try:
+        reglas = cargar_reglas(config_dir)
+        refs, _ = cargar_referencias(config_dir)
+        if refs and "estructura" not in refs[0]:
+            _preparar_refs(refs, reglas)
+        pesos = pesos_actuales(config_dir)
+        geo = Geometria(w_total, h_total, goal_line, cb_width, conf0.get("edge_case"))
+        if conf0.get("dims"):
+            logo_w = conf0["dims"]["static_logo"][0] * h_total / float(conf0["dims"]["static_logo"][1])
+            anim_w = conf0["dims"]["anim"][0] * h_total / float(conf0["dims"]["anim"][1])
+        else:
+            logo_w, anim_w = _dims_reales(archivos, h_total)
+        if not logo_w:
+            return config, None
+        clase = clase_logo(logo_w / float(max(1, h_total)), reglas)
+        objetivos = objetivos_por_clase(clase, reglas, cb_width)
+        caso = _rasgos_caso(w_total, h_total, goal_line, cb_width, logo_w, anim_w or logo_w, False)
+        ref, sim = _plantilla(caso, refs)
+        if ref is not None and sim >= 0.5 and ref["objetivos_medidos"].get("goal"):
+            objetivos = dict(objetivos, goal=ref["objetivos_medidos"]["goal"])
+        meta = int(objetivos["goal"])
+
+        actual = _evaluar(geo, margin, archivos, conf0, logo_w, anim_w, objetivos, pesos, None, 0.0)
+        if not actual or actual["solapa"]:
+            return config, None
+        e0, p0 = actual["estructura"], actual["phi"]
+        goal0 = min(e0["goal_L"], e0["goal_R"])
+        if goal0 >= meta:
+            return config, None
+
+        off0 = conf0.get("gl_offset", 0) or 0
+        offsets = [off0] + [o for o in reglas["gl_offsets"] if o > off0]
+        st0 = conf0.get("stretch_limit", 0) or 0
+        stretches = sorted({st0, max(st0, reglas["stretch_limit"])})
+        mejor = None
+        for qg in sorted(set(reglas["goal_opciones"]) | {meta}):
+            if qg <= qg0 or qg > meta:
+                continue
+            for st in stretches:
+                for off in offsets:
+                    c = dict(conf0, qty_goal=qg, gl_offset=off, stretch_limit=st, even_spacing=True)
+                    r = _evaluar(geo, margin, archivos, c, logo_w, anim_w, objetivos, pesos, None, 0.0)
+                    if not r or r["solapa"]:
+                        continue
+                    e, p = r["estructura"], r["phi"]
+                    if e["anims"] < e0["anims"] or p["hot_ok"] < p0["hot_ok"] or p["pegadas"] > p0["pegadas"]:
+                        continue
+                    goal = min(e["goal_L"], e["goal_R"])
+                    if goal <= goal0:
+                        continue
+                    clave = (goal, -st, -off, r["score"])   # más logos; a igualdad, menos compresión y desplazamiento
+                    if mejor is None or clave > mejor[0]:
+                        mejor = (clave, c, goal)
+        if not mejor:
+            return config, None
+        _, c, goal = mejor
+        partes = [f"goal logos {goal0} -> {goal} (they fit without losing Anim Zones)"]
+        if c["gl_offset"] != off0:
+            partes.append(f"shifted {c['gl_offset']}% towards the far corners")
+        if c["stretch_limit"] != st0:
+            partes.append(f"Anim Zones squashed up to {c['stretch_limit']}%")
+        return c, "Auto-Solver (hotspots): " + ", ".join(partes) + "."
+    except Exception as e:
+        debug(f"completar_goal: {e}")
+        return config, None
+
+
 def _limpiar(conf):
     c = dict(conf)
     c.pop("dims", None)

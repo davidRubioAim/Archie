@@ -25,7 +25,7 @@ from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
 from auto_import import buscar_elements_hermanos
-from auto_solver import resolver as resolver_arquitectura, CONFIG_KEYS
+from auto_solver import resolver as resolver_arquitectura, completar_goal, CONFIG_KEYS
 import hotspot_solver  # v0.61: auto-solver por hotspots + referencias JSON aprobadas
 from campaign_panel import CampaignPanel  # v0.58: pestaña CAMPAIGNS (batch de campañas por estadio)
 from video_player import PreviewPlayer, PhotoTarget, Escena, Vista, PLAYER_FPS
@@ -200,6 +200,8 @@ class MegaStripApp(CTkDnD):
         self.preview_enabled = False
         self.architecture_created = False   # True tras el primer "Create Architecture" (auto-solver)
         self.arch_stadium = None            # estadio para el que se calculó la arquitectura por defecto
+        self.arch_key = None                # v0.66: estadio + logo + anims de la arquitectura actual
+        self.solver_key = None              # v0.66: estadio + logo + anims que resolvió el auto-solver
         self.preview_dirty = False          # hay cambios sin aplicar a la preview
         self.render_gen = 0                 # id del render en curso (descarta resultados obsoletos)
         self.render_busy = False
@@ -1212,11 +1214,18 @@ class MegaStripApp(CTkDnD):
         except Exception as e:
             self.append_chat("System Error", f"⚠️ Failed to initialize AI: {str(e)}")
 
+    def _arch_key(self):
+        """v0.66: lo que define la arquitectura por defecto: estadio, logo y ANIM ZONES cargados."""
+        a = self.archivos_cargados or {}
+        anims = tuple(a.get("anim_zones") or [a.get("anim_zone")])
+        return (self.stadium_selector_global.get(), a.get("static_logo"), anims)
+
     def on_create_architecture(self):
         """1er click (o estadio nuevo): arquitectura por defecto. Después: aplica los ajustes actuales a la preview."""
         if self.solver_busy: return  # un render de preview en curso sí se puede sustituir
         stadium = self.stadium_selector_global.get()
-        if not self.architecture_created or stadium != self.arch_stadium:
+        # v0.66: también si han cambiado el logo o las ANIM ZONES (p. ej. Mastercard -> PlayStation)
+        if not self.architecture_created or stadium != self.arch_stadium or self._arch_key() != self.arch_key:
             self.auto_create_architecture()
         else:
             self.start_preview_render()
@@ -1249,6 +1258,7 @@ class MegaStripApp(CTkDnD):
         self.solver_busy = False
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
+        self.arch_key = self.solver_key = self._arch_key()   # v0.66
         self._actualizar_sliders_desde_ia(*slider_args)
         self.append_chat("System AI", msg)
         self.start_preview_render()
@@ -1331,11 +1341,22 @@ class MegaStripApp(CTkDnD):
                 }
             
             self.current_even_spacing = True  # v0.62: lo que pide el chat se reparte siempre con espaciado uniforme
+            # v0.66: si el auto-solver aún no ha calculado esta arquitectura (sliders por defecto o heredados de
+            # otro logo/estadio) y el chat no ha tocado los logos del goal, prueba a meter los que pide el logo
+            extra = ""
+            if self.solver_key != self._arch_key() and int(qty_goal) == int(self.qty_goal_slider.get()):
+                conf2, msg_goal = completar_goal(w_total, h_total, goal_line, cb_width, margin_simulado,
+                                                 self.archivos_cargados, config_prueba)
+                if msg_goal:
+                    qty_goal, gl_offset, stretch_limit = conf2["qty_goal"], conf2["gl_offset"], conf2["stretch_limit"]
+                    self.after(0, self.append_chat, "System AI", msg_goal)
+                    extra = (f" Also, the goal now has {qty_goal} logos because they fit automatically "
+                             "(tell the user).")
             self.after(0, self._actualizar_sliders_desde_ia, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under, qty_gl_under, qty_tl_under, show_cb, amplify, invert_order, max_anim_gl, max_anim_tl, margin_simulado, True, config_prueba["margin_tl"])
             
             return {
                 "status": "SUCCESS", 
-                "mensaje": "The parameters fit perfectly and have been applied to the interface. Stop here and answer the user confirming the action."
+                "mensaje": "The parameters fit perfectly and have been applied to the interface." + extra + " Stop here and answer the user confirming the action."
             }
         except Exception as e:
             traceback.print_exc()
@@ -1392,6 +1413,7 @@ class MegaStripApp(CTkDnD):
             if self.solver_busy: return  # el auto-solver los recogerá al terminar (auto-update)
             self.architecture_created = True
             self.arch_stadium = self.stadium_selector_global.get()
+            self.arch_key = self._arch_key()   # v0.66
             self.save_history_state()
             self.start_preview_render()
 
@@ -2075,6 +2097,7 @@ class MegaStripApp(CTkDnD):
         self.current_even_spacing = bool(cfg.get("even_spacing", False))      # v0.62 (JSON antiguos: como antes)
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
+        self.arch_key = self.solver_key = self._arch_key()   # v0.66: arquitectura guardada = aprobada
         self.preview_enabled = True
         self._actualizar_sliders_desde_ia(
             cfg["qty_goal"], cfg["qty_corner"], cfg["qty_cb"], cfg["qty_tl"], cfg["stretch_limit"],
