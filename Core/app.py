@@ -1279,6 +1279,7 @@ class MegaStripApp(CTkDnD):
 
         self.current_hide_edges = best_config["hide_extreme_edges"]
         self.current_under_hotspots = best_config.get("under_hotspots", True)  # v0.61
+        self.current_even_spacing = best_config.get("even_spacing", True)      # v0.62
 
         slider_args = (
                    best_config["qty_goal"], best_config["qty_corner"], 
@@ -1309,6 +1310,7 @@ class MegaStripApp(CTkDnD):
             "max_anim_gl": max_anim_gl, "max_anim_tl": max_anim_tl,
             "margin_tl": int(margin_tl) if margin_tl is not None and int(margin_tl) >= 0 else int(margin),
             "under_hotspots": getattr(self, "current_under_hotspots", True),
+            "even_spacing": getattr(self, "current_even_spacing", True),   # v0.62: el chat también reparte el espacio
             "edge_case": getattr(self, "edge_case_actual", None),
         }
         
@@ -1328,6 +1330,7 @@ class MegaStripApp(CTkDnD):
                     "mensaje": "You have requested to add more elements than can fit. To fulfill your instructions, we need to modify the rest of the elements to avoid overlapping. Are you sure you want to proceed by indicating what to sacrifice?"
                 }
             
+            self.current_even_spacing = True  # v0.62: lo que pide el chat se reparte siempre con espaciado uniforme
             self.after(0, self._actualizar_sliders_desde_ia, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under, qty_gl_under, qty_tl_under, show_cb, amplify, invert_order, max_anim_gl, max_anim_tl, margin_simulado, True, config_prueba["margin_tl"])
             
             return {
@@ -1996,6 +1999,7 @@ class MegaStripApp(CTkDnD):
             "edge_case": getattr(self, "edge_case_actual", None),
             "margin_tl": int(self.margin_tl_slider.get()),                        # v0.61
             "under_hotspots": getattr(self, "current_under_hotspots", True),      # v0.61
+            "even_spacing": getattr(self, "current_even_spacing", True),          # v0.62
         }
 
     # ---------------------------------------------------------------- v0.58: campañas
@@ -2068,6 +2072,7 @@ class MegaStripApp(CTkDnD):
         """Carga en Manual Edit la arquitectura guardada de una campaña y la pinta."""
         self.current_hide_edges = bool(cfg.get("hide_extreme_edges", False))
         self.current_under_hotspots = bool(cfg.get("under_hotspots", False))  # JSON antiguos: como antes
+        self.current_even_spacing = bool(cfg.get("even_spacing", False))      # v0.62 (JSON antiguos: como antes)
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
         self.preview_enabled = True

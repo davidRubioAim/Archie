@@ -211,6 +211,36 @@ class Distribuidor:
       e["x_absoluta"] = int(start_x + e.get("offset_x", 0))
     return elements
 
+  def _espaciar_clusters(self, zonas, cb_start, cb_end):
+    """v0.62 (config "even_spacing"): un grupo de 2+ logos entre dos ANIM ZONES de la misma zona (p. ej. los
+    3 logos tras la portería) reparte el hueco libre por igual: misma distancia entre logos y entre los
+    logos y las ANIM ZONES contiguas. Antes los logos iban pegados al margen mínimo y todo el hueco sobrante
+    quedaba a los lados del grupo."""
+    if not self.config.get("even_spacing", False) or self.config.get("logo_under"):
+      return
+    fronteras = [self.goal_line, self.w_total - self.goal_line]
+    fronteras += [cb_start, cb_end] if self.cb_width > 0 else [self.w_total / 2.0]
+    for zona in zonas.values():
+      elems = sorted(zona["elementos"], key=lambda e: e["x_absoluta"])
+      anims = [e for e in elems if e["tipo"] == "anim_zone"]
+      for a, b in zip(anims, anims[1:]):
+        x0 = a["x_absoluta"] + a["width"]
+        x1 = b["x_absoluta"]
+        if x1 <= x0 or any(x0 < f < x1 for f in fronteras):
+          continue
+        logos = [e for e in elems if e["tipo"] == "static_logo"
+                 and e["x_absoluta"] >= x0 - 1 and e["x_absoluta"] + e["width"] <= x1 + 1]
+        if len(logos) < 2:
+          continue
+        hueco = (x1 - x0 - sum(e["width"] for e in logos)) / float(len(logos) + 1)
+        if hueco <= 0:
+          continue
+        cx = x0 + hueco
+        for e in sorted(logos, key=lambda e: e["x_absoluta"]):
+          e["x_absoluta"] = int(round(cx))
+          e.pop("offset_x", None)
+          cx += e["width"] + hueco
+
   def _aplicar_stretch_fit(self, zonas, warnings, cb_start, cb_end):
     if not self.config.get("stretch_fit_per", False):
       return
@@ -722,6 +752,7 @@ class Distribuidor:
           )
 
       if not self.config.get("logo_under"):
+        self._espaciar_clusters(zonas, cb_start, cb_end)
         self._aplicar_stretch_fit(zonas, warnings, cb_start, cb_end)
 
       return {

@@ -319,6 +319,7 @@ class BatchManager:
             "edge_case": stadium_info.get("Edge Case"),  # v0.52: stadium_overrides.json
             "margin_tl": int(self.app.margin_tl_slider.get()),          # v0.61
             "under_hotspots": getattr(self.app, "current_under_hotspots", True),
+            "even_spacing": getattr(self.app, "current_even_spacing", True),   # v0.62
         }
 
         w_total = stadium_info["Width"]

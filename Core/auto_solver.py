@@ -17,7 +17,8 @@ from log_utils import debug, log_error
 CONFIG_KEYS = ("stretch_limit", "squash_logos", "stretch_fit_per", "qty_goal", "qty_corner", "qty_cb", "qty_tl",
                "gl_offset", "corner_logo", "hide_extreme_edges", "logo_under", "qty_gl_under", "qty_tl_under",
                "show_cb", "amplify", "max_anim_gl", "max_anim_tl", "invert_order",
-               "margin_tl", "under_hotspots")  # v0.61
+               "margin_tl", "under_hotspots",  # v0.61
+               "even_spacing")                  # v0.62
 
 
 def solver_legacy():

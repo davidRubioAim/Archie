@@ -41,7 +41,7 @@ LEARN_FILE = "_aprendizaje.json"
 
 REGLAS_DEFECTO = {
     # Tamaño del logo por aspect ratio (ancho / alto del fichero)
-    "aspect_ancho": 4.0,     # >= -> logo ANCHO
+    "aspect_ancho": 6.0,     # >= -> logo ANCHO (v0.62: PlayStation 5.2:1 lleva 3 en el goal)
     "aspect_medio": 2.2,     # >= -> MEDIO ; por debajo -> PEQUEÑO
     # Logos objetivo por hotspot según tamaño
     "objetivo_goal": {"ancho": 1, "medio": 3, "pequeno": 5},
@@ -236,7 +236,7 @@ def _rasgos_caso(w, h, gl, cb, logo_w, anim_w, under):
             gl / float(w), cb / float(w), 1.0 if under else 0.0]
 
 
-_ESCALA = [0.35, 0.35, 0.05, 0.03, 0.5]
+_ESCALA = [0.15, 0.35, 0.05, 0.1, 0.5]   # v0.62: el logo pesa más que el CB al buscar la plantilla
 
 
 def similitud(a, b):
@@ -355,6 +355,7 @@ def _base_conf(base, reglas):
         "max_anim_tl": int(base.get("max_anim_tl", 0)),
         "margin_tl": base.get("margin_tl"),
         "edge_case": base.get("edge_case"),
+        "even_spacing": True,   # v0.62: clusters de hotspot repartidos entre las ANIM ZONES
     }
 
 
@@ -384,7 +385,7 @@ def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, exc
     caso = _rasgos_caso(geo.w, geo.h, geo.gl, geo.cb, logo_w, anim_w, bool(base.get("logo_under")))
     ref, sim = _plantilla(caso, [r for r in refs if r is not excluir])
     estructura_ref = None
-    if ref is not None and sim >= 0.3:
+    if ref is not None and sim >= 0.5:
         estructura_ref = ref["estructura"]
         # la referencia parecida manda en los tamaños objetivo de los hotspots
         obj_ref = ref["objetivos_medidos"]
@@ -501,6 +502,12 @@ def aprender(config_dir=None, epocas=12, informe=None):
                     cambios += 1
         if not cambios:
             break
+    # v0.62: los pesos aprendidos solo se quedan si reproducen más referencias que los de por defecto
+    # (referencias contradictorias no deben estropear las reglas generales)
+    def contar(p):
+        return sum(1 for r in refs if (lambda m: bool(m) and _misma(m, r))(_buscar_ref(r, reglas, p, refs)[0]))
+    if contar(pesos) <= contar(defecto):
+        pesos = dict(defecto)
     aciertos = 0
     for r in refs:
         mejor, _, info = _buscar_ref(r, reglas, pesos, refs)
@@ -524,7 +531,7 @@ def _buscar_ref(r, reglas, pesos, refs):
 
 
 def _misma(cand, r):
-    claves = ("goal_L", "goal_R", "corner_L", "corner_R", "centro", "cerca_L", "cerca_R", "sep", "anims")
+    claves = ("goal_L", "goal_R", "corner_L", "corner_R", "centro", "cerca_L", "cerca_R", "anims")
     return all(cand["estructura"].get(k) == r["estructura"].get(k) for k in claves)
 
 
