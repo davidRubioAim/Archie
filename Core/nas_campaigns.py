@@ -5,7 +5,8 @@ Localiza en el NAS la carpeta de cada campaña y sus ELEMENTS.
 Estructura:  <raíz>\\Brands\\<BRAND>\\<CÓDIGO>\\Output\\Elements\\*.mov
   - La raíz es la primera accesible de NAS_ROOTS (o de la variable NAS_ROOTS en Config/.env, separadas por ;).
   - No se usa el nombre de la carpeta de la brand (ADIDAS, VOLKSWAGEN...): se recorren todas las carpetas
-    de Brands y se indexa cada subcarpeta con nombre de código (ADID-RMXX-261001, también con _).
+    y subcarpetas de Brands (hasta SCAN_DEPTH niveles) y se indexa cada carpeta cuyo nombre EMPIECE por un
+    código (ADID-RMXX-261001, también con _ o espacios, con o sin texto detrás).
   - El índice código -> ruta se guarda en Config/nas_index.json para no recorrer el NAS en cada arranque.
 
 Los ELEMENTS se clasifican con auto_import.detectar_tipo (LOGO / ANIM / BG / CB en el nombre).
@@ -26,7 +27,10 @@ ELEMENTS_REL = ("Output", "Elements")
 ARCHIE_DIR = "Archie"
 INDEX_FILE = "nas_index.json"
 PROBE_TIMEOUT = 6      # s: un recurso SMB que no responde puede tardar ~20 s en fallar
-RESCAN_MIN_S = 60      # s: una campaña que no está en el índice provoca un reescaneo, como mucho uno por minuto
+RESCAN_MIN_S = 60
+SCAN_DEPTH = 3         # niveles bajo Brands en los que se buscan carpetas de campaña (Brands\<BRAND>\[...]\<CÓDIGO ...>)
+# v0.60: la carpeta puede llevar texto detrás del código: "ABNB-LIGA-251201 - AD 2 - Airbnb x LaLiga"
+CODE_PREFIX_RE = re.compile(r"^\s*([A-Z0-9]{4})[-_ ]([A-Z0-9]{4})[-_ ](\d{6})(?!\d)")      # s: una campaña que no está en el índice provoca un reescaneo, como mucho uno por minuto
 
 REQUIRED = ("anim_zone", "static_logo", "background")
 NOMBRES = {"anim_zone": "ANIM", "static_logo": "LOGO", "background": "BG", "center_board": "CB"}
@@ -52,6 +56,16 @@ def _isdir_timeout(path, timeout=PROBE_TIMEOUT):
     return res[0]
 
 
+def codigo_de_carpeta(nombre):
+    """'ABNB-LIGA-251201 - AD 2 - Airbnb x LaLiga' -> ('ABNB-LIGA-251201', 'AD 2 - Airbnb x LaLiga'); si no, (None, '')."""
+    m = CODE_PREFIX_RE.match(nombre.upper())
+    if not m:
+        return None, ""
+    code = "-".join(m.groups())
+    resto = nombre[m.end():].strip(" -_·.")
+    return code, resto
+
+
 def safe_name(text):
     return re.sub(r'[<>:"/\\|?*]+', "_", str(text or "")).strip().strip(".") or "Stadium"
 
@@ -63,6 +77,7 @@ class NasIndex:
         self.root = None
         self.codes = {}          # CÓDIGO -> carpeta de la campaña
         self.brand_dirs = {}     # prefijo (ADID) -> carpeta de la brand (para el aviso cuando falta la campaña)
+        self.titles = {}         # CÓDIGO -> texto de la carpeta detrás del código ("AD 2 - Airbnb x LaLiga")
         self.scanned_at = None
         self.lock = threading.Lock()
         self.scan_lock = threading.Lock()
@@ -80,6 +95,7 @@ class NasIndex:
                 data = json.load(f)
             self.codes = data.get("codes", {})
             self.brand_dirs = data.get("brand_dirs", {})
+            self.titles = data.get("titles", {})
             self.scanned_at = data.get("scanned_at")
             self.root = data.get("root")
         except Exception:
@@ -89,7 +105,7 @@ class NasIndex:
         try:
             with open(self._cache_path(), "w", encoding="utf-8") as f:
                 json.dump({"root": self.root, "scanned_at": self.scanned_at, "codes": self.codes,
-                           "brand_dirs": self.brand_dirs}, f, ensure_ascii=False, indent=1)
+                           "brand_dirs": self.brand_dirs, "titles": self.titles}, f, ensure_ascii=False, indent=1)
         except OSError:
             pass
 
@@ -121,29 +137,42 @@ class NasIndex:
             self.log("  [NAS] Ninguna raíz accesible: " + " | ".join(raices()))
             return False
         brands = os.path.join(root, BRANDS_DIR)
-        codes, brand_dirs = {}, {}
+        codes, brand_dirs, titles = {}, {}, {}
         t0 = time.time()
-        try:
-            marcas = [e for e in os.scandir(brands) if e.is_dir()]
-        except OSError as e:
-            self.log(f"  [NAS] No se puede listar {brands}: {e}")
-            return False
-        for marca in marcas:
+        n_dirs = [0]
+
+        def recorrer(path, depth, brand_path):
+            # v0.60: se baja por todas las subcarpetas (hasta SCAN_DEPTH) y se para en cuanto una empieza por un código
             try:
-                subs = [e for e in os.scandir(marca.path) if e.is_dir()]
+                entradas = [e for e in os.scandir(path) if e.is_dir()]
             except OSError:
-                continue
-            for sub in subs:
-                code = normalizar_codigo(sub.name)
-                if codigo_valido(code):
-                    codes.setdefault(code, sub.path)
-                    brand_dirs.setdefault(code[:4], marca.path)
+                return
+            n_dirs[0] += 1
+            for e in entradas:
+                code, titulo = codigo_de_carpeta(e.name)
+                if code:
+                    if code not in codes:
+                        codes[code] = e.path
+                        titles[code] = titulo
+                    brand_dirs.setdefault(code[:4], brand_path or path)
+                elif depth < SCAN_DEPTH and not e.name.startswith((".", "$", "#")):
+                    recorrer(e.path, depth + 1, brand_path or e.path)
+
+        if not _isdir_timeout(brands):
+            self.log(f"  [NAS] No se puede listar {brands}")
+            return False
+        recorrer(brands, 1, None)
         with self.lock:
-            self.root, self.codes, self.brand_dirs = root, codes, brand_dirs
+            self.root, self.codes, self.brand_dirs, self.titles = root, codes, brand_dirs, titles
             self.scanned_at = time.strftime("%Y-%m-%d %H:%M")
         self._guardar_cache()
-        self.log(f"  [NAS] {len(codes)} campañas indexadas en {len(marcas)} brands ({time.time() - t0:.1f} s).")
+        self.log(f"  [NAS] {len(codes)} campañas indexadas ({n_dirs[0]} carpetas leídas, {time.time() - t0:.1f} s).")
         return True
+
+    def disponibles(self):
+        """[(código, título de la carpeta)] ordenados, para la lista de campañas del NAS."""
+        with self.lock:
+            return sorted((c, self.titles.get(c, "")) for c in self.codes)
 
     def carpeta(self, code):
         with self.lock:

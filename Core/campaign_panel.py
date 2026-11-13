@@ -85,33 +85,78 @@ class CampaignPanel:
         style.map("Archie.Treeview", background=[("selected", app.c_light_magenta)],
                   foreground=[("selected", app.c_text_dark)])
 
-        w_name = 150
         top = ctk.CTkFrame(f, fg_color="transparent")
         top.pack(fill="x", padx=5, pady=(0, 6))
         top.grid_columnconfigure(0, weight=1)
-        # v0.59: solo se añaden campañas escribiendo su código exacto (se pueden pegar varios separados por espacios/comas)
-        self.entry_code = ctk.CTkEntry(top, height=28, fg_color=app.c_white,
-                                       text_color=app.c_text_dark,
-                                       placeholder_text="🔍 Enter the exact campaign code (e.g. ADID-RMXX-261001) and press Enter")
+        # v0.60: al escribir se filtran (por el principio del código) las campañas que hay en el NAS.
+        # Enter añade el código exacto escrito (o la única coincidencia); se pueden pegar varios códigos.
+        self.search_var = ctk.StringVar()
+        self.search_var.trace_add("write", lambda *a: self._filtrar())
+        self.entry_code = ctk.CTkEntry(top, textvariable=self.search_var, height=28, fg_color=app.c_white,
+                                       text_color=app.c_text_dark)
         self.entry_code.grid(row=0, column=0, sticky="ew")
         self.entry_code.bind("<Return>", lambda e: self.agregar_desde_buscador())
+        self.entry_code.bind("<Down>", lambda e: self._foco_lista())
         ctk.CTkButton(top, text="Add", width=60, height=28, fg_color="#2b2b2b", hover_color=app.c_magenta,
                       font=app.font_t2, command=self.agregar_desde_buscador).grid(row=0, column=1, padx=(6, 0))
+        self.btn_refresh = ctk.CTkButton(top, text="↺", width=28, height=28, fg_color="#2b2b2b",
+                                         hover_color=app.c_magenta, font=ctk.CTkFont(size=14, weight="bold"),
+                                         command=self.reescanear)
+        self.btn_refresh.grid(row=0, column=2, padx=(6, 0))
+        self.lbl_hint = tk.Label(self.entry_code, text="🔍 Type a campaign code (e.g. ABNB-LIGA) to find it on the NAS",
+                                 fg="#9A9A9A", bg=app.c_white, font=(fuente.actual("family"), 9), anchor="w")
+        self.lbl_hint.place(x=10, rely=0.5, anchor="w")
+        self.lbl_hint.bind("<Button-1>", lambda e: self.entry_code.focus_set())
 
-        self.lbl_right = ctk.CTkLabel(f, text="CAMPAIGN CODES", font=app.font_t2, text_color=app.c_text_dark)
-        self.lbl_right.pack(anchor="w", padx=5)
-        rw = tk.Frame(f, bg=app.c_white, highlightthickness=1, highlightbackground="#E0E0E0",
+        mid = ctk.CTkFrame(f, fg_color="transparent")
+        mid.pack(fill="x", padx=5)
+        mid.grid_columnconfigure(0, weight=1)
+        mid.grid_columnconfigure(2, weight=1)
+
+        # --- izquierda: campañas en el NAS
+        left = ctk.CTkFrame(mid, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew")
+        self.lbl_left = ctk.CTkLabel(left, text="ON THE NAS", font=app.font_t2, text_color=app.c_text_dark)
+        self.lbl_left.pack(anchor="w")
+        lw = tk.Frame(left, bg=app.c_white, highlightthickness=1, highlightbackground="#E0E0E0")
+        lw.pack(fill="both", expand=True)
+        self.tree_l = ttk.Treeview(lw, columns=("code", "name"), show="headings", height=TREE_ROWS,
+                                   style="Archie.Treeview", selectmode="extended")
+        self.tree_l.heading("code", text="Code")
+        self.tree_l.heading("name", text="Folder")
+        self.tree_l.column("code", width=w_code, minwidth=w_code, stretch=False)
+        self.tree_l.column("name", width=90, minwidth=40, stretch=True)
+        sl = ttk.Scrollbar(lw, orient="vertical", command=self.tree_l.yview)
+        self.tree_l.configure(yscrollcommand=sl.set)
+        self.tree_l.pack(side="left", fill="both", expand=True)
+        sl.pack(side="right", fill="y")
+        self.tree_l.tag_configure("added", foreground="#B0B0B0")
+        self.lbl_left_hint = tk.Label(lw, text="", fg="#A0A0A0", bg=app.c_white, font=(fuente.actual("family"), 9),
+                                      wraplength=220, justify="center")
+
+        # --- centro: botones
+        cen = ctk.CTkFrame(mid, fg_color="transparent", width=34)
+        cen.grid(row=0, column=1, sticky="ns", padx=4)
+        ctk.CTkButton(cen, text="→", width=30, height=28, fg_color="#2b2b2b", hover_color=app.c_magenta,
+                      command=lambda: self.agregar(self._sel(self.tree_l))).pack(pady=(50, 4))
+        ctk.CTkButton(cen, text="←", width=30, height=28, fg_color="#E0E0E0", hover_color="#D0D0D0",
+                      text_color=app.c_text_dark, command=lambda: self.quitar(self._sel(self.tree_r))).pack()
+
+        # --- derecha: CAMPAIGN CODES (la lista que se procesa)
+        right = ctk.CTkFrame(mid, fg_color="transparent")
+        right.grid(row=0, column=2, sticky="nsew")
+        self.lbl_right = ctk.CTkLabel(right, text="CAMPAIGN CODES", font=app.font_t2, text_color=app.c_magenta)
+        self.lbl_right.pack(anchor="w")
+        rw = tk.Frame(right, bg=app.c_white, highlightthickness=2, highlightbackground="#E0E0E0",
                       highlightcolor="#E0E0E0")
-        rw.pack(fill="x", padx=5)
+        rw.pack(fill="both", expand=True)
         self.right_wrap = rw
-        self.tree_r = ttk.Treeview(rw, columns=("status", "code", "name"), show="headings", height=TREE_ROWS,
+        self.tree_r = ttk.Treeview(rw, columns=("status", "code"), show="headings", height=TREE_ROWS,
                                    style="Archie.Treeview", selectmode="extended")
         self.tree_r.heading("status", text="Status")
         self.tree_r.heading("code", text="Code")
-        self.tree_r.heading("name", text="Project name")
         self.tree_r.column("status", width=w_status, minwidth=w_status, stretch=False)
-        self.tree_r.column("code", width=w_code, minwidth=w_code, stretch=False)
-        self.tree_r.column("name", width=w_name, minwidth=60, stretch=True)
+        self.tree_r.column("code", width=w_code, minwidth=w_code, stretch=True)
         sr = ttk.Scrollbar(rw, orient="vertical", command=self.tree_r.yview)
         self.tree_r.configure(yscrollcommand=sr.set)
         self.tree_r.pack(side="left", fill="both", expand=True)
@@ -119,7 +164,7 @@ class CampaignPanel:
         for st, color in COLORES.items():
             self.tree_r.tag_configure(st, foreground=color)
         self.tree_r.tag_configure("active", background="#FDEAF4")
-        self.lbl_drop_hint = tk.Label(rw, text="Add campaigns by typing their exact code above", fg="#A0A0A0",
+        self.lbl_drop_hint = tk.Label(rw, text="Drag campaigns here", fg="#A0A0A0",
                                       bg=app.c_white, font=(fuente.actual("family"), 9))
         self.lbl_drop_hint.place(relx=0.5, rely=0.55, anchor="center")
 
@@ -142,7 +187,12 @@ class CampaignPanel:
                      anchor="w", justify="left", wraplength=660).pack(fill="x", padx=5, pady=(4, 0))
 
         # --- eventos
-        tr = self.tree_r
+        tl, tr = self.tree_l, self.tree_r
+        tl.bind("<ButtonPress-1>", self._drag_press, add="+")
+        tl.bind("<B1-Motion>", self._drag_motion, add="+")
+        tl.bind("<ButtonRelease-1>", self._drag_release, add="+")
+        tl.bind("<Double-1>", lambda e: self.agregar(self._sel(tl)))
+        tl.bind("<Return>", lambda e: self.agregar(self._sel(tl)))
         tr.bind("<<TreeviewSelect>>", lambda e: self._on_select_right())
         tr.bind("<Delete>", lambda e: self.quitar(self._sel(tr)))
         tr.bind("<BackSpace>", lambda e: self.quitar(self._sel(tr)))
@@ -179,10 +229,62 @@ class CampaignPanel:
 
     # ================================================================ NAS
     def _escanear_nas(self):
-        # Al arrancar se usa el índice en caché; si está vacío o es de otro día, se reescanea en segundo plano
-        hoy = __import__("time").strftime("%Y-%m-%d")
-        if not self.nas.codes or not (self.nas.scanned_at or "").startswith(hoy):
+        # v0.60: se usa el índice en caché al momento y en cada arranque se reescanea Brands en segundo plano
+        self.app.after(0, self._filtrar)
+        self.nas.escanear()
+        self.app.after(0, self._fin_escaneo)
+
+    def reescanear(self):
+        self.btn_refresh.configure(state="disabled", text="…")
+        self.lbl_left.configure(text="ON THE NAS (scanning…)")
+
+        def worker():
             self.nas.escanear()
+            self.app.after(0, self._fin_escaneo)
+            self.app.after(0, self._recomprobar_todas)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fin_escaneo(self):
+        self.btn_refresh.configure(state="normal", text="↺")
+        self._filtrar()
+
+    def _consulta(self):
+        return normalizar_codigo(self.search_var.get()).strip("-")
+
+    def _filtrar(self):
+        q = self._consulta()
+        self.lbl_hint.place_forget() if self.search_var.get() else self.lbl_hint.place(x=10, rely=0.5, anchor="w")
+        tl = self.tree_l
+        tl.delete(*tl.get_children())
+        disp = self.nas.disponibles()
+        aprobadas = set(self.approved)
+        n = 0
+        for code, titulo in disp:
+            if q and not code.startswith(q):
+                continue
+            nombre = titulo or self.by_code.get(code, {}).get("name", "")
+            tl.insert("", "end", iid=code, values=(code, nombre), tags=("added",) if code in aprobadas else ())
+            n += 1
+        self.lbl_left.configure(text=f"ON THE NAS ({n})" if q else f"ON THE NAS ({len(disp)})")
+        if not disp:
+            txt = ("Scanning the NAS…" if self.nas.scanned_at is None else
+                   "No campaign folders found on the NAS.\nPress ↺ to scan again.")
+        elif not n:
+            txt = f"No campaign on the NAS starts with {q}."
+        else:
+            txt = ""
+        if txt:
+            self.lbl_left_hint.configure(text=txt)
+            self.lbl_left_hint.place(relx=0.5, rely=0.55, anchor="center")
+        else:
+            self.lbl_left_hint.place_forget()
+
+    def _foco_lista(self):
+        hijos = self.tree_l.get_children()
+        if hijos:
+            self.tree_l.focus_set()
+            self.tree_l.selection_set(hijos[0])
+            self.tree_l.focus(hijos[0])
 
     def _comprobar(self, code):
         stadium = self.stadium()
@@ -243,7 +345,7 @@ class CampaignPanel:
             return
         st = self.estado(code)
         tags = [st] + (["active"] if code == self.active else [])
-        self.tree_r.item(code, values=(f"{ICONOS[st]} {cb.ETIQUETAS[st]}", code, self._nombre(code)), tags=tags)
+        self.tree_r.item(code, values=(f"{ICONOS[st]} {cb.ETIQUETAS[st]}", code), tags=tags)
         if code == self.active:
             self._actualizar_info()
 
@@ -287,6 +389,16 @@ class CampaignPanel:
         tokens = [normalizar_codigo(t) for t in re.split(r"[\s,;]+", texto) if t.strip()]
         if not tokens:
             return
+        if len(tokens) == 1 and not codigo_valido(tokens[0]):
+            # código incompleto: si solo hay una campaña del NAS que empieza así, se añade esa
+            hijos = self.tree_l.get_children()
+            if len(hijos) == 1:
+                tokens = [hijos[0]]
+            elif hijos:
+                self._actualizar_info((f"{len(hijos)} campaigns on the NAS start with {self._consulta()}. "
+                                       "Pick one in the list (double-click or drag it).", "#E67E22"))
+                self._foco_lista()
+                return
         malos = [t for t in tokens if not codigo_valido(t)]
         buenos = [t for t in tokens if codigo_valido(t)]
         ya = [t for t in buenos if t in self.approved]
@@ -310,6 +422,10 @@ class CampaignPanel:
             self.app.focus_set()      # vuelve a mostrar el texto de ayuda
             self.entry_code.focus_set()
 
+    def _marcar_izquierda(self, code, added):
+        if self.tree_l.exists(code):
+            self.tree_l.item(code, tags=("added",) if added else ())
+
     def agregar(self, codes):
         nuevos = []
         for code in codes:
@@ -317,7 +433,8 @@ class CampaignPanel:
                 continue
             nuevos.append(code)
             self.approved.append(code)
-            self.tree_r.insert("", "end", iid=code, values=("", code, self._nombre(code)))
+            self.tree_r.insert("", "end", iid=code, values=("", code))
+            self._marcar_izquierda(code, True)
             self._pintar_fila(code)
             if code in self.elements:
                 self._on_comprobada(code, self.stadium(), self.elements[code], None, None)
@@ -345,6 +462,7 @@ class CampaignPanel:
                 self._actualizar_info()
             self.approved.remove(code)
             self.tree_r.delete(code)
+            self._marcar_izquierda(code, False)
         self._actualizar_cabeceras()
 
     def _menu_right(self, e):
@@ -361,6 +479,59 @@ class CampaignPanel:
             m.add_command(label="Open Elements folder", command=lambda: self._abrir_carpeta(info["path"]))
             m.add_command(label="Copy Elements path", command=lambda: self._copiar(info["path"]))
         m.tk_popup(e.x_root, e.y_root)
+
+    # ================================================================ arrastrar
+    def _drag_press(self, e):
+        item = self.tree_l.identify_row(e.y)
+        self._drag = {"x": e.x_root, "y": e.y_root, "item": item, "moved": False}
+        if item and item in self.tree_l.selection() and len(self.tree_l.selection()) > 1 and not (e.state & 0x0005):
+            return "break"   # mantener la selección múltiple para arrastrarla entera
+
+    def _drag_motion(self, e):
+        d = self._drag
+        if not d or not d["item"]:
+            return
+        if not d["moved"] and abs(e.x_root - d["x"]) + abs(e.y_root - d["y"]) < 6:
+            return
+        d["moved"] = True
+        codes = self._sel(self.tree_l) or [d["item"]]
+        if self._drag_win is None:
+            w = tk.Toplevel(self.tree_l)
+            w.overrideredirect(True)
+            try:
+                w.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            txt = codes[0] + (f"  (+{len(codes) - 1})" if len(codes) > 1 else "")
+            tk.Label(w, text=txt, bg=self.app.c_magenta, fg="white", font=("Open Sans", 10, "bold"),
+                     padx=8, pady=3).pack()
+            self._drag_win = w
+        self._drag_win.geometry(f"+{e.x_root + 12}+{e.y_root + 8}")
+        sobre = self._sobre_derecha(e.x_root, e.y_root)
+        self.right_wrap.configure(highlightbackground=self.app.c_magenta if sobre else self.app.c_light_grey)
+
+    def _drag_release(self, e):
+        d, self._drag = self._drag, None
+        if self._drag_win is not None:
+            self._drag_win.destroy()
+            self._drag_win = None
+        self.right_wrap.configure(highlightbackground=self.app.c_light_grey)
+        if not d or not d["item"]:
+            return
+        if not d["moved"]:
+            if len(self.tree_l.selection()) > 1 and not (e.state & 0x0005):
+                self.tree_l.selection_set(d["item"])
+            return
+        if self._sobre_derecha(e.x_root, e.y_root):
+            self.agregar(self._sel(self.tree_l) or [d["item"]])
+
+    def _sobre_derecha(self, x, y):
+        w = self.right_wrap.winfo_containing(x, y)
+        while w is not None:
+            if w is self.right_wrap:
+                return True
+            w = getattr(w, "master", None)
+        return False
 
     # ================================================================ activar campaña
     def _on_select_right(self):
