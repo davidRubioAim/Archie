@@ -29,6 +29,7 @@ class Distribuidor:
     self.archivos = archivos
     self.config = config
     self.anim_counter = 0
+    self.gl_repartido = False   # v0.67: True si _repartir_gl ha redistribuido las dos zonas GL
 
     # v0.52: edge cases (stadium_overrides.json). Zonas negras en los extremos del strip que el motor
     # no puede ocupar, y Goal Position absoluta (px desde el inicio del strip; el GLR va en espejo).
@@ -240,6 +241,72 @@ class Distribuidor:
           e["x_absoluta"] = int(round(cx))
           e.pop("offset_x", None)
           cx += e["width"] + hueco
+
+  def _repartir_gl(self, zonas, warnings):
+    """v0.67 (even_spacing): reparte cada Goal Line con el mismo hueco entre todos sus elementos, como en las
+    arquitecturas optimizadas a mano (Paris FC / Real Madrid PlayStation):
+
+        |hueco| logo cerca + ANIM |hueco| logo |hueco| logo |hueco| logo |hueco| ANIM + logo corner |hueco|
+
+    El logo del extremo (cerca de cámara) y el del corner del fondo van pegados a su ANIM ZONE; el resto de
+    huecos (bordes incluidos) son iguales. El hueco buscado es ~2 alturas del strip (300 px a 144 px de alto,
+    config "hueco_gl"): si sobra sitio, crece el hueco; si falta, se comprimen las ANIM ZONES hasta el
+    stretch_limit y, si aun así el hueco quedara por debajo del margen, no se toca nada."""
+    c = self.config
+    if (not c.get("even_spacing") or c.get("logo_under") or c.get("amplify") or (c.get("gl_offset") or 0)
+        or self.res_izq or self.res_der or self.goal_pos is not None or self.goal_line <= 0
+        or "goal_overlap" in warnings or "touchline_overlap" in warnings):
+      return
+    hueco_obj = float(c.get("hueco_gl") or round(self.h_total * 300.0 / 144.0))
+    s_lim = max(0.0, min(0.9, float(c.get("stretch_limit") or 0) / 100.0))
+    w_min, w_max = self.anim_w * (1.0 - s_lim), float(self.anim_w)
+    planes = []
+    for z0, z1 in ((0, self.goal_line), (self.w_total - self.goal_line, self.w_total)):
+      zona = next((z for z in zonas.values() if z.get("x_inicio") == z0 and z.get("width") == z1 - z0), None)
+      if zona is None:
+        return
+      els = sorted(zona["elementos"], key=lambda e: e["x_absoluta"])
+      if any(e["tipo"] not in ("static_logo", "anim_zone") for e in els):
+        return
+      idx_a = [i for i, e in enumerate(els) if e["tipo"] == "anim_zone"]
+      # los dos extremos tienen que ser logos (sin logos de los extremos ocultos) y debe haber ANIM ZONES
+      if not idx_a or els[0]["tipo"] != "static_logo" or els[-1]["tipo"] != "static_logo":
+        return
+      if any(b - a == 1 for a, b in zip(idx_a, idx_a[1:])):
+        return   # dos ANIM ZONES seguidas: no es una GL normal
+      pegados = {idx_a[0] - 1, idx_a[-1]}   # hueco i = entre els[i] y els[i+1]
+      n_huecos = (len(els) - 1 - len(pegados)) + 2          # + los dos bordes
+      libre = (z1 - z0) - sum(e["width"] for e in els if e["tipo"] == "static_logo")
+      k = len(idx_a)
+      w_a = (libre - n_huecos * hueco_obj) / float(k)
+      w_a = max(w_min, min(w_max, w_a))
+      hueco = (libre - k * w_a) / float(n_huecos)
+      if hueco < self.m_gl or hueco <= 0:
+        return
+      planes.append((z0, els, pegados, w_a, hueco))
+    nuevos = []
+    for z0, els, pegados, w_a, hueco in planes:
+      x, pos = z0 + hueco, []
+      for i, e in enumerate(els):
+        xi = int(round(x))
+        ancho = max(1, int(round(x + w_a)) - xi) if e["tipo"] == "anim_zone" else e["width"]
+        pos.append((e, xi, ancho))
+        x = xi + ancho + (0 if i in pegados else hueco)
+      # en enteros: ni solapes por redondeo ni salirse de la zona; si no, no se toca nada
+      if pos[0][1] < z0 or pos[-1][1] + pos[-1][2] > z0 + self.goal_line:
+        return
+      if any(b[1] < a[1] + a[2] for a, b in zip(pos, pos[1:])):
+        return
+      nuevos.append(pos)
+    for pos in nuevos:
+      for e, xi, ancho in pos:
+        e["x_absoluta"] = xi
+        if e["tipo"] == "anim_zone":
+          e["width"] = ancho
+          e["offset_x"] = 0.0
+        else:
+          e.pop("offset_x", None)
+    self.gl_repartido = True
 
   def _aplicar_stretch_fit(self, zonas, warnings, cb_start, cb_end):
     if not self.config.get("stretch_fit_per", False):
@@ -756,6 +823,7 @@ class Distribuidor:
 
       if not self.config.get("logo_under"):
         self._espaciar_clusters(zonas, cb_start, cb_end)
+        self._repartir_gl(zonas, warnings)
         self._aplicar_stretch_fit(zonas, warnings, cb_start, cb_end)
 
       return {
@@ -1158,9 +1226,12 @@ def generar_imagen_arquitectura(
 def calcular_layout_data(
     w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config
 ):
-  datos = Distribuidor(
-      w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config
-  ).procesar()
+  dist = Distribuidor(w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config)
+  datos = dist.procesar()
+  # v0.67: si las Goal Lines ya se han repartido con hueco uniforme, el logo GL del corner ya queda separado
+  # del TL (como en las arquitecturas optimizadas): no hace falta la 2ª pasada del hueco del corner.
+  if datos and dist.gl_repartido:
+    return datos
   # v0.65 (even_spacing): el par de logos GL/TL del corner del fondo se separa como el resto de elementos.
   # 1ª pasada con el margen mínimo -> se mide el hueco típico entre ANIM ZONE y logo -> 2ª pasada con ese hueco
   # en el corner (se reduce si así no cabe).

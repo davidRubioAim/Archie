@@ -420,6 +420,14 @@ def _evaluar(geo, margin, archivos, conf, logo_w, anim_w, objetivos, pesos, estr
             "score": puntuar(phi, pesos), "datos": datos}
 
 
+def _cabe_mas(r2, r):
+    e2, e = r2["estructura"], r["estructura"]
+    if r2["phi"]["anims"] != r["phi"]["anims"] or r2["phi"]["hot_ok"] != r["phi"]["hot_ok"]:
+        return r2["phi"]["anims"] > r["phi"]["anims"] or r2["phi"]["hot_ok"] > r["phi"]["hot_ok"]
+    claves = ("goal_L", "goal_R", "corner_L", "corner_R", "centro", "cerca_L", "cerca_R")
+    return sum(e2.get(k, 0) for k in claves) > sum(e.get(k, 0) for k in claves)
+
+
 def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, excluir=None, dims=None):
     """Devuelve (mejor, todos los evaluados). logo_w / anim_w ya escalados al alto del strip."""
     clase = clase_logo(logo_w / float(max(1, geo.h)), reglas)
@@ -468,7 +476,9 @@ def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, exc
                 continue
             conf = dict(r["conf"], gl_offset=off)
             r2 = _evaluar(geo, margin, archivos, conf, logo_w, anim_w, objetivos, pesos, estructura_ref, sim)
-            if r2:
+            # v0.67: el desplazamiento solo cuenta si así cabe algo más (con offset 0 las GL se reparten
+            # con hueco uniforme, que es lo preferido)
+            if r2 and _cabe_mas(r2, r):
                 evaluados.append(r2)
     validos = sorted([r for r in evaluados if not r["solapa"]], key=lambda r: -r["score"])
     mejor = validos[0] if validos else None
