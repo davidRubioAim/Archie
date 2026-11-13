@@ -243,21 +243,20 @@ class Distribuidor:
           cx += e["width"] + hueco
 
   def _repartir_gl(self, zonas, warnings):
-    """v0.67 (even_spacing): reparte cada Goal Line con el mismo hueco entre todos sus elementos, como en las
-    arquitecturas optimizadas a mano (Paris FC / Real Madrid PlayStation):
+    """v0.67/v0.68 (even_spacing): reparte cada Goal Line con todos sus elementos equidistantes:
 
-        |hueco| logo cerca + ANIM |hueco| logo |hueco| logo |hueco| logo |hueco| ANIM + logo corner |hueco|
+        |h| logo cerca |h| ANIM |h| logo |h| logo |h| logo |h| ANIM |h| logo corner |h|
 
-    El logo del extremo (cerca de cámara) y el del corner del fondo van pegados a su ANIM ZONE; el resto de
-    huecos (bordes incluidos) son iguales. El hueco buscado es ~2 alturas del strip (300 px a 144 px de alto,
-    config "hueco_gl"): si sobra sitio, crece el hueco; si falta, se comprimen las ANIM ZONES hasta el
-    stretch_limit y, si aun así el hueco quedara por debajo del margen, no se toca nada."""
+    Todos los huecos iguales, bordes incluidos. Prioridad: la menor compresión de las ANIM ZONES. El hueco
+    mínimo buscado es ~1,5 alturas del strip (225 px a 144 px de alto, config "hueco_gl"): si sin comprimir ya
+    se llega, las ANIM ZONES se quedan a su ancho y el hueco crece; si no, se comprimen solo lo justo para
+    llegar, hasta el stretch_limit. Si aun así el hueco quedara por debajo del margen, no se toca nada."""
     c = self.config
     if (not c.get("even_spacing") or c.get("logo_under") or c.get("amplify") or (c.get("gl_offset") or 0)
         or self.res_izq or self.res_der or self.goal_pos is not None or self.goal_line <= 0
         or "goal_overlap" in warnings or "touchline_overlap" in warnings):
       return
-    hueco_obj = float(c.get("hueco_gl") or round(self.h_total * 300.0 / 144.0))
+    hueco_obj = float(c.get("hueco_gl") or round(self.h_total * 225.0 / 144.0))
     s_lim = max(0.0, min(0.9, float(c.get("stretch_limit") or 0) / 100.0))
     w_min, w_max = self.anim_w * (1.0 - s_lim), float(self.anim_w)
     planes = []
@@ -274,16 +273,22 @@ class Distribuidor:
         return
       if any(b - a == 1 for a, b in zip(idx_a, idx_a[1:])):
         return   # dos ANIM ZONES seguidas: no es una GL normal
-      pegados = {idx_a[0] - 1, idx_a[-1]}   # hueco i = entre els[i] y els[i+1]
-      n_huecos = (len(els) - 1 - len(pegados)) + 2          # + los dos bordes
       libre = (z1 - z0) - sum(e["width"] for e in els if e["tipo"] == "static_logo")
       k = len(idx_a)
-      w_a = (libre - n_huecos * hueco_obj) / float(k)
-      w_a = max(w_min, min(w_max, w_a))
-      hueco = (libre - k * w_a) / float(n_huecos)
-      if hueco < self.m_gl or hueco <= 0:
+      plan = None
+      # v0.68: equidistantes; si no caben (logos muy anchos), el logo del extremo y el del corner pegados a
+      # su ANIM ZONE (patrón de v0.67, como la referencia de Club Brugge Mastercard)
+      for pegados in (set(), {idx_a[0] - 1, idx_a[-1]}):   # hueco i = entre els[i] y els[i+1]
+        n_huecos = (len(els) - 1 - len(pegados)) + 2          # + los dos bordes
+        w_a = (libre - n_huecos * hueco_obj) / float(k)
+        w_a = max(w_min, min(w_max, w_a))
+        hueco = (libre - k * w_a) / float(n_huecos)
+        if hueco >= self.m_gl and hueco > 0:
+          plan = (z0, els, pegados, w_a, hueco)
+          break
+      if plan is None:
         return
-      planes.append((z0, els, pegados, w_a, hueco))
+      planes.append(plan)
     nuevos = []
     for z0, els, pegados, w_a, hueco in planes:
       x, pos = z0 + hueco, []
