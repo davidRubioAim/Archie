@@ -464,10 +464,13 @@ class Distribuidor:
         )
       elif qty_corner > 0:
         # corner del fondo: un cluster en el GL (margen GL) y otro en el TL (margen TL)
-        c1_start = (z1_w - m_half) - w_corner
-        c1_end_logo = z2_start + m_half_tl
-        c2_start = (z5_start - m_half_tl) - w_corner_tl
-        c2_end_logo = z5_start + m_half
+        # v0.65: hueco propio entre el logo del GL y el del TL en el corner del fondo (_corner_gap, lo calcula
+        # calcular_layout_data con even_spacing); sin él, el margen mínimo de siempre
+        cg_half = (self.config.get("_corner_gap") or 0) / 2.0
+        c1_start = (z1_w - max(m_half, cg_half)) - w_corner
+        c1_end_logo = z2_start + max(m_half_tl, cg_half)
+        c2_start = (z5_start - max(m_half_tl, cg_half)) - w_corner_tl
+        c2_end_logo = z5_start + max(m_half, cg_half)
 
         zonas["ZONA_1"]["elementos"].extend(
             self.place_logos(c1_start, qty_corner)
@@ -1155,7 +1158,40 @@ def generar_imagen_arquitectura(
 def calcular_layout_data(
     w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config
 ):
-  dist = Distribuidor(
+  datos = Distribuidor(
       w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config
-  )
-  return dist.procesar()
+  ).procesar()
+  # v0.65 (even_spacing): el par de logos GL/TL del corner del fondo se separa como el resto de elementos.
+  # 1ª pasada con el margen mínimo -> se mide el hueco típico entre ANIM ZONE y logo -> 2ª pasada con ese hueco
+  # en el corner (se reduce si así no cabe).
+  if (datos and config.get("even_spacing") and not config.get("logo_under") and not config.get("amplify")
+      and (config.get("qty_corner") or 0) > 0 and not config.get("corner_logo") and archivos_cargados.get("static_logo")):
+    objetivo = _hueco_tipico(datos, goal_line, w_total)
+    if objetivo and objetivo > margin:
+      for factor in (1.0, 0.75, 0.5, 0.25):
+        cg = objetivo * factor
+        if cg <= margin:
+          break
+        prueba = Distribuidor(w_total, h_total, goal_line, cb_width, margin, archivos_cargados,
+                              dict(config, _corner_gap=cg)).procesar()
+        avisos = prueba.get("warnings", [])
+        n_a = lambda d: sum(1 for z in d["zonas"].values() for e in z["elementos"] if e["tipo"] == "anim_zone")
+        if "goal_overlap" not in avisos and "touchline_overlap" not in avisos and n_a(prueba) >= n_a(datos):
+          return prueba
+  return datos
+
+
+def _hueco_tipico(datos, goal_line, w_total):
+  """Mediana de los huecos entre una ANIM ZONE y el logo de al lado (GL y TL), sin contar el corner."""
+  huecos = []
+  for z in datos["zonas"].values():
+    els = sorted((e for e in z["elementos"] if e["tipo"] in ("anim_zone", "static_logo")), key=lambda e: e["x_absoluta"])
+    for a, b in zip(els, els[1:]):
+      if (a["tipo"] == "anim_zone") != (b["tipo"] == "anim_zone"):
+        g = b["x_absoluta"] - (a["x_absoluta"] + a["width"])
+        if g > 0:
+          huecos.append(g)
+  if not huecos:
+    return 0
+  huecos.sort()
+  return huecos[len(huecos) // 2]
