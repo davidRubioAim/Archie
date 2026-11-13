@@ -242,6 +242,97 @@ class Distribuidor:
           e.pop("offset_x", None)
           cx += e["width"] + hueco
 
+  def _separadores_under(self, zonas, limites):
+    """v0.69 (Logo Under): la rejilla equidistante de logos no sabe dónde caen las ANIM ZONES, y a veces todos
+    los logos entre dos ANIM ZONES las pisan un poco: se animan para dejar ver la ANIM ZONE y no queda ningún
+    separador a la vista. Aquí, en cada hueco entre dos ANIM ZONES (sin el CB en medio) en el que no cabe ya
+    un logo entero, se lleva el logo libre más cercano al centro del hueco y se vuelven a repartir por igual
+    los logos de alrededor (los que ya hacen de separador no se mueven). La cantidad de logos no cambia,
+    salvo que en un tramo ya no quepan."""
+    w = self.logo_w
+    logos = {zn: [e for e in zonas[zn]["elementos"] if e["tipo"] == "static_logo"] for zn in limites}
+    bloques = sorted((e for z in zonas.values() for e in z["elementos"] if e["tipo"] in ("anim_zone", "center_board")),
+                     key=lambda e: e["x_absoluta"])
+    dentro = lambda e, x0, x1: e["x_absoluta"] >= x0 and e["x_absoluta"] + e["width"] <= x1
+    fijos, movidos = set(), set()
+    for a, b in zip(bloques, bloques[1:]):
+      if a["tipo"] == "center_board" or b["tipo"] == "center_board":
+        continue
+      x0, x1 = a["x_absoluta"] + a["width"], b["x_absoluta"]
+      if x1 - x0 < w:
+        continue
+      ya = [e for zn in logos for e in logos[zn] if dentro(e, x0, x1)]
+      if ya:
+        fijos.update(id(e) for e in ya)
+        continue
+      c = (x0 + x1) / 2.0
+      zn = next((z for z, (l0, l1) in limites.items() if l0 <= c <= l1), None)
+      if zn is None:   # hueco fuera de la rejilla (p. ej. en el centro sin CB): la zona más cercana
+        zn = min(limites, key=lambda z: max(limites[z][0] - c, c - limites[z][1], 0))
+      x = int(round(c - w / 2.0))
+      x = max(int(math.ceil(x0)), min(x, int(math.floor(x1 - w))))
+      if x < x0 or x + w > x1:
+        continue
+      libres = [e for e in logos[zn] if id(e) not in fijos]
+      if libres:
+        e = min(libres, key=lambda e: abs(e["x_absoluta"] + w / 2.0 - c))
+      else:
+        e = {"tipo": "static_logo", "width": w}
+        zonas[zn]["elementos"].append(e)
+        logos[zn].append(e)
+      e["x_absoluta"] = x
+      fijos.add(id(e))
+      movidos.add(id(e))
+    if not movidos:
+      return
+    # en cada zona con algún logo movido: los fijos se quedan; los libres se reparten entre los tramos que dejan
+    # (en proporción al sitio de cada tramo) y, dentro de cada tramo, a la misma distancia
+    for zn, (l0, l1) in limites.items():
+      ls = logos[zn]
+      # fijos que caen en el tramo de esta zona, sean de esta zona o de la de al lado (un separador puede
+      # quedar a caballo entre dos zonas)
+      fx = sorted((e for z in logos for e in logos[z] if id(e) in fijos
+                   and e["x_absoluta"] < l1 and e["x_absoluta"] + w > l0), key=lambda e: e["x_absoluta"])
+      if not any(id(e) in movidos for e in fx):
+        continue
+      libres = sorted((e for e in ls if id(e) not in fijos), key=lambda e: e["x_absoluta"])
+      cortes = [None] + fx + [None]
+      tramos = []
+      for izq, der in zip(cortes, cortes[1:]):
+        L = l0 if izq is None else izq["x_absoluta"] + w
+        R = l1 if der is None else der["x_absoluta"]
+        pl, pr = (0.5 if izq is None else 1.0), (0.5 if der is None else 1.0)
+        tramos.append([L, R, pl, pr, 0])
+      K = len(libres)
+      cap = [max(0, int(math.floor((R - L) / float(w)))) for L, R, _, _, _ in tramos]
+      total = sum(max(0.0, R - L) for L, R, _, _, _ in tramos) or 1.0
+      for t, c in zip(tramos, cap):
+        t[4] = min(c, int(K * max(0.0, t[1] - t[0]) / total))
+      resto = K - sum(t[4] for t in tramos)
+      while resto > 0:
+        # el siguiente logo va al tramo con más sitio libre por logo
+        opciones = [i for i, t in enumerate(tramos) if t[4] < cap[i]]
+        if not opciones:
+          break
+        i = max(opciones, key=lambda i: (tramos[i][1] - tramos[i][0]) / float(tramos[i][4] + 1))
+        tramos[i][4] += 1
+        resto -= 1
+      it = iter(libres)
+      usados = []
+      for L, R, pl, pr, k in tramos:
+        if not k:
+          continue
+        g = (R - L - k * w) / float(k - 1 + pl + pr)
+        x = L + g * pl
+        for _ in range(k):
+          e = next(it)
+          e["x_absoluta"] = int(round(x))
+          usados.append(id(e))
+          x += w + g
+      sobran = set(id(e) for e in libres) - set(usados)
+      if sobran:
+        zonas[zn]["elementos"] = [e for e in zonas[zn]["elementos"] if id(e) not in sobran]
+
   def _repartir_gl(self, zonas, warnings):
     """v0.67/v0.68 (even_spacing): reparte cada Goal Line con todos sus elementos equidistantes:
 
@@ -789,6 +880,12 @@ class Distribuidor:
           zonas["ZONA_5"]["elementos"].extend(
               gen_equi(lu_c2_end, lu_z5_end, N_gl)
           )
+
+          # v0.69: entre dos ANIM ZONES siempre queda al menos un logo entero a la vista (frozen)
+          if self.config.get("even_spacing", False):
+            self._separadores_under(zonas, {
+                "ZONA_1": (lu_z1_start, lu_c1_start), "ZONA_2": (lu_c1_end, tl_left_end),
+                "ZONA_4": (tl_right_start, lu_c2_start), "ZONA_5": (lu_c2_end, lu_z5_end)})
 
           # 3. Clasificación de 'animated' o 'frozen' según colisión con Anim Zones
           all_anims = []
