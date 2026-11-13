@@ -15,7 +15,8 @@ Esa hoja está restringida al dominio de AIM, así que el export CSV anónimo no
   1. CAMPAIGN_SHEET_CSV_URL (Config/.env o la hoja de configuración ARCHIE API): URL de un CSV accesible,
      p. ej. una hoja espejo con =IMPORTRANGE(...) compartida por enlace, igual que la de estadios.
   2. CAMPAIGN_SHEET_ID / CAMPAIGN_SHEET_GID (por defecto la hoja original; solo funciona si es pública).
-  3. Config/campaign_cache.json: última lista buena (o la importada a mano con "Import CSV").
+  3. Config/campaign_cache.json: última lista buena.
+v0.59: la lista ya no se muestra; solo da el nombre del proyecto y avisa de códigos duplicados.
 """
 import csv
 import io
@@ -160,13 +161,3 @@ def load_campaigns(config_dir, log=print):
     except Exception as e:
         log(f"  [CAMPAÑAS] Sin hoja ni copia local ({e}).")
         return [], {"source": "none", "detail": "No campaign list available", "invalid": [], "duplicates": {}}
-
-
-def importar_csv(config_dir, path):
-    """CSV descargado a mano de la pestaña Projects (Archivo > Descargar > CSV). Lo valida y lo deja como caché."""
-    with open(path, "r", encoding="utf-8-sig", newline="") as f:
-        rows = list(csv.reader(f))
-    campaigns, invalid, dups = parse_rows(rows)   # lanza ValueError si no es la pestaña correcta
-    guardar_cache(config_dir, rows, "csv")
-    return campaigns, {"source": "cache", "detail": f"Imported CSV ({time.strftime('%Y-%m-%d %H:%M')})",
-                       "invalid": invalid, "duplicates": dups}

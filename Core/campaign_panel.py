@@ -1,16 +1,16 @@
 """
-campaign_panel.py (v0.58)
+campaign_panel.py (v0.58, v0.59)
 Pestaña CAMPAIGNS de Media Assets: batch de campañas para el estadio seleccionado.
 
-  Izquierda: todos los códigos de campaña (hoja Projects) con buscador.
-  Derecha:   APPROVED CAMPAIGNS. Se rellena arrastrando códigos desde la izquierda (o con →, doble clic, Enter).
-             Es la lista que se procesa. Al hacer clic en una campaña se cargan sus ELEMENTS (NAS) y SU
-             arquitectura en Manual Edit y en las tres previews. Cada campaña guarda su propia arquitectura.
+  Buscador: se escribe el código exacto de la campaña (ADID-RMXX-261001) y Enter / Add. Se pueden pegar varios.
+  CAMPAIGN CODES: la lista que se procesa, con su estado. Al hacer clic en una campaña se cargan sus ELEMENTS
+  (NAS) y SU arquitectura en Manual Edit y en las tres previews. Cada campaña guarda su propia arquitectura.
 
-Botones: Mark as reviewed (guarda el JSON de arquitectura) y Export approved campaigns (System File + JSON
-+ vídeo de previsualización 3D de cada campaña, a la cola de render).
+Botones: Mark as reviewed (guarda el JSON de arquitectura) y Export ready campaigns (System File + JSON
++ vídeo de previsualización 3D de cada campaña lista para renderizar, a la cola de render).
 """
 import copy
+import re
 import os
 import subprocess
 import threading
@@ -21,7 +21,7 @@ from tkinter import ttk, messagebox
 import customtkinter as ctk
 
 import campaign_batch as cb
-from campaign_loader import load_campaigns, importar_csv
+from campaign_loader import load_campaigns, normalizar_codigo, codigo_valido
 from nas_campaigns import NasIndex, mensaje, ST_READY
 from auto_solver import config_campana, CONFIG_KEYS
 from log_utils import debug, log_error
@@ -47,7 +47,8 @@ class CampaignPanel:
         self.campaigns = []          # lista de la hoja
         self.by_code = {}
         self.list_info = {"source": "none", "detail": "Loading…", "invalid": [], "duplicates": {}}
-        self.approved = []           # códigos en APPROVED CAMPAIGNS (orden)
+        self.approved = []           # códigos en CAMPAIGN CODES (orden)
+        self._rechecked = set()      # campañas no listas que ya se volvieron a comprobar al hacer clic
         self.elements = {}           # código -> info de nas_campaigns.inspeccionar (no depende del estadio)
         self.states = {}             # estadio -> {código: CampaignState}
         self.active = None           # código cargado en la interfaz
@@ -55,8 +56,6 @@ class CampaignPanel:
         self.loading = False         # aplicando una campaña a la interfaz (no capturar)
         self.pending_activate = None
         self._capture_timer = None
-        self._drag = None
-        self._drag_win = None
         self.exporting = False
         self.local_dir = cb.leer_ajustes(config_dir).get("architecture_dir")
 
@@ -86,70 +85,33 @@ class CampaignPanel:
         style.map("Archie.Treeview", background=[("selected", app.c_light_magenta)],
                   foreground=[("selected", app.c_text_dark)])
 
+        w_name = 150
         top = ctk.CTkFrame(f, fg_color="transparent")
-        top.pack(fill="x", padx=5, pady=(0, 4))
-        self.search_var = ctk.StringVar()
-        self.search_var.trace_add("write", lambda *a: self._filtrar())
-        ctk.CTkEntry(top, textvariable=self.search_var, placeholder_text="🔍 Search code (e.g. ADID)", height=26,
-                     width=190, fg_color=app.c_white, text_color=app.c_text_dark).pack(side="left")
-        self.btn_refresh = ctk.CTkButton(top, text="↺", width=28, height=26, fg_color="#2b2b2b", hover_color=app.c_magenta,
-                                         font=ctk.CTkFont(size=14, weight="bold"), command=self.refrescar)
-        self.btn_refresh.pack(side="left", padx=(6, 0))
-        ctk.CTkButton(top, text="Import CSV", width=80, height=26, fg_color="#E0E0E0", hover_color="#D0D0D0",
-                      text_color=app.c_text_dark, font=ctk.CTkFont(size=11), command=self.importar_csv).pack(side="left", padx=(6, 0))
-        self.lbl_source = ctk.CTkLabel(top, text="", font=ctk.CTkFont(size=10), text_color=app.c_text_muted, cursor="hand2")
-        self.lbl_source.pack(side="left", padx=(8, 0))
-        self.lbl_source.bind("<Button-1>", lambda e: self._dialogo_hoja())
+        top.pack(fill="x", padx=5, pady=(0, 6))
+        top.grid_columnconfigure(0, weight=1)
+        # v0.59: solo se añaden campañas escribiendo su código exacto (se pueden pegar varios separados por espacios/comas)
+        self.entry_code = ctk.CTkEntry(top, height=28, fg_color=app.c_white,
+                                       text_color=app.c_text_dark,
+                                       placeholder_text="🔍 Enter the exact campaign code (e.g. ADID-RMXX-261001) and press Enter")
+        self.entry_code.grid(row=0, column=0, sticky="ew")
+        self.entry_code.bind("<Return>", lambda e: self.agregar_desde_buscador())
+        ctk.CTkButton(top, text="Add", width=60, height=28, fg_color="#2b2b2b", hover_color=app.c_magenta,
+                      font=app.font_t2, command=self.agregar_desde_buscador).grid(row=0, column=1, padx=(6, 0))
 
-        mid = ctk.CTkFrame(f, fg_color="transparent")
-        mid.pack(fill="x", padx=5)
-        mid.grid_columnconfigure(0, weight=3)
-        mid.grid_columnconfigure(2, weight=2)
-
-        # --- izquierda: códigos
-        left = ctk.CTkFrame(mid, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="nsew")
-        self.lbl_left = ctk.CTkLabel(left, text="CAMPAIGN CODES", font=app.font_t2, text_color=app.c_text_dark)
-        self.lbl_left.pack(anchor="w")
-        lw = tk.Frame(left, bg=app.c_white)
-        lw.pack(fill="both", expand=True)
-        self.tree_l = ttk.Treeview(lw, columns=("code", "name"), show="headings", height=TREE_ROWS,
-                                   style="Archie.Treeview", selectmode="extended")
-        self.tree_l.heading("code", text="Code")
-        self.tree_l.heading("name", text="Project name")
-        self.tree_l.column("code", width=w_code, minwidth=w_code, stretch=False)
-        self.tree_l.column("name", width=150, minwidth=60, stretch=True)
-        sl = ttk.Scrollbar(lw, orient="vertical", command=self.tree_l.yview)
-        self.tree_l.configure(yscrollcommand=sl.set)
-        self.tree_l.pack(side="left", fill="both", expand=True)
-        sl.pack(side="right", fill="y")
-        self.tree_l.tag_configure("added", foreground="#B0B0B0")
-        self.tree_l.tag_configure("dup", foreground="#E67E22")
-
-        # --- centro: botones
-        cen = ctk.CTkFrame(mid, fg_color="transparent", width=34)
-        cen.grid(row=0, column=1, sticky="ns", padx=4)
-        ctk.CTkLabel(cen, text="").pack()
-        ctk.CTkButton(cen, text="→", width=30, height=28, fg_color="#2b2b2b", hover_color=app.c_magenta,
-                      command=lambda: self.agregar(self._sel(self.tree_l))).pack(pady=(30, 4))
-        ctk.CTkButton(cen, text="←", width=30, height=28, fg_color="#E0E0E0", hover_color="#D0D0D0",
-                      text_color=app.c_text_dark, command=lambda: self.quitar(self._sel(self.tree_r))).pack()
-
-        # --- derecha: aprobadas
-        right = ctk.CTkFrame(mid, fg_color="transparent")
-        right.grid(row=0, column=2, sticky="nsew")
-        self.lbl_right = ctk.CTkLabel(right, text="APPROVED CAMPAIGNS", font=app.font_t2, text_color=app.c_magenta)
-        self.lbl_right.pack(anchor="w")
-        rw = tk.Frame(right, bg=app.c_white, highlightthickness=2, highlightbackground=app.c_light_grey,
-                      highlightcolor=app.c_light_grey)
-        rw.pack(fill="both", expand=True)
+        self.lbl_right = ctk.CTkLabel(f, text="CAMPAIGN CODES", font=app.font_t2, text_color=app.c_text_dark)
+        self.lbl_right.pack(anchor="w", padx=5)
+        rw = tk.Frame(f, bg=app.c_white, highlightthickness=1, highlightbackground="#E0E0E0",
+                      highlightcolor="#E0E0E0")
+        rw.pack(fill="x", padx=5)
         self.right_wrap = rw
-        self.tree_r = ttk.Treeview(rw, columns=("status", "code"), show="headings", height=TREE_ROWS,
+        self.tree_r = ttk.Treeview(rw, columns=("status", "code", "name"), show="headings", height=TREE_ROWS,
                                    style="Archie.Treeview", selectmode="extended")
         self.tree_r.heading("status", text="Status")
         self.tree_r.heading("code", text="Code")
+        self.tree_r.heading("name", text="Project name")
         self.tree_r.column("status", width=w_status, minwidth=w_status, stretch=False)
-        self.tree_r.column("code", width=w_code, minwidth=w_code, stretch=True)
+        self.tree_r.column("code", width=w_code, minwidth=w_code, stretch=False)
+        self.tree_r.column("name", width=w_name, minwidth=60, stretch=True)
         sr = ttk.Scrollbar(rw, orient="vertical", command=self.tree_r.yview)
         self.tree_r.configure(yscrollcommand=sr.set)
         self.tree_r.pack(side="left", fill="both", expand=True)
@@ -157,8 +119,8 @@ class CampaignPanel:
         for st, color in COLORES.items():
             self.tree_r.tag_configure(st, foreground=color)
         self.tree_r.tag_configure("active", background="#FDEAF4")
-        self.lbl_drop_hint = tk.Label(rw, text="Drag campaign codes here", fg="#A0A0A0", bg=app.c_white,
-                                      font=("Open Sans", 10))
+        self.lbl_drop_hint = tk.Label(rw, text="Add campaigns by typing their exact code above", fg="#A0A0A0",
+                                      bg=app.c_white, font=(fuente.actual("family"), 9))
         self.lbl_drop_hint.place(relx=0.5, rely=0.55, anchor="center")
 
         # --- abajo: estado, acciones y aviso
@@ -173,19 +135,14 @@ class CampaignPanel:
                                         hover_color="#2ECC71", font=app.font_t2, command=self.marcar_revisada,
                                         state="disabled")
         self.btn_review.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.btn_export = ctk.CTkButton(acts, text="Export approved campaigns", height=30, fg_color=app.c_magenta,
+        self.btn_export = ctk.CTkButton(acts, text="Export ready campaigns", height=30, fg_color=app.c_magenta,
                                         hover_color="#D1007A", font=app.font_t2, command=self.exportar)
         self.btn_export.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         ctk.CTkLabel(f, text="ⓘ " + cb.DISCLAIMER, font=ctk.CTkFont(size=10), text_color=app.c_text_muted,
                      anchor="w", justify="left", wraplength=660).pack(fill="x", padx=5, pady=(4, 0))
 
         # --- eventos
-        tl, tr = self.tree_l, self.tree_r
-        tl.bind("<ButtonPress-1>", self._drag_press, add="+")
-        tl.bind("<B1-Motion>", self._drag_motion, add="+")
-        tl.bind("<ButtonRelease-1>", self._drag_release, add="+")
-        tl.bind("<Double-1>", lambda e: self.agregar(self._sel(tl)))
-        tl.bind("<Return>", lambda e: self.agregar(self._sel(tl)))
+        tr = self.tree_r
         tr.bind("<<TreeviewSelect>>", lambda e: self._on_select_right())
         tr.bind("<Delete>", lambda e: self.quitar(self._sel(tr)))
         tr.bind("<BackSpace>", lambda e: self.quitar(self._sel(tr)))
@@ -197,86 +154,28 @@ class CampaignPanel:
         return list(tree.selection())
 
     # ================================================================ lista de la hoja
-    def _cargar_lista(self, csv_path=None):
+    def _cargar_lista(self):
+        """La lista de la hoja (o su copia local) solo se usa para el nombre del proyecto y avisar de duplicados."""
         try:
-            if csv_path:
-                campaigns, info = importar_csv(self.config_dir, csv_path)
-            else:
-                campaigns, info = load_campaigns(self.config_dir, log=print)
+            campaigns, info = load_campaigns(self.config_dir, log=print)
         except Exception as e:
             log_error(f"[Campañas] {e}")
-            self.app.after(0, lambda e=e: messagebox.showerror(
-                "Import CSV", f"This CSV does not look like the 'Projects' tab of the project sheet.\n\n{e}",
-                parent=self.app))
             return
         self.app.after(0, lambda: self._aplicar_lista(campaigns, info))
 
     def _aplicar_lista(self, campaigns, info):
         self.campaigns, self.list_info = campaigns, info
         self.by_code = {c["code"]: c for c in campaigns}
-        self.btn_refresh.configure(state="normal", text="↺")
-        partes = [info["detail"], f"{len(campaigns)} codes"]
-        if info["invalid"]:
-            partes.append(f"{len(info['invalid'])} hidden (invalid format)")
-        if info["duplicates"]:
-            partes.append(f"{len(info['duplicates'])} duplicated")
-        color = "#C0392B" if info["source"] == "none" else ("#E67E22" if info["source"] == "cache" else self.app.c_text_muted)
-        self.lbl_source.configure(text=" · ".join(partes), text_color=color)
-        self._filtrar()
+        for code in self.approved:
+            self._pintar_fila(code)
 
-    def refrescar(self):
-        """Relee la hoja y reescanea el NAS; vuelve a comprobar las campañas aprobadas."""
-        self.btn_refresh.configure(state="disabled", text="…")
-        threading.Thread(target=self._cargar_lista, daemon=True).start()
-
-        def nas():
-            self.nas.escanear()
-            self.app.after(0, self._recomprobar_todas)
-        threading.Thread(target=nas, daemon=True).start()
-
-    def importar_csv(self):
-        path = ctk.filedialog.askopenfilename(
-            title="Select the CSV of the 'Projects' tab (File > Download > CSV)",
-            filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
-        if path:
-            threading.Thread(target=self._cargar_lista, args=(path,), daemon=True).start()
-
-    def _dialogo_hoja(self):
-        info = self.list_info
-        lineas = [f"Source: {info['detail']}"]
-        if info["source"] != "sheet":
-            lineas.append("\nThe project sheet is restricted to the AIM domain, so Archie cannot read it directly. "
-                          "Set CAMPAIGN_SHEET_CSV_URL (link-shared mirror) or use Import CSV "
-                          "(Projects tab > File > Download > CSV).")
-        if info["invalid"]:
-            lineas.append(f"\nHidden codes with an invalid format ({len(info['invalid'])}). The expected format is "
-                          "BRND-CHNL-NNNNNN. Please fix them in the project sheet:")
-            lineas += ["   " + c for c in info["invalid"][:40]]
-        if info["duplicates"]:
-            lineas.append(f"\nDuplicated codes ({len(info['duplicates'])}). Please review them manually:")
-            for c, names in list(info["duplicates"].items())[:40]:
-                lineas.append(f"   {c}: " + " | ".join(n or "(no name)" for n in names))
-        messagebox.showinfo("Campaign list", "\n".join(lineas), parent=self.app)
-
-    def _filtrar(self):
-        q = self.search_var.get().strip().upper()
-        tl = self.tree_l
-        tl.delete(*tl.get_children())
-        n = 0
-        aprobadas = set(self.approved)
-        for c in self.campaigns:
-            if q and q not in c["code"]:
-                continue
-            tags = []
-            name = c["name"]
-            if c["duplicate"]:
-                tags.append("dup")
-                name = "⚠ DUPLICATED · " + " | ".join(c["names"])
-            if c["code"] in aprobadas:
-                tags.append("added")
-            tl.insert("", "end", iid=c["code"], values=(c["code"], name), tags=tags)
-            n += 1
-        self.lbl_left.configure(text=f"CAMPAIGN CODES ({n})" if q else f"CAMPAIGN CODES ({len(self.campaigns)})")
+    def _nombre(self, code):
+        c = self.by_code.get(code)
+        if not c:
+            return "(not in the project list)" if self.by_code else ""
+        if c["duplicate"]:
+            return "⚠ DUPLICATED · " + " | ".join(n or "(no name)" for n in c["names"])
+        return c["name"]
 
     # ================================================================ NAS
     def _escanear_nas(self):
@@ -316,6 +215,12 @@ class CampaignPanel:
             self.pending_activate = None
             self.activar(code)
 
+    def _recomprobar(self, codes):
+        for code in codes:
+            self.elements.pop(code, None)
+            self._pintar_fila(code)
+            self._comprobar(code)
+
     def _recomprobar_todas(self):
         for code in self.approved:
             self.elements.pop(code, None)
@@ -338,7 +243,7 @@ class CampaignPanel:
             return
         st = self.estado(code)
         tags = [st] + (["active"] if code == self.active else [])
-        self.tree_r.item(code, values=(f"{ICONOS[st]} {cb.ETIQUETAS[st]}", code), tags=tags)
+        self.tree_r.item(code, values=(f"{ICONOS[st]} {cb.ETIQUETAS[st]}", code, self._nombre(code)), tags=tags)
         if code == self.active:
             self._actualizar_info()
 
@@ -346,7 +251,7 @@ class CampaignPanel:
         n = len(self.approved)
         ok = sum(1 for c in self.approved if cb.exportable(self.estado(c)))
         rev = sum(1 for c in self.approved if self.estado(c) == cb.S_REVIEWED)
-        self.lbl_right.configure(text=f"APPROVED CAMPAIGNS ({n})" + (f" · {rev}/{ok} reviewed" if n else ""))
+        self.lbl_right.configure(text=f"CAMPAIGN CODES ({n})" + (f" · {ok} ready to render · {rev} reviewed" if n else ""))
         if n:
             self.lbl_drop_hint.place_forget()
         else:
@@ -360,7 +265,7 @@ class CampaignPanel:
             return
         code = self.active
         if not code:
-            self.lbl_info.configure(text="Click a campaign in APPROVED CAMPAIGNS to load its Elements and architecture.",
+            self.lbl_info.configure(text="Click a campaign in CAMPAIGN CODES to load its Elements and architecture for this stadium.",
                                     text_color=self.app.c_text_muted)
             self.btn_review.configure(state="disabled", text="✔ Mark as reviewed")
             return
@@ -377,26 +282,58 @@ class CampaignPanel:
             self.btn_review.configure(state="normal" if st.config else "disabled", text="✔ Mark as reviewed")
 
     # ================================================================ añadir / quitar
+    def agregar_desde_buscador(self):
+        texto = self.entry_code.get()
+        tokens = [normalizar_codigo(t) for t in re.split(r"[\s,;]+", texto) if t.strip()]
+        if not tokens:
+            return
+        malos = [t for t in tokens if not codigo_valido(t)]
+        buenos = [t for t in tokens if codigo_valido(t)]
+        ya = [t for t in buenos if t in self.approved]
+        nuevos = self.agregar(buenos)
+        if malos:
+            self._actualizar_info((f"Invalid code format: {', '.join(malos)}. "
+                                   "Use the exact code BRND-CHNL-NNNNNN (e.g. ADID-RMXX-261001).", "#C0392B"))
+            self._set_buscador(" ".join(malos))
+        else:
+            self._set_buscador("")
+            if ya and not nuevos:
+                self._actualizar_info((f"{', '.join(ya)} is already in the list.", "#E67E22"))
+                self.tree_r.selection_set(ya[0])
+                self.tree_r.see(ya[0])
+
+    def _set_buscador(self, texto):
+        self.entry_code.delete(0, "end")
+        if texto:
+            self.entry_code.insert(0, texto)
+        else:
+            self.app.focus_set()      # vuelve a mostrar el texto de ayuda
+            self.entry_code.focus_set()
+
     def agregar(self, codes):
-        nuevos = [c for c in codes if c in self.by_code and c not in self.approved]
-        for code in nuevos:
+        nuevos = []
+        for code in codes:
+            if code in self.approved or code in nuevos:
+                continue
+            nuevos.append(code)
             self.approved.append(code)
-            self.tree_r.insert("", "end", iid=code, values=("", code))
-            if self.tree_l.exists(code):
-                self.tree_l.item(code, tags=tuple(set(self.tree_l.item(code, "tags")) | {"added"}))
+            self.tree_r.insert("", "end", iid=code, values=("", code, self._nombre(code)))
             self._pintar_fila(code)
             if code in self.elements:
                 self._on_comprobada(code, self.stadium(), self.elements[code], None, None)
             self._comprobar(code)
-        dups = [c for c in nuevos if self.by_code[c]["duplicate"]]
+        dups = [c for c in nuevos if self.by_code.get(c, {}).get("duplicate")]
         if dups:
             messagebox.showwarning(
                 "Duplicated campaign code",
                 "These codes appear more than once in the project sheet. Please review them manually:\n\n" +
                 "\n".join(f"{c}: " + " | ".join(self.by_code[c]["names"]) for c in dups), parent=self.app)
         self._actualizar_cabeceras()
-        if nuevos and not self.active:
-            self.tree_r.selection_set(nuevos[0])
+        if nuevos:
+            self.tree_r.see(nuevos[-1])
+            if not self.active:
+                self.tree_r.selection_set(nuevos[0])
+        return nuevos
 
     def quitar(self, codes):
         for code in codes:
@@ -408,8 +345,6 @@ class CampaignPanel:
                 self._actualizar_info()
             self.approved.remove(code)
             self.tree_r.delete(code)
-            if self.tree_l.exists(code):
-                self.tree_l.item(code, tags=tuple(t for t in self.tree_l.item(code, "tags") if t != "added"))
         self._actualizar_cabeceras()
 
     def _menu_right(self, e):
@@ -419,65 +354,13 @@ class CampaignPanel:
         if item not in self.tree_r.selection():
             self.tree_r.selection_set(item)
         m = tk.Menu(self.tree_r, tearoff=0)
-        m.add_command(label="Remove from approved campaigns", command=lambda: self.quitar(self._sel(self.tree_r)))
+        m.add_command(label="Check Elements again", command=lambda: self._recomprobar(self._sel(self.tree_r)))
+        m.add_command(label="Remove from the list", command=lambda: self.quitar(self._sel(self.tree_r)))
         info = self.elements.get(item)
         if info and info.get("path"):
             m.add_command(label="Open Elements folder", command=lambda: self._abrir_carpeta(info["path"]))
             m.add_command(label="Copy Elements path", command=lambda: self._copiar(info["path"]))
         m.tk_popup(e.x_root, e.y_root)
-
-    # ================================================================ arrastrar
-    def _drag_press(self, e):
-        item = self.tree_l.identify_row(e.y)
-        self._drag = {"x": e.x_root, "y": e.y_root, "item": item, "moved": False}
-        if item and item in self.tree_l.selection() and len(self.tree_l.selection()) > 1 and not (e.state & 0x0005):
-            return "break"   # mantener la selección múltiple para arrastrarla entera
-
-    def _drag_motion(self, e):
-        d = self._drag
-        if not d or not d["item"]:
-            return
-        if not d["moved"] and abs(e.x_root - d["x"]) + abs(e.y_root - d["y"]) < 6:
-            return
-        d["moved"] = True
-        codes = self._sel(self.tree_l) or [d["item"]]
-        if self._drag_win is None:
-            w = tk.Toplevel(self.tree_l)
-            w.overrideredirect(True)
-            try:
-                w.attributes("-topmost", True)
-            except tk.TclError:
-                pass
-            txt = codes[0] + (f"  (+{len(codes) - 1})" if len(codes) > 1 else "")
-            tk.Label(w, text=txt, bg=self.app.c_magenta, fg="white", font=("Open Sans", 10, "bold"),
-                     padx=8, pady=3).pack()
-            self._drag_win = w
-        self._drag_win.geometry(f"+{e.x_root + 12}+{e.y_root + 8}")
-        sobre = self._sobre_derecha(e.x_root, e.y_root)
-        self.right_wrap.configure(highlightbackground=self.app.c_magenta if sobre else self.app.c_light_grey)
-
-    def _drag_release(self, e):
-        d, self._drag = self._drag, None
-        if self._drag_win is not None:
-            self._drag_win.destroy()
-            self._drag_win = None
-        self.right_wrap.configure(highlightbackground=self.app.c_light_grey)
-        if not d or not d["item"]:
-            return
-        if not d["moved"]:
-            if len(self.tree_l.selection()) > 1 and not (e.state & 0x0005):
-                self.tree_l.selection_set(d["item"])
-            return
-        if self._sobre_derecha(e.x_root, e.y_root):
-            self.agregar(self._sel(self.tree_l) or [d["item"]])
-
-    def _sobre_derecha(self, x, y):
-        w = self.right_wrap.winfo_containing(x, y)
-        while w is not None:
-            if w is self.right_wrap:
-                return True
-            w = getattr(w, "master", None)
-        return False
 
     # ================================================================ activar campaña
     def _on_select_right(self):
@@ -503,6 +386,16 @@ class CampaignPanel:
             return
         st = self._state(code)
         estado = self.estado(code)
+        if estado in (cb.S_NO_NAS, cb.S_MISSING, cb.S_INCOMPLETE) and code not in self._rechecked:
+            # Puede que el estudio ya haya subido los Elements: se vuelve a mirar el NAS antes de avisar
+            self._rechecked.add(code)
+            self.elements.pop(code, None)
+            self.pending_activate = code
+            self._pintar_fila(code)
+            self._actualizar_info((f"Checking Elements of {code} on the NAS…", self.app.c_text_muted))
+            self._comprobar(code)
+            return
+        self._rechecked.discard(code)
         if estado in (cb.S_NO_NAS, cb.S_MISSING, cb.S_INCOMPLETE):
             anterior = self.active
             self.active = None
@@ -666,14 +559,14 @@ class CampaignPanel:
             messagebox.showwarning("Export campaigns", "Select a stadium profile first.", parent=app)
             return
         if not self.approved:
-            messagebox.showinfo("Export campaigns", "Drag the campaigns to export into APPROVED CAMPAIGNS first.",
+            messagebox.showinfo("Export campaigns", "Add the campaigns to export by typing their codes first.",
                                 parent=app)
             return
         estados = {c: self.estado(c) for c in self.approved}
         targets = [c for c in self.approved if cb.exportable(estados[c])]
         skipped = [c for c in self.approved if c not in targets]
         if not targets:
-            messagebox.showwarning("Export campaigns", "None of the approved campaigns can be rendered yet.\n\n" +
+            messagebox.showwarning("Export campaigns", "None of the campaigns can be rendered yet.\n\n" +
                                    self._resumen_saltadas(skipped, estados), parent=app)
             return
         sin_revisar = [c for c in targets if estados[c] != cb.S_REVIEWED]
@@ -743,7 +636,7 @@ class CampaignPanel:
                         st = self._state(code, stadium)
                         st.saved_path, st.saved_at = path, doc["archie"]["saved_at"]
         self.exporting = False
-        self.btn_export.configure(state="normal", text="Export approved campaigns")
+        self.btn_export.configure(state="normal", text="Export ready campaigns")
         self._actualizar_cabeceras()
         if errores:
             messagebox.showerror("Export campaigns", "Some campaigns could not be prepared:\n\n" + "\n".join(errores),
