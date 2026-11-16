@@ -535,16 +535,21 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         v3d_header = ctk.CTkFrame(self.v3d_frame, fg_color="transparent")
         v3d_header.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
         ctk.CTkLabel(v3d_header, text="3D PREVIEW", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.c_magenta).pack(side="left")
-        ctk.CTkLabel(v3d_header, text="Left drag: move · Right drag: rotate · Wheel: zoom · Double click: reset",
+        ctk.CTkLabel(v3d_header, text="Drag: move · Right drag: rotate · Wheel: zoom",
                      font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=12)
-        ctk.CTkButton(v3d_header, text="Reset view", width=70, height=20, fg_color="#2b2b2b", hover_color="#3a3a3a", border_width=1, border_color="gray", command=lambda: self.visor_3d.reset_view()).pack(side="right", padx=5)
-        self.lbl_v3d_info = ctk.CTkLabel(v3d_header, text="", font=ctk.CTkFont(size=11), text_color="gray")
-        self.lbl_v3d_info.pack(side="right", padx=10)
+        # v0.74: cámaras predefinidas (Global View = la vista inicial; el resto mira desde ahí hacia cada zona)
+        for txt, w, nombre in (("CB", 36, "cb"), ("Goal", 46, "goal_r"), ("Corner", 56, "corner_r"),
+                               ("Global View", 80, "global")):
+            ctk.CTkButton(v3d_header, text=txt, width=w, height=20, fg_color="#2b2b2b", hover_color="#3a3a3a", border_width=1,
+                          border_color="gray", command=lambda n=nombre: self.visor_3d.vista(n)).pack(side="right", padx=3)
         self.v3d_container = tk.Frame(self.v3d_frame, bg="#0c0c0c", bd=0, highlightthickness=0)
         self.v3d_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.visor_3d = Visor3D(self.v3d_container)
         self.visor_3d.activo = self._v3d_visible
         self.visor_3d.on_escala = self._on_escala_3d
+        # v0.74: medidas del estadio abajo a la izquierda de la vista (la cabecera tiene ahora las cámaras)
+        self.lbl_v3d_info = tk.Label(self.v3d_container, text="", font=("Segoe UI", 9), fg="gray", bg="#0c0c0c")
+        self.lbl_v3d_info.place(relx=0, rely=1, x=6, y=-6, anchor="sw")
 
 
 

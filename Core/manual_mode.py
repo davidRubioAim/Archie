@@ -1,5 +1,5 @@
 """
-v0.73: MODO MANUAL en la Architecture Preview (interfaz).
+v0.74: MODO MANUAL en la Architecture Preview (interfaz).
 
 Mixin de MegaStripApp: clic sobre un elemento = selección / arrastre con espejo (el modo manual se activa solo),
 menú de clic derecho (Duplicate / Remove), Supr / Ctrl+D / Esc, bloqueo de sliders y vuelta al modo automático
@@ -49,6 +49,30 @@ AYUDA_MANUAL = (
     "The 3D Preview shows the changes but can't be edited. Not available in AMPLIFY mode yet."
 )
 
+def icono_iman(color=(255, 9, 154), puntas=(235, 235, 235), lado=64):
+    """v0.74: imán de herradura con los polos hacia arriba (U), dibujado a 4x y reducido para que quede suave."""
+    k = 4
+    n = lado * k
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    g = int(n * 0.22)                       # grosor de los brazos
+    x0, x1 = int(n * 0.14), int(n * 0.86)   # borde exterior
+    yt, yb = int(n * 0.10), int(n * 0.90)   # arriba de los polos / abajo de la curva
+    r = (x1 - x0) // 2
+    yc = yb - r                             # centro de la curva
+    d.pieslice((x0, yc - r, x1, yb), 0, 180, fill=color)
+    d.rectangle((x0, yt, x0 + g, yc), fill=color)
+    d.rectangle((x1 - g, yt, x1, yc), fill=color)
+    ri = r - g
+    cx = (x0 + x1) // 2
+    d.pieslice((cx - ri, yc - ri, cx + ri, yc + ri), 0, 180, fill=(0, 0, 0, 0))
+    d.rectangle((x0 + g, yt, x1 - g, yc), fill=(0, 0, 0, 0))
+    hp = int(n * 0.17)                      # polos
+    d.rectangle((x0, yt, x0 + g, yt + hp), fill=puntas)
+    d.rectangle((x1 - g, yt, x1, yt + hp), fill=puntas)
+    return img.resize((lado, lado), Image.LANCZOS)
+
+
 PISTA_MANUAL = "✋ MANUAL MODE · Drag: move · Right click: Duplicate / Remove · Del · Ctrl+D · Esc · ? guide"
 
 
@@ -75,8 +99,15 @@ class ManualModeMixin:
         """Botones en la cabecera de la Architecture Preview y barra de ayuda (fila 3 del contenedor)."""
         bc = dict(height=20, fg_color="#2b2b2b", hover_color="#3a3a3a", border_width=1, border_color="gray")
         ctk.CTkButton(self.preview_header, text="?", width=24, command=self._mv_ayuda, **bc).pack(side="right", padx=(5, 10))
-        self.btn_snap = ctk.CTkButton(self.preview_header, text="🧲 SNAP", width=70, command=self._mv_snap, **bc)
+        self._img_snap = ctk.CTkImage(icono_iman(), size=(16, 16))
+        self._img_snap_off = ctk.CTkImage(icono_iman((110, 110, 110), (150, 150, 150)), size=(16, 16))
+        self.btn_snap = ctk.CTkButton(self.preview_header, text="", image=self._img_snap, width=30,
+                                      command=self._mv_snap, **bc)
         self.btn_snap.pack(side="right", padx=5)
+        # info del elemento bajo el cursor (tamaño y squeeze): flota junto al puntero, no mueve nada
+        self.lbl_mv_tip = ctk.CTkLabel(self.preview_image_container, text="", fg_color="#151515", corner_radius=4,
+                                       text_color="#EEEEEE", font=ctk.CTkFont(size=11), height=20)
+        self._mv_tip_on = False
 
         # Barra de ayuda: flota (place) arriba a la izquierda de la preview, bajo el título. place() no reparte
         # sitio, así que mostrarla u ocultarla no mueve los paneles ni la imagen.
@@ -92,6 +123,7 @@ class ManualModeMixin:
         lbl = self.lbl_live_preview
         lbl.bind("<Button-3>", self._mv_menu)
         lbl.bind("<Motion>", self._mv_hover)
+        lbl.bind("<Leave>", lambda e: self._mv_tip(None))
         lbl.bind("<ButtonPress-2>", self._mv_pan_start)
         lbl.bind("<B2-Motion>", self._mv_pan_motion)
         lbl.bind("<ButtonRelease-2>", self._mv_pan_end)
@@ -121,7 +153,7 @@ class ManualModeMixin:
         ok = ManualLayout.soportado(d)[0] and not lu
         try:
             self.btn_snap.configure(state="normal" if ok else "disabled",
-                                    text_color="#DCE4EE" if ok else "gray")
+                                    image=self._img_snap if ok else self._img_snap_off)
         except Exception:
             pass
         self._mv_cursor("")
@@ -262,6 +294,64 @@ class ManualModeMixin:
         self._mv_refresh_ui()
 
     # ================================================================== modelo
+    def _mv_nat(self, d):
+        """Anchos naturales (px del strip) de ANIM ZONE y logo para esta arquitectura -> {tipo: px}."""
+        c = getattr(self, "_mv_nat_cache", None)
+        if c is not None and c[0] is d:
+            return c[1]
+        res = {}
+        try:
+            dims = d["dimensiones_globales"]
+            z = d["zonas"]
+            dist = Distribuidor(dims["width"], dims["height"], z["ZONA_1"]["width"], z.get("ZONA_3", {}).get("width", 0),
+                                int(self.margin_slider.get()), self.archivos_cargados, d.get("config") or {})
+            res = {"anim_zone": float(dist.anim_w), "static_logo": float(dist.logo_w)}
+        except Exception as e:
+            log_error(f"Manual: anchos naturales no disponibles: {e}")
+        self._mv_nat_cache = (d, res)
+        return res
+
+    def _mv_info(self, m, uid):
+        """'ANIM ZONE · 2040 px · Squeeze 15%' del elemento."""
+        e = m.el(uid) if m is not None else None
+        if e is None:
+            return ""
+        nombre = {"anim_zone": "ANIM ZONE", "static_logo": "LOGO", "center_board": "CENTER BOARD"}.get(e["tipo"], "")
+        txt = f"{nombre} · {int(round(e['w']))} px"
+        nat = self._mv_nat(self._disp_datos).get(e["tipo"]) if self._disp_datos else None
+        if e["tipo"] == "anim_zone" and m.nat:
+            nat = m.nat
+        if nat:
+            pct = (1.0 - e["w"] / float(nat)) * 100.0
+            if pct > 0.05:
+                txt += f" · Squeeze {pct:.0f}%" if pct >= 1 else f" · Squeeze {pct:.1f}%"
+            elif pct < -0.05:
+                txt += f" · Stretch {-pct:.0f}%"
+            else:
+                txt += " · Squeeze 0%"
+        return txt
+
+    def _mv_tip(self, event, texto=""):
+        if event is None or not texto:
+            if self._mv_tip_on:
+                self._mv_tip_on = False
+                self.lbl_mv_tip.place_forget()
+            return
+        cont = self.preview_image_container
+        x = event.x_root - cont.winfo_rootx() + 14
+        y = event.y_root - cont.winfo_rooty() + 16
+        if self.lbl_mv_tip.cget("text") != texto:
+            self.lbl_mv_tip.configure(text=f" {texto} ")
+        tw = max(self.lbl_mv_tip.winfo_reqwidth(), 8 * len(texto))
+        if x + tw > cont.winfo_width():
+            x = max(0, event.x_root - cont.winfo_rootx() - tw - 8)
+        if y + 22 > cont.winfo_height():
+            y = max(0, y - 40)
+        self.lbl_mv_tip.place(x=x, y=y, anchor="nw")
+        if not self._mv_tip_on:
+            self._mv_tip_on = True
+            self.lbl_mv_tip.lift()
+
     def _mv_anim_nat(self, d):
         try:
             dims = d["dimensiones_globales"]
@@ -553,6 +643,7 @@ class ManualModeMixin:
     def _mv_press(self, event):
         """on_drag_start de la Architecture Preview. True si el clic cae sobre un elemento (lo gestiona el modo
         manual); False en zona vacía, que sigue con el comportamiento normal (play / pausa y pan)."""
+        self._mv_tip(None)
         m = self._mv_modelo(avisar=False)
         x = self._mv_evento_x(event) if m is not None else None
         uid = m.hit(x) if x is not None else None
@@ -626,10 +717,12 @@ class ManualModeMixin:
 
     def _mv_hover(self, event):
         if self.manual_drag is not None:
+            self._mv_tip(None)
             return
         m = self._mv_modelo(avisar=False)
         x = self._mv_evento_x(event) if m is not None else None
         uid = m.hit(x) if x is not None else None
+        self._mv_tip(event, self._mv_info(m, uid) if uid is not None else "")
         if uid is not None and m.puede_mover(uid)[0]:
             self._mv_cursor("sb_h_double_arrow")
         elif uid is not None:
@@ -661,10 +754,9 @@ class ManualModeMixin:
         self.manual_sel = uid
         self._mv_refresh_ui()
         self._mv_repintar()
-        e = m.el(uid)
-        nombre = {"anim_zone": "ANIM ZONE", "static_logo": "Logo", "center_board": "Center Board"}.get(e["tipo"], "")
+        self._mv_tip(None)
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label=nombre, state="disabled")
+        menu.add_command(label=self._mv_info(m, uid), state="disabled")
         menu.add_separator()
         menu.add_command(label="Duplicate    Ctrl+D", command=lambda: self._mv_duplicar(uid),
                          state="normal" if m.puede_duplicar(uid) else "disabled")

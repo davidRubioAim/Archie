@@ -212,6 +212,63 @@ class Escena3D:
         self._clamp_suelo()
         self.encuadrar()
 
+    # ----- v0.74: cámaras predefinidas -----
+    VISTAS = ("global", "corner_r", "goal_r", "cb")
+
+    def _zona_vista(self, nombre):
+        """Puntos (mundo) de la zona que tiene que llenar la vista, o None si no existe en este estadio."""
+        hl, hw, top = self.L / 2, self.W / 2, max(self.top, 1.0)
+        ys = (0.0, top)
+        if nombre == "goal_r":
+            # la portería (centro del fondo derecho) y un poco a cada lado: ~ el ancho del área grande
+            r = max(top * 6.0, 0.2 * self.W)
+            return [(hl, y, z) for z in (-r, r) for y in ys]
+        if nombre == "corner_r":
+            r = max(top * 8.0, 0.2 * min(self.L, self.W))
+            return [(x, y, z) for (x, z) in ((hl - r, -hw), (hl, -hw), (hl, -hw + r)) for y in ys]
+        if nombre == "cb":
+            r = max(top * 8.0, 0.1 * self.L)
+            return [(x, y, -hw) for x in (-r, r) for y in ys]
+        return None
+
+    def vista(self, nombre, relleno=0.9):
+        """Global View: la vista inicial. El resto: misma posición de cámara que la inicial, girada hacia la zona
+        y con el zoom (FOV) justo para que la zona llene la ventana."""
+        self.reset_view()
+        if nombre == "global":
+            return True
+        pts = self._zona_vista(nombre)
+        if not pts:
+            return False
+        xs, ys, zs = zip(*pts)
+        if nombre == "corner_r":   # el corner, en el centro de la vista
+            P = (self.L / 2, max(self.top, 1.0) / 2, -self.W / 2)
+        else:
+            P = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, (min(zs) + max(zs)) / 2)
+        eye = self._camera()[0]
+        v = _v_sub(P, eye)
+        dist = math.sqrt(_v_dot(v, v))
+        if dist < 1e-6:
+            return False
+        o = (-v[0] / dist, -v[1] / dist, -v[2] / dist)          # del objetivo al ojo
+        self.yaw = math.atan2(o[0], o[2])
+        self.pitch = math.asin(max(-1.0, min(1.0, o[1])))
+        self.dist = dist
+        self.target = P
+        w, h = self.size
+        cam = self._camera()
+        cs = [self._to_cam(cam, q) for q in pts]
+        if min(c[2] for c in cs) <= self._near():
+            return True
+        pr = [self._proj(cam, c) for c in cs]
+        ext_x = max(abs(p[0] - w / 2) for p in pr) * 2
+        ext_y = max(abs(p[1] - h / 2) for p in pr) * 2
+        s = min(relleno * w / max(ext_x, 1.0), relleno * h / max(ext_y, 1.0))
+        t = math.tan(math.radians(self.fov) / 2) / s
+        t = max(math.tan(math.radians(FOV_MIN) / 2), min(math.tan(math.radians(FOV_MAX) / 2), t))
+        self.fov = math.degrees(2 * math.atan(t))
+        return True
+
     def encuadrar(self, relleno=0.94):
         """v0.50: con la cámara quieta, centra la U en vertical (inclinando la cámara) y ajusta el FOV
         para que el estadio ocupe la ventana (relleno = fracción del ancho/alto disponible)."""
@@ -555,6 +612,12 @@ class Visor3D:
     def reset_view(self):
         self.escena.reset_view()
         self.request_render()
+
+    def vista(self, nombre):
+        """v0.74: cámara predefinida (Global View, Corner Right, Goal Right, CB). -> False si no hay esa zona."""
+        ok = self.escena.vista(nombre)
+        self.request_render()
+        return ok
 
     # ----- pintado -----
     def request_render(self):
