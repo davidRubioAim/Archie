@@ -1,9 +1,10 @@
 """
-v0.71: MODO MANUAL en la Architecture Preview (interfaz).
+v0.72: MODO MANUAL en la Architecture Preview (interfaz).
 
-Mixin de MegaStripApp: botones (Manual / Magnet / Reset / ?), arrastre con espejo, menú de clic derecho
-(Duplicate / Remove), atajos de teclado, bloqueo de sliders y vuelta al modo automático.
-La lógica de la arquitectura (espejo, empuje, fronteras, LOGO UNDER, Magnet) vive en manual_layout.py.
+Mixin de MegaStripApp: clic sobre un elemento = selección / arrastre con espejo (el modo manual se activa solo),
+menú de clic derecho (Duplicate / Remove), Supr / Ctrl+D / Esc, bloqueo de sliders y vuelta al modo automático
+(con el RESET del panel MEDIA ASSETS). Sin botones Manual / Magnet / Reset ni flechas.
+La lógica de la arquitectura (espejo, empuje, fronteras, LOGO UNDER) vive en manual_layout.py.
 """
 import tkinter as tk
 from tkinter import messagebox
@@ -19,35 +20,33 @@ from video_player import PhotoTarget
 
 C_SEL = (255, 9, 154, 255)        # magenta de la app
 C_ESPEJO = (255, 150, 210, 255)
-C_EDIT = (255, 255, 255, 110)
 C_AVISO = "#E67E22"
 
 AYUDA_MANUAL = (
     "MANUAL MODE · quick guide\n\n"
-    "✋ Manual turns editing on and off in the Architecture Preview.\n\n"
-    "• Drag an ANIM ZONE or a logo to move it. Everything is symmetric: its mirror moves too "
+    "There is no button to turn it on: click an ANIM ZONE or a logo in the Architecture Preview and drag it. "
+    "The first change switches the layout to MANUAL MODE.\n\n"
+    "• Everything is symmetric: the mirror element moves too "
     "(Goal Line Left ↔ Goal Line Right, left ↔ right half of the Touchline).\n"
-    "• Elements never overlap. Pushing an element moves its neighbours; when there is no room left, "
-    "the ANIM ZONES squash automatically up to the Squash Limit.\n"
+    "• Elements never overlap. Pushing an element moves its neighbours, keeping at least the Margin; when there "
+    "is no room left, the ANIM ZONES squash automatically up to the Squash Limit.\n"
     "• Elements stay inside their section (Goal Line up to the corner, Touchline between corners) and never "
     "cover the Center Board.\n"
     "• Right click an element: Duplicate / Remove. Duplicate moves the element half a step to one side and "
     "drops the copy on the other side.\n"
     "• LOGO UNDER: logos can't be moved. Duplicate / Remove adds or removes one logo in that section and the "
     "equidistant grid is rebuilt. ANIM ZONES snap to the logo grid.\n"
-    "• ⇆ Magnet evens out the spacing in every section and copies the last edited side to the other one.\n"
-    "• ↺ Reset discards the manual layout and goes back to automatic: sliders and chat drive the layout again.\n\n"
+    "• RESET (bottom of the MEDIA ASSETS panel) discards the manual layout and goes back to automatic: "
+    "sliders and chat drive the layout again.\n\n"
     "While the layout is manual the distribution sliders are locked. Changing the stadium, its size, the logo "
     "or the ANIM ZONES goes back to automatic. Writing to the assistant asks first.\n\n"
-    "Keys: ← / → nudge 1 px (Shift: 10 px; one grid cell in LOGO UNDER) · Del: Remove · Ctrl+D: Duplicate · "
-    "Esc: deselect. Undo / Redo buttons work too.\n"
-    "Pan: middle mouse drag, Space + drag, or drag on an empty area.\n\n"
+    "Keys: Del: Remove · Ctrl+D: Duplicate · Esc: deselect. Undo / Redo work too.\n"
+    "Click on an empty area: play / pause. Drag on an empty area or with the middle mouse button: pan.\n\n"
     "The queue, direct render and AE JSON use the manual layout as it is when you add the job. "
     "The 3D Preview shows the changes but can't be edited. Not available in AMPLIFY mode yet."
 )
 
-PISTA_MANUAL = ("✋ MANUAL MODE · Drag: move · Right click: Duplicate / Remove · ←/→ · Del · Ctrl+D · "
-                "Pan: middle drag")
+PISTA_MANUAL = "✋ MANUAL MODE · Drag: move · Right click: Duplicate / Remove · Del · Ctrl+D · Esc"
 
 
 class ManualModeMixin:
@@ -56,7 +55,6 @@ class ManualModeMixin:
     def _mv_init_state(self):
         self.manual = None            # ManualLayout cuando la arquitectura es manual (sliders bloqueados)
         self.manual_sig = None        # firma (estadio, tamaño, ELEMENTS) con la que se creó
-        self.manual_tool = False      # edición activada (botón ✋ Manual)
         self.manual_sel = None        # uid seleccionado
         self.manual_drag = None
         self._manual_tmp = None       # (datos, modelo) mientras no hay cambios manuales
@@ -67,7 +65,6 @@ class ManualModeMixin:
         self._manual_render_timer = None
         self._disp_datos = None       # datos de la arquitectura que se ve ahora en la preview
         self._render_datos = None     # (gen, datos) del render en curso
-        self._space_down = False
         self._mv_pan = None
         self.lbl_manual_lock = None
 
@@ -75,12 +72,6 @@ class ManualModeMixin:
         """Botones en la cabecera de la Architecture Preview y barra de ayuda (fila 3 del contenedor)."""
         bc = dict(height=20, fg_color="#2b2b2b", hover_color="#3a3a3a", border_width=1, border_color="gray")
         ctk.CTkButton(self.preview_header, text="?", width=24, command=self._mv_ayuda, **bc).pack(side="right", padx=(5, 10))
-        self.btn_manual_reset = ctk.CTkButton(self.preview_header, text="↺ Reset", width=62, command=self._mv_reset, **bc)
-        self.btn_manual_reset.pack(side="right", padx=5)
-        self.btn_manual_magnet = ctk.CTkButton(self.preview_header, text="⇆ Magnet", width=72, command=self._mv_magnet, **bc)
-        self.btn_manual_magnet.pack(side="right", padx=5)
-        self.btn_manual = ctk.CTkButton(self.preview_header, text="✋ Manual", width=72, command=self._mv_toggle_tool, **bc)
-        self.btn_manual.pack(side="right", padx=5)
 
         self.manual_bar = ctk.CTkFrame(self.preview_container, fg_color="transparent")
         self.manual_bar.grid_columnconfigure(0, weight=1)
@@ -97,30 +88,23 @@ class ManualModeMixin:
         lbl.bind("<ButtonPress-2>", self._mv_pan_start)
         lbl.bind("<B2-Motion>", self._mv_pan_motion)
         lbl.bind("<ButtonRelease-2>", self._mv_pan_end)
-        for seq, fn in (("<KeyPress-Left>", lambda e: self._mv_nudge(e, -1, 1)),
-                        ("<KeyPress-Right>", lambda e: self._mv_nudge(e, 1, 1)),
-                        ("<Shift-Left>", lambda e: self._mv_nudge(e, -1, 10)),
-                        ("<Shift-Right>", lambda e: self._mv_nudge(e, 1, 10)),
-                        ("<Delete>", self._mv_key_remove),
+        for seq, fn in (("<Delete>", self._mv_key_remove),
                         ("<Control-d>", self._mv_key_duplicate), ("<Control-D>", self._mv_key_duplicate),
-                        ("<Escape>", self._mv_key_escape),
-                        ("<KeyPress-space>", self._mv_space_down), ("<KeyRelease-space>", self._mv_space_up)):
+                        ("<Escape>", self._mv_key_escape)):
             self.bind_all(seq, fn, add="+")
         self._mv_refresh_ui()
 
+    def _mv_activo(self):
+        """La barra de ayuda se ve con la arquitectura manual o con un elemento seleccionado."""
+        return self.manual is not None or self.manual_sel is not None
+
     def _mv_refresh_ui(self):
-        if not hasattr(self, "btn_manual"):
+        if not hasattr(self, "manual_bar"):
             return
-        if self.manual_tool:
-            self.btn_manual.configure(fg_color=self.c_magenta, hover_color="#d1077e", border_color=self.c_magenta)
+        if self._mv_activo():
             self.manual_bar.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 6))
         else:
-            self.btn_manual.configure(fg_color="#2b2b2b", hover_color="#3a3a3a", border_color="gray")
             self.manual_bar.grid_remove()
-        if self.manual is not None:
-            self.btn_manual_reset.configure(fg_color=C_AVISO, hover_color="#D35400", border_color=C_AVISO)
-        else:
-            self.btn_manual_reset.configure(fg_color="#2b2b2b", hover_color="#3a3a3a", border_color="gray")
         self._mv_cursor("")
 
     def _mv_msg(self, text, color=C_AVISO, segundos=6):
@@ -131,7 +115,7 @@ class ManualModeMixin:
             try: self.after_cancel(self._manual_msg_timer)
             except Exception: pass
             self._manual_msg_timer = None
-        if self.manual_tool and hasattr(self, "lbl_manual_msg"):
+        if self._mv_activo() and hasattr(self, "lbl_manual_msg"):
             self.lbl_manual_msg.configure(text=text, text_color=color)
             self._manual_msg_timer = self.after(segundos * 1000, lambda: self.lbl_manual_msg.configure(text=""))
         elif hasattr(self, "lbl_preview_status"):
@@ -150,26 +134,7 @@ class ManualModeMixin:
                       command=win.destroy).pack(pady=(0, 12))
         win.after(50, win.lift)
 
-    # ================================================================== activar / desactivar
-    def _mv_toggle_tool(self):
-        if self.manual_tool:
-            self.manual_tool = False
-            self.manual_sel = None
-            self.manual_drag = None
-        else:
-            ok, msg = ManualLayout.soportado(self._disp_datos)
-            if not ok:
-                self._mv_msg(msg)
-                return
-            self.manual_tool = True
-            if self.player.playing:
-                self.player.pause()
-            if not getattr(self, "_manual_ayuda_vista", False):
-                self._manual_ayuda_vista = True
-                self.after(100, lambda: self._mv_msg("Press ? for the MANUAL MODE guide.", "gray", 8))
-        self._mv_refresh_ui()
-        self._mv_repintar()
-
+    # ================================================================== firma / vuelta a automático
     def _mv_firma(self):
         a = self.archivos_cargados or {}
         try:
@@ -212,19 +177,6 @@ class ManualModeMixin:
             try: self.append_chat("Archie", f"✋ {msg}")
             except Exception: pass
 
-    def _mv_reset(self):
-        if self.manual is None:
-            self._mv_msg("Already automatic: sliders and chat drive the layout.", "gray")
-            return
-        if not messagebox.askyesno("Reset to automatic",
-                                   "Discard all MANUAL MODE changes and go back to the automatic layout "
-                                   "(sliders + chat)?", parent=self):
-            return
-        self._mv_descartar()
-        self._mv_msg("Back to automatic.", "gray")
-        self.save_history_state()
-        self.start_preview_render()
-
     # ================================================================== bloqueo de sliders
     def _mv_bloqueables(self):
         ws = [self.margin_slider, self.margin_tl_slider, self.offset_slider, self.stretch_slider,
@@ -252,7 +204,7 @@ class ManualModeMixin:
             if self.lbl_manual_lock is None:
                 self.lbl_manual_lock = ctk.CTkLabel(
                     self.col_left, text="✋ MANUAL MODE · distribution sliders locked.\n"
-                                        "Press ↺ Reset in the Architecture Preview to go back to automatic.",
+                                        "Press RESET (bottom of MEDIA ASSETS) to go back to automatic.",
                     font=ctk.CTkFont(size=11, weight="bold"), text_color=C_AVISO, justify="left", anchor="w")
             hijos = [c for c in self.col_left.winfo_children() if c is not self.lbl_manual_lock]
             try:
@@ -328,6 +280,9 @@ class ManualModeMixin:
         if self.manual is None:
             self.manual_sig = self._mv_firma()
             self._mv_bloquear(True)
+            if not getattr(self, "_manual_ayuda_vista", False):
+                self._manual_ayuda_vista = True
+                self.after(6500, lambda: self._mv_msg("MANUAL MODE on · press ? for the guide.", "gray", 8))
         self.manual = model
         self._manual_tmp = None
         self._mv_refresh_ui()
@@ -460,8 +415,8 @@ class ManualModeMixin:
             self._pintar_label(self.lbl_live_preview, self._mv_decorar(self._shown_strip))
 
     def _mv_decorar(self, img):
-        """Contornos de los elementos editables y del seleccionado (y su espejo) encima de la preview."""
-        if not self.manual_tool or img is None or self.loading_overlay_on:
+        """Contorno del elemento seleccionado (y de su espejo) encima de la preview."""
+        if self.manual_sel is None or img is None or self.loading_overlay_on:
             return img
         m = self._mv_modelo(avisar=False)
         v = self._mv_vista()
@@ -474,12 +429,6 @@ class ManualModeMixin:
             dr = ImageDraw.Draw(capa)
             sel = self.manual_sel if (self.manual_sel is not None and m.el(self.manual_sel)) else None
             espejo = m.pareja(sel) if sel is not None else None
-            for uid, tipo, x, w, src, editable in m.elementos():
-                if uid in (sel, espejo):
-                    continue
-                if editable:
-                    for r in self._mv_rects(x, w, v, segs, h):
-                        dr.rectangle(r, outline=C_EDIT, width=1)
             for uid, color, ancho in ((espejo, C_ESPEJO, 1), (sel, C_SEL, 2)):
                 e = m.el(uid) if uid is not None else None
                 if e is None:
@@ -582,33 +531,28 @@ class ManualModeMixin:
 
     # ================================================================== ratón
     def _mv_press(self, event):
-        """on_drag_start de la Architecture Preview. True si lo gestiona el modo manual."""
-        if not self.manual_tool:
+        """on_drag_start de la Architecture Preview. True si el clic cae sobre un elemento (lo gestiona el modo
+        manual); False en zona vacía, que sigue con el comportamiento normal (play / pausa y pan)."""
+        m = self._mv_modelo(avisar=False)
+        x = self._mv_evento_x(event) if m is not None else None
+        uid = m.hit(x) if x is not None else None
+        if uid is None:
+            if self.manual_sel is not None:
+                self.manual_sel = None
+                self._mv_refresh_ui()
+                self._mv_repintar()
             return False
         try: self.preview_image_container.focus_set()
         except Exception: pass
-        if self._space_down:
-            self.manual_drag = {"pan": True, "x": event.x_root, "y": event.y_root}
-            return True
-        m = self._mv_modelo()
-        x = self._mv_evento_x(event)
-        uid = m.hit(x) if (m is not None and x is not None) else None
-        if uid is None:
-            self.manual_sel = None
-            self.manual_drag = {"pan": True, "x": event.x_root, "y": event.y_root}
-            self._mv_repintar()
-            return True
         self.manual_sel = uid
+        self._mv_refresh_ui()
         ok, msg = m.puede_mover(uid)
-        if not ok:
+        if not ok or self.render_busy or self._shown_strip is None:
             self.manual_drag = None
-            self._mv_msg(msg)
+            self._mv_msg(msg if not ok else "Wait a moment: the preview is still updating.", C_AVISO if not ok else "gray",
+                         6 if not ok else 3)
             self._mv_repintar()
-            return True
-        if self.render_busy or self._shown_strip is None:
-            self.manual_drag = None
-            self._mv_msg("Wait a moment: the preview is still updating.", "gray", 3)
-            self._mv_repintar()
+            self.manual_drag = {"noop": True}   # el clic es del modo manual: ni pan ni play / pausa
             return True
         if self.player.playing:
             self.player.pause()
@@ -624,18 +568,10 @@ class ManualModeMixin:
         self.manual_drag = d
 
     def _mv_motion(self, event):
-        if not self.manual_tool:
-            return False
         d = self.manual_drag
         if d is None:
-            return True
-        if d.get("pan"):
-            self.pan_x_strip += event.x_root - d["x"]
-            self.pan_y_strip += event.y_root - d["y"]
-            d["x"], d["y"] = event.x_root, event.y_root
-            self.manual_drag = None
-            self.actualizar_imagen_preview()
-            self.manual_drag = d
+            return False
+        if d.get("noop"):
             return True
         dxp = event.x_root - d["x"]
         if not d["moved"] and abs(dxp) < 3:
@@ -654,12 +590,11 @@ class ManualModeMixin:
         return True
 
     def _mv_release(self, event):
-        if not self.manual_tool:
-            return False
         d = self.manual_drag
+        if d is None:
+            return False
         self.manual_drag = None
-        if d is None or d.get("pan"):
-            self._mv_repintar()
+        if d.get("noop"):
             return True
         if d["moved"] and d.get("model") is not None:
             if d.get("limpia") is not None:
@@ -670,14 +605,12 @@ class ManualModeMixin:
         return True
 
     def _mv_hover(self, event):
-        if not self.manual_tool or self.manual_drag is not None:
+        if self.manual_drag is not None:
             return
         m = self._mv_modelo(avisar=False)
         x = self._mv_evento_x(event) if m is not None else None
         uid = m.hit(x) if x is not None else None
-        if self._space_down:
-            self._mv_cursor("fleur")
-        elif uid is not None and m.puede_mover(uid)[0]:
+        if uid is not None and m.puede_mover(uid)[0]:
             self._mv_cursor("sb_h_double_arrow")
         elif uid is not None:
             self._mv_cursor("hand2")
@@ -700,15 +633,13 @@ class ManualModeMixin:
 
     # ================================================================== menú contextual
     def _mv_menu(self, event):
-        if not self.manual_tool:
-            self._mv_msg("Turn on ✋ Manual to edit elements.", "gray", 3)
-            return
         m = self._mv_modelo()
         x = self._mv_evento_x(event) if m is not None else None
         uid = m.hit(x) if x is not None else None
         if uid is None:
             return
         self.manual_sel = uid
+        self._mv_refresh_ui()
         self._mv_repintar()
         e = m.el(uid)
         nombre = {"anim_zone": "ANIM ZONE", "static_logo": "Logo", "center_board": "Center Board"}.get(e["tipo"], "")
@@ -719,8 +650,6 @@ class ManualModeMixin:
                          state="normal" if m.puede_duplicar(uid) else "disabled")
         menu.add_command(label="Remove        Del", command=lambda: self._mv_eliminar(uid),
                          state="normal" if m.puede_eliminar(uid) else "disabled")
-        menu.add_separator()
-        menu.add_command(label="⇆ Magnet", command=self._mv_magnet)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -734,30 +663,12 @@ class ManualModeMixin:
             if self.manual is not None and self.manual.el(uid) is None:
                 self.manual_sel = None
 
-    def _mv_magnet(self):
-        if self._mv_operar(lambda m: m.magnet()):
-            self._mv_msg("Magnet: spacing evened out and mirrored.", "gray", 4)
-
     # ================================================================== teclado
     def _mv_tecla_ok(self):
-        if not self.manual_tool:
-            return False
         w = self.focus_get()
         if isinstance(w, (tk.Entry, tk.Text)):
             return False
         return True
-
-    def _mv_nudge(self, event, signo, mult):
-        if not self._mv_tecla_ok() or self.manual_sel is None:
-            return None
-        m = self._mv_modelo()
-        if m is None or m.el(self.manual_sel) is None:
-            return None
-        paso = m.paso(self.manual_sel)
-        dx = signo * (paso if paso > 1 else float(mult))
-        uid = self.manual_sel
-        self._mv_operar(lambda mm: mm.mover(uid, dx), delay=450)
-        return "break"
 
     def _mv_key_remove(self, event):
         if not self._mv_tecla_ok() or self.manual_sel is None:
@@ -772,18 +683,12 @@ class ManualModeMixin:
         return "break"
 
     def _mv_key_escape(self, event):
-        if not self._mv_tecla_ok():
+        if not self._mv_tecla_ok() or self.manual_sel is None:
             return None
         self.manual_sel = None
+        self._mv_refresh_ui()
         self._mv_repintar()
         return None
-
-    def _mv_space_down(self, event):
-        if self._mv_tecla_ok():
-            self._space_down = True
-
-    def _mv_space_up(self, event):
-        self._space_down = False
 
     # ================================================================== chat
     def _mv_confirmar_chat(self):

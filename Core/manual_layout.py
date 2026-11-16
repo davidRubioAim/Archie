@@ -635,6 +635,9 @@ class ManualLayout:
             return False, "LOGO UNDER: each section needs at least one logo.", None
         L0, p0 = grid["L0"], grid["p"]
         L1 = L0 + grid["N"] * p0
+        # la rejilla nueva no sale del tramo (con pocos logos la deducida puede pasar del corner)
+        lo, hi = self._region(par) if not grid["compartida"] else (float(self.gl), float(self.W - self.gl))
+        L0, L1 = max(L0, lo), min(L1, hi)
         p = (L1 - L0) / float(N1)
         if p < grid["lw"]:
             return False, "No room for another logo in this section.", None

@@ -612,7 +612,7 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         self.lbl_sys_image.bind("<ButtonPress-1>", lambda e: self.on_drag_start(e, "sys"))
         self.lbl_sys_image.bind("<B1-Motion>", lambda e: self.on_drag_motion(e, "sys"))
         self.lbl_sys_image.bind("<ButtonRelease-1>", lambda e: self.on_drag_release(e, "sys"))
-        self._mv_build_ui()   # v0.71: botones Manual / Magnet / Reset / ? y clic derecho
+        self._mv_build_ui()   # v0.72: modo manual (clic sobre un elemento, botón ? y clic derecho)
         
         self.sys_image_container.bind("<Configure>", self.trigger_resize)
         self.preview_image_container.bind("<Configure>", self.trigger_resize)
@@ -771,6 +771,7 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         Restaura la distribución y configuración original calculada por Archie por defecto 
         para el estadio y los elementos importados actualmente, sin eliminar los archivos cargados [source: 6].
         """
+        self._mv_descartar()   # v0.72: el RESET también descarta el MODO MANUAL
         stadium_actual = self.stadium_selector_global.get()
         if stadium_actual and stadium_actual in self.stadium_data:
             # 1. Recargamos el perfil nativo del estadio desde stadium_data [source: 6]
