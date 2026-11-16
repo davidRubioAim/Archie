@@ -39,7 +39,9 @@ COL_ARCH_BG = (24, 24, 24)
 COL_TEXT = (255, 255, 255)
 COL_GUIDE = (200, 200, 200)
 
-PAN_ZOOM = 2.0          # zoom del paneo en el extremo del GLR (x1 en el centro)
+PAN_ZOOM_INI = 0.75     # v0.80: zoom al empezar, mirando al centro (x1 = el encuadre del círculo central + CB)
+PAN_ZOOM = 1.5          # zoom en el extremo del paneo, en el goal line right
+PAN_FIN_GLR = 0.75      # v0.80: hasta dónde llega el paneo por el GLR (0.5 = la portería, 1 = el final del GLR)
 TEX_MAX_PREVIEW = 16384  # ancho máximo de la textura de las vistas 3D
 REDUCING_GAP = 2.0      # resize rápido (reduce + bilinear) para la textura y la arquitectura
 PAN_BANDA_Y = 0.36      # altura (fracción desde arriba) a la que van las pantallas durante el paneo
@@ -198,15 +200,14 @@ class ComposicionPreview:
     def _preparar_pan(self):
         """v0.78: paneo desde la cámara 1 que sigue el recorrido del perímetro: del centro del touchline (CB) a la
         esquina y por el goal line right hasta su mitad, y vuelta. El objetivo de la cámara va siempre sobre las
-        pantallas, así los LED no salen nunca de cuadro. El zoom va de x1 (centro) a PAN_ZOOM (GLR) y vuelve a x1."""
+        pantallas, así los LED no salen nunca de cuadro. El zoom va de PAN_ZOOM_INI (centro) a PAN_ZOOM (GLR) y vuelve."""
         hl, hw, u, top = self.L / 2, self.W / 2, self.u, self.top
         r = 9.15 * u   # círculo central: el encuadre inicial lo incluye junto con el CB
         pts_a = [(x, 0.0, z) for x in (-r, r) for z in (-r, r)] + \
                 [(x, y, -hw) for x in (-0.16 * self.L, 0.16 * self.L) for y in (0.0, top)]
         self.fov_a = self._encuadre(self.e_main, pts_a, relleno=0.95)[1]
-        self.fov_b = math.degrees(2 * math.atan(math.tan(math.radians(self.fov_a) / 2) / PAN_ZOOM))
         self.tramo_tl = hl                                    # del centro del TL a la esquina derecha
-        self.tramo_glr = self.gl / 2.0 if self.gl > 0 else 0.0  # de la esquina a la mitad del GLR
+        self.tramo_glr = self.gl * PAN_FIN_GLR if self.gl > 0 else 0.0  # de la esquina a PAN_FIN_GLR del GLR
         self._preparar_trayectoria()
 
     def _punto_perimetro(self, s):
@@ -253,8 +254,8 @@ class ComposicionPreview:
         u = 0.5 - 0.5 * math.cos(2.0 * math.pi * t)                 # 0 -> 1 -> 0, velocidad suave
         yaw = self.yaw0 + (self.yaw1 - self.yaw0) * u
         pitch = float(np.interp(yaw, self.pan_rejilla, self.pan_pitch))
-        ta, tb = math.tan(math.radians(self.fov_a) / 2), math.tan(math.radians(self.fov_b) / 2)
-        tv = ta + (tb - ta) * u
+        zoom = PAN_ZOOM_INI + (PAN_ZOOM - PAN_ZOOM_INI) * u
+        tv = math.tan(math.radians(self.fov_a) / 2) / zoom
         e = self.e_main
         eye = self._cam1()
         o = (math.cos(pitch) * math.sin(yaw), math.sin(pitch), math.cos(pitch) * math.cos(yaw))   # objetivo -> ojo
