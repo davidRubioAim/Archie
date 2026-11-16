@@ -242,6 +242,182 @@ class Distribuidor:
           e.pop("offset_x", None)
           cx += e["width"] + hueco
 
+  # v0.70: puntuación de cada grupo de logos visibles según su sitio (menos es mejor; None = no vale)
+  _PUNTOS_GRUPO = {
+      "pequeno": {"sep": {2: 20, 3: 0, 4: 45, 5: 40}, "goal": {3: 10, 5: 0}, "centro": {3: 0, 5: 0},
+                  "cb": {2: 20, 3: 0, 4: 45, 5: 40}, "cerca": {2: 20, 3: 0}, "corner": {3: 0}},
+      "otro": {"sep": {1: 15, 2: 20, 3: 0}, "goal": {1: 10, 3: 0, 5: 20}, "centro": {1: 10, 3: 0, 5: 20},
+               "cb": {1: 10, 2: 20, 3: 0}, "cerca": {1: 10, 2: 20, 3: 0}, "corner": {1: 20, 2: 10, 3: 0}},
+  }
+
+  def _under_alineado(self, zonas, limites, hide):
+    """v0.70 (Logo Under con hotspots): en vez de una rejilla equidistante que no sabe dónde caen las ANIM
+    ZONES, cada tramo (GL, TL; sin CB el TL entero) es una rejilla de N celdas iguales y las ANIM ZONES ocupan
+    m celdas enteras. Así los logos bajo las ANIM ZONES quedan tapados del todo (se animan) y los de entre
+    medias se ven enteros. Se eligen N, m y cuántos logos se ven en cada hueco:
+      - logos pequeños: nunca 1 logo suelto; mejor impares (separadores 3 o 2, goal 5 o 3, centro 3 o 5,
+        corner del fondo exactamente 3 entre el GL y el TL);
+      - la menor compresión de las ANIM ZONES y una densidad parecida a la de Qty GL/TL Under.
+    Las ANIM ZONES (cantidad y orden) son las del reparto normal. -> True si se ha aplicado."""
+    if self.res_izq or self.res_der or self.goal_pos is not None or self.goal_line <= 0:
+      return False
+    w = float(self.logo_w)
+    aw = float(self.anim_w)
+    s_lim = max(0.0, min(0.5, float(self.config.get("stretch_limit") or 0) / 100.0))
+    clase = "pequeno" if w / float(self.h_total) < 2.2 else "otro"
+    puntos = self._PUNTOS_GRUPO[clase]
+    cb = self.cb_width > 0
+    gl, W = self.goal_line, self.w_total
+    if cb:
+      segs = [("ZONA_1",), ("ZONA_2",), ("ZONA_4",), ("ZONA_5",)]
+    else:
+      segs = [("ZONA_1",), ("ZONA_2", "ZONA_4"), ("ZONA_5",)]
+    qty = {"ZONA_1": self.config.get("qty_gl_under", 1), "ZONA_5": self.config.get("qty_gl_under", 1),
+           "ZONA_2": self.config.get("qty_tl_under", 1), "ZONA_4": self.config.get("qty_tl_under", 1)}
+
+    def tipo_borde(x):
+      if abs(x - 0) < 1 or abs(x - W) < 1:
+        return "nada" if hide else "cerca"
+      if abs(x - gl) < 2 or abs(x - (W - gl)) < 2:
+        return "corner"
+      return "cb"
+
+    info = []
+    for seg in segs:
+      L0, L1 = limites[seg[0]][0], limites[seg[-1]][1]
+      if L1 - L0 < w:
+        return False
+      anims = sorted((e for zn in seg for e in zonas[zn]["elementos"] if e["tipo"] == "anim_zone"),
+                     key=lambda e: e["x_absoluta"])
+      A = len(anims)
+      tipos = [tipo_borde(L0)]
+      for a, b in zip(anims, anims[1:]):
+        x0, x1 = a["x_absoluta"] + a["width"], b["x_absoluta"]
+        if x0 - 1 <= gl / 2.0 <= x1 + 1 or x0 - 1 <= W - gl / 2.0 <= x1 + 1:
+          tipos.append("goal")
+        elif not cb and x0 - 1 <= W / 2.0 <= x1 + 1:
+          tipos.append("centro")
+        else:
+          tipos.append("sep")
+      tipos.append(tipo_borde(L1))
+      if A == 0:
+        tipos = ["libre"]
+      p_obj = (L1 - L0) / float(max(1, sum(int(qty[zn] or 1) for zn in seg)))
+      info.append({"seg": seg, "L0": L0, "L1": L1, "anims": anims, "tipos": tipos, "p_obj": p_obj})
+
+    def opciones_de(t):
+      if t == "nada":
+        return {0: 0.0}
+      if t == "corner":
+        return {k: 0.0 for k in range(0, 4)}
+      return puntos[t]
+
+    def mejor_reparto(opciones, R):
+      """Reparto de R logos visibles entre los huecos con la menor puntuación, para cada (primer, último)
+      hueco (los de los corners se suman con el tramo de al lado). Mochila: lineal en huecos x R."""
+      res = {}
+      n = len(opciones)
+      if n == 1:
+        if R in opciones[0]:
+          res[(R, R)] = (opciones[0][R], [R])
+        return res
+      medio = opciones[1:-1]
+      # dp[r] = (coste, ks) para repartir r entre los huecos del medio
+      dp = {0: (0.0, [])}
+      for op in medio:
+        nd = {}
+        for r, (c, ks) in dp.items():
+          for k, v in op.items():
+            if r + k <= R and (r + k not in nd or c + v < nd[r + k][0] - 1e-9):
+              nd[r + k] = (c + v, ks + [k])
+        dp = nd
+      for kf, vf in opciones[0].items():
+        for kl, vl in opciones[-1].items():
+          r = R - kf - kl
+          if r in dp:
+            c, ks = dp[r]
+            res[(kf, kl)] = (vf + vl + c, [kf] + ks + [kl])
+      return res
+
+    def candidatos(it):
+      """-> {(logos del primer hueco, del último): (puntuación, N, m, ks)} con lo mejor de cada caso."""
+      L = it["L1"] - it["L0"]
+      A = len(it["anims"])
+      opciones = [opciones_de(t) for t in it["tipos"]] if A else []
+      res = {}
+      n_min = max(1, int(L // (w * 2.6)))
+      n_max = int(L // (w * 1.15))
+      for N in range(n_min, n_max + 1):
+        p = L / float(N)
+        dens = abs(p - it["p_obj"]) / it["p_obj"] * 100.0
+        if A == 0:
+          clave = (N, N)
+          if clave not in res or dens * 2.0 < res[clave][0]:
+            res[clave] = (dens * 2.0, N, 0, [N])
+          continue
+        for m in set([int(aw // p), int(aw // p) + 1]):
+          if m <= 0 or p * m > aw + 0.5 or p * m < aw * (1.0 - s_lim) - 0.5:
+            continue
+          R = N - A * m
+          if R < 0:
+            continue
+          base = (aw - p * m) / aw * 100.0 * 10.0 + dens * 2.0
+          for clave, (pts, ks) in mejor_reparto(opciones, R).items():
+            if clave not in res or base + pts < res[clave][0] - 1e-9:
+              res[clave] = (base + pts, N, m, ks)
+      return res
+
+    # programación dinámica a lo largo del strip: los corners del fondo suman el grupo de los dos tramos
+    corner_ok = puntos["corner"]
+    estados = {None: (0.0, [])}
+    for it in info:
+      cands = candidatos(it)
+      if not cands:
+        return False
+      nuevos = {}
+      for prev_k, (sc_prev, camino) in estados.items():
+        for (kf, kl), (sc, N, m, ks) in cands.items():
+          extra = 0.0
+          if it["tipos"][0] == "corner":
+            total = (prev_k or 0) + kf
+            if total not in corner_ok:
+              continue
+            extra = corner_ok[total]
+          last = kl if it["tipos"][-1] == "corner" else None
+          tot = sc_prev + sc + extra
+          if last not in nuevos or tot < nuevos[last][0] - 1e-9:
+            nuevos[last] = (tot, camino + [(N, m, ks)])
+      estados = nuevos
+      if not estados:
+        return False
+    _, mejor = min(estados.values(), key=lambda v: v[0])
+
+    # colocar: anims sobre celdas enteras, un logo por celda (bajo las anims se animan, entre medias se ven)
+    for zn in limites:
+      zonas[zn]["elementos"] = [e for e in zonas[zn]["elementos"] if e["tipo"] != "static_logo"]
+    zona_de = lambda x: next((zn for zn in ("ZONA_1", "ZONA_2", "ZONA_4", "ZONA_5")
+                              if zonas[zn]["x_inicio"] <= x < zonas[zn]["x_inicio"] + max(1, zonas[zn]["width"])),
+                             None)
+    for it, (N, m, ks) in zip(info, mejor):
+      L0 = it["L0"]
+      p = (it["L1"] - L0) / float(N)
+      celda = 0
+      for j, a in enumerate(it["anims"]):
+        celda += ks[j]
+        xa = int(round(L0 + p * celda))
+        a["x_absoluta"] = xa
+        a["width"] = max(1, int(round(L0 + p * (celda + m))) - xa)
+        a["offset_x"] = 0.0
+        celda += m
+      for i in range(N):
+        x = int(round(L0 + p * i + (p - w) / 2.0))
+        zn = zona_de(x + w / 2.0) or it["seg"][0]
+        zonas[zn]["elementos"].append({"tipo": "static_logo", "width": int(w), "x_absoluta": x})
+    for zn in limites:
+      # las anims de un tramo combinado (TL sin CB) se quedan en su zona original
+      pass
+    return True
+
   def _separadores_under(self, zonas, limites):
     """v0.69 (Logo Under): la rejilla equidistante de logos no sabe dónde caen las ANIM ZONES, y a veces todos
     los logos entre dos ANIM ZONES las pisan un poco: se animan para dejar ver la ANIM ZONE y no queda ningún
@@ -881,8 +1057,20 @@ class Distribuidor:
               gen_equi(lu_c2_end, lu_z5_end, N_gl)
           )
 
+          # v0.70: rejilla alineada con las ANIM ZONES y grupos de logos con cantidades fijas
+          limites_lu = {
+              "ZONA_1": (lu_z1_start, lu_c1_start), "ZONA_2": (lu_c1_end, tl_left_end),
+              "ZONA_4": (tl_right_start, lu_c2_start), "ZONA_5": (lu_c2_end, lu_z5_end)}
+          alineado = False
+          if self.config.get("even_spacing", False) and self.config.get("under_hotspots", False):
+            try:
+              alineado = self._under_alineado(zonas, limites_lu, hide_extreme_edges)
+            except Exception as e_al:
+              traceback.print_exc()
+              log_error(f"Logo Under alineado falló: {e_al}")
+              alineado = False
           # v0.69: entre dos ANIM ZONES siempre queda al menos un logo entero a la vista (frozen)
-          if self.config.get("even_spacing", False):
+          if self.config.get("even_spacing", False) and not alineado:
             self._separadores_under(zonas, {
                 "ZONA_1": (lu_z1_start, lu_c1_start), "ZONA_2": (lu_c1_end, tl_left_end),
                 "ZONA_4": (tl_right_start, lu_c2_start), "ZONA_5": (lu_c2_end, lu_z5_end)})
