@@ -1,10 +1,11 @@
 """
-v0.82: fondo de estadio para las previews a partir de PLATES (Assets/plates).
+v0.82 (v0.85): fondo de estadio para las previews a partir de PLATES (Assets/plates).
 
 Cada plate es una panorámica de un estadio tipo vista desde la CÁMARA 1, con su .json (cámara y medidas):
     plate_<nombre>.png            la imagen (esquemática o pasada por IA)
     plate_<nombre>.json           cámara (ojo, ejes r/u/f, focal) y medidas: touchline_m, goalline_m, led_alto_m
     plate_<nombre>_delante.png    (opcional) mate de lo que va DELANTE de las pantallas: porterías y banderines
+                                  (vale una silueta rellena: la opacidad de la red sale del brillo del plate)
     plate_<nombre>_led.png        (opcional, solo de control) mate del perímetro LED
 
 Archie elige el plate con la proporción TL/GL más parecida a la del estadio y reparte la diferencia:
@@ -36,7 +37,13 @@ REFLEJO_ALTO = 0.45        # largo del reflejo respecto al alto de la pantalla (
 REFLEJO_BLUR_H = 0.012     # desenfoque horizontal del reflejo (fracción del ancho de la vista)
 REFLEJO_BLUR_V = 0.022     # desenfoque vertical (fracción del alto): la hierba lo "arrastra" hacia abajo
 BRILLO_LED = 0.18          # halo de las pantallas (0 = sin halo)
-VERSION_CACHE = 1
+# v0.85: dentro del mate "delante" la opacidad sale del brillo del plate: los hilos de la red y los postes (claros)
+# tapan las pantallas y los huecos (la banda LED oscura que se ve a través de la red) dejan ver el LED.
+# Así el mate puede ser una silueta rellena de la portería, sin tener que dibujar cada hilo.
+DELANTE_LUM_MIN = 50       # por debajo (banda LED apagada del plate): transparente
+DELANTE_LUM_MAX = 150      # por encima (hilos, postes): opaco
+DELANTE_GAMMA = 0.7        # <1: hilos finos algo más presentes
+VERSION_CACHE = 2
 
 CARPETA_PLATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Assets", "plates")
 
@@ -170,7 +177,11 @@ class FondoPlate:
                 d = Image.open(self.meta["_delante"]).convert("L")
                 if d.size != self.src_cam.size:
                     d = d.resize(self.src_cam.size, Image.Resampling.BILINEAR)
-                self._src_del = np.asarray(d)[:, :, None]
+                m = np.asarray(d).astype(np.float32) / 255.0
+                lum = self._src.astype(np.float32).mean(axis=2)
+                k = np.clip((lum - DELANTE_LUM_MIN) / float(DELANTE_LUM_MAX - DELANTE_LUM_MIN), 0.0, 1.0)
+                a = m * k ** DELANTE_GAMMA
+                self._src_del = np.round(a * 255.0).astype(np.uint8)[:, :, None]
         return self._src, self._src_del
 
     def _coords_fuente(self, O, D):
@@ -206,9 +217,11 @@ class FondoPlate:
             src, sdel = self._fuente()
             return Image.fromarray(src, "RGB"), (Image.fromarray(sdel[:, :, 0], "L") if sdel is not None else None)
         st = os.stat(self.meta["_png"])
-        clave = "%s|%d|%d|%s|%s|%s|%d" % (os.path.basename(self.meta["_png"]), st.st_size, int(st.st_mtime),
-                                          np.round(self.esc, 5), np.round(self.cam.eye, 4),
-                                          self.meta.get("_delante"), VERSION_CACHE)
+        d = self.meta.get("_delante")
+        sd = os.stat(d) if d else None
+        clave = "%s|%d|%d|%s|%s|%s|%s|%d" % (os.path.basename(self.meta["_png"]), st.st_size, int(st.st_mtime),
+                                             np.round(self.esc, 5), np.round(self.cam.eye, 4), d,
+                                             (sd.st_size, int(sd.st_mtime)) if sd else None, VERSION_CACHE)
         base = os.path.join(_carpeta_cache(), hashlib.sha1(clave.encode()).hexdigest()[:20])
         p_img, p_del = base + ".png", base + "_delante.png"
         try:
