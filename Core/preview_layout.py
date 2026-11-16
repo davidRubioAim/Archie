@@ -20,6 +20,8 @@ import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
+
 from PIL import Image, ImageDraw, ImageFont
 
 from vista_3d import Escena3D, geometria_estadio
@@ -42,7 +44,8 @@ TEX_MAX_PREVIEW = 16384  # ancho máximo de la textura de las vistas 3D
 REDUCING_GAP = 2.0      # resize rápido (reduce + bilinear) para la textura y la arquitectura
 PAN_BANDA_Y = 0.36      # altura (fracción desde arriba) a la que van las pantallas durante el paneo
 SUPERSAMPLING = 2       # las vistas 3D se pintan al doble y se reducen: bordes sin dientes de sierra
-PAN_HOLD = 0.08          # fracción del ciclo quieta en cada extremo del paneo (centro y lado derecho)
+PAN_MUESTRAS = 400        # muestras de la trayectoria del paneo
+PAN_SUAVIZADO_ESQUINA = 0.06  # anchura (fracción del giro total) del redondeo de la esquina
 CAM1_ALTURA_M = 17.0    # cámara 1 (la de la tele): altura sobre el césped
 CAM1_DISTANCIA_M = 22.0  # cámara 1: distancia por detrás del touchline cercano, en el centro del campo
 FOV_MIN_PREVIEW, FOV_MAX_PREVIEW = 2.0, 70.0
@@ -204,6 +207,7 @@ class ComposicionPreview:
         self.fov_b = math.degrees(2 * math.atan(math.tan(math.radians(self.fov_a) / 2) / PAN_ZOOM))
         self.tramo_tl = hl                                    # del centro del TL a la esquina derecha
         self.tramo_glr = self.gl / 2.0 if self.gl > 0 else 0.0  # de la esquina a la mitad del GLR
+        self._preparar_trayectoria()
 
     def _punto_perimetro(self, s):
         """Punto (mundo, a media altura de las pantallas) a una fracción s del recorrido centro TL -> mitad GLR."""
@@ -214,16 +218,52 @@ class ComposicionPreview:
             return (d, y, -hw)
         return (hl, y, -hw + (d - self.tramo_tl))
 
+    def _preparar_trayectoria(self):
+        """v0.79: la trayectoria del paneo se define por el GIRO de la cámara (yaw) y no por la distancia recorrida
+        sobre el perímetro: así la velocidad angular es la que marca el ease. La inclinación (pitch) que sigue a
+        las pantallas tiene un pico en el corner (cambio de 90º del TL al GLR); se suaviza con una gaussiana sobre el
+        giro para que la cámara redondee la esquina sin perder los LED de cuadro."""
+        eye = self._cam1()
+        ys, ps = [], []
+        for i in range(PAN_MUESTRAS + 1):
+            P = self._punto_perimetro(i / float(PAN_MUESTRAS))
+            v = (eye[0] - P[0], eye[1] - P[1], eye[2] - P[2])
+            d = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2) or 1.0
+            ys.append(math.atan2(v[0] / d, v[2] / d))
+            ps.append(math.asin(max(-1.0, min(1.0, v[1] / d))))
+        ys, ps = np.array(ys), np.array(ps)
+        self.yaw0, self.yaw1 = float(ys[0]), float(ys[-1])   # mirando al centro del TL / a la mitad del GLR
+        orden = np.argsort(ys)
+        ys, ps = ys[orden], ps[orden]
+        rejilla = np.linspace(float(ys[0]), float(ys[-1]), PAN_MUESTRAS + 1)
+        pitch = np.interp(rejilla, ys, ps)
+        sigma = max(1.0, PAN_SUAVIZADO_ESQUINA * PAN_MUESTRAS)
+        k = np.arange(-int(3 * sigma), int(3 * sigma) + 1)
+        g = np.exp(-0.5 * (k / sigma) ** 2)
+        g /= g.sum()
+        pad = len(k) // 2
+        ext = np.concatenate([np.full(pad, pitch[0]), pitch, np.full(pad, pitch[-1])])
+        self.pan_rejilla = rejilla
+        self.pan_pitch = np.convolve(ext, g, mode="valid")
+
     def _camara_pan(self, t):
-        """t en [0, 1) a lo largo del contenido: centro -> GLR -> centro, con pausas en los extremos.
-        La cámara no se mueve: solo cambian hacia dónde mira (siguiendo el perímetro) y el zoom."""
-        tri = 1.0 - abs(2.0 * t - 1.0)                              # 0 -> 1 -> 0
-        s = _suave((tri - PAN_HOLD) / max(1e-6, 1.0 - 2 * PAN_HOLD))
+        """t en [0, 1) a lo largo del contenido: centro -> GLR -> centro.
+        v0.79: movimiento senoidal (ease in / ease out en los extremos, sin pausas: solo se para un instante para
+        dar la vuelta). La cámara no se mueve: solo cambian hacia dónde mira y el zoom."""
+        u = 0.5 - 0.5 * math.cos(2.0 * math.pi * t)                 # 0 -> 1 -> 0, velocidad suave
+        yaw = self.yaw0 + (self.yaw1 - self.yaw0) * u
+        pitch = float(np.interp(yaw, self.pan_rejilla, self.pan_pitch))
         ta, tb = math.tan(math.radians(self.fov_a) / 2), math.tan(math.radians(self.fov_b) / 2)
-        tv = ta + (tb - ta) * s
-        _apuntar(self.e_main, self._cam1(), self._punto_perimetro(s), math.degrees(2 * math.atan(tv)))
+        tv = ta + (tb - ta) * u
+        e = self.e_main
+        eye = self._cam1()
+        o = (math.cos(pitch) * math.sin(yaw), math.sin(pitch), math.cos(pitch) * math.cos(yaw))   # objetivo -> ojo
+        dist = self.L / 2
+        e.yaw, e.pitch, e.dist = yaw, pitch, dist
+        e.target = (eye[0] - o[0] * dist, eye[1] - o[1] * dist, eye[2] - o[2] * dist)
+        e.fov = math.degrees(2 * math.atan(tv))
         # las pantallas quedan a PAN_BANDA_Y del alto (desde arriba): se ve el campo debajo
-        self.e_main.rotar_camara(0.0, math.atan((0.5 - PAN_BANDA_Y) * 2 * tv))
+        e.rotar_camara(0.0, math.atan((0.5 - PAN_BANDA_Y) * 2 * tv))
 
     # ------------------------------------------------------------ DETAIL
     def _centro_detail(self):
