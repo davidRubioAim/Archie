@@ -41,7 +41,7 @@ COL_GUIDE = (200, 200, 200)
 
 PAN_ZOOM_INI = 0.75     # v0.80: zoom al empezar, mirando al centro (x1 = el encuadre del círculo central + CB)
 PAN_ZOOM = 1.5          # zoom en el extremo del paneo, en el goal line right
-PAN_FIN_GLR = 0.75      # v0.80: hasta dónde llega el paneo por el GLR (0.5 = la portería, 1 = el final del GLR)
+PAN_FIN_GLR = 0.5       # v0.81: el paneo termina centrado en la portería derecha (0.5 = la portería, 1 = el final del GLR)
 TEX_MAX_PREVIEW = 16384  # ancho máximo de la textura de las vistas 3D
 REDUCING_GAP = 2.0      # resize rápido (reduce + bilinear) para la textura y la arquitectura
 PAN_BANDA_Y = 0.36      # altura (fracción desde arriba) a la que van las pantallas durante el paneo
