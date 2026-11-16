@@ -30,6 +30,7 @@ import hotspot_solver  # v0.61: auto-solver por hotspots + referencias JSON apro
 from campaign_panel import CampaignPanel  # v0.58: pestaña CAMPAIGNS (batch de campañas por estadio)
 from video_player import PreviewPlayer, PhotoTarget, Escena, Vista, PLAYER_FPS
 from vista_3d import Visor3D, geometria_estadio, escala_textura
+from manual_mode import ManualModeMixin  # v0.71: MODO MANUAL en la Architecture Preview
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -134,7 +135,7 @@ class CTkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
         super().__init__(*args, **kwargs)
         self.TkdndVersion = TkinterDnD._require(self)
 
-class MegaStripApp(CTkDnD):
+class MegaStripApp(ManualModeMixin, CTkDnD):
     def _set_window_icon(self):
         """Icono de ventana y barra de tareas a partir de Assets/logo_Archie.ico.
         No se usa iconbitmap(): el lector de .ico de Tk no entiende las capas guardadas como PNG (lo habitual en .ico
@@ -156,6 +157,7 @@ class MegaStripApp(CTkDnD):
 
     def __init__(self):
         super().__init__()
+        self._mv_init_state()   # v0.71
         
         # 1. Obtener versión dinámica al inicio
         self.current_version_str = obtener_version_local()
@@ -610,6 +612,7 @@ class MegaStripApp(CTkDnD):
         self.lbl_sys_image.bind("<ButtonPress-1>", lambda e: self.on_drag_start(e, "sys"))
         self.lbl_sys_image.bind("<B1-Motion>", lambda e: self.on_drag_motion(e, "sys"))
         self.lbl_sys_image.bind("<ButtonRelease-1>", lambda e: self.on_drag_release(e, "sys"))
+        self._mv_build_ui()   # v0.71: botones Manual / Magnet / Reset / ? y clic derecho
         
         self.sys_image_container.bind("<Configure>", self.trigger_resize)
         self.preview_image_container.bind("<Configure>", self.trigger_resize)
@@ -812,7 +815,8 @@ class MegaStripApp(CTkDnD):
                 "logo_under": self.logo_under_var.get(),
                 "amplify": self.amplify_var.get(),
                 "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get()
-            }
+            },
+            "manual": self._mv_estado(),   # v0.71: arquitectura del MODO MANUAL (None = automático)
         }
 
     def _apply_ui_state(self, state):
@@ -862,6 +866,7 @@ class MegaStripApp(CTkDnD):
         # 4. Disparar lógica de UI anidada
         self.toggle_logo_under_mode()
         self.on_amplify_toggle()
+        self._mv_restaurar(state.get("manual"))   # v0.71
 
     def save_history_state(self, event=None):
         if not hasattr(self, "last_saved_state") or self.last_saved_state is None:
@@ -1256,6 +1261,7 @@ class MegaStripApp(CTkDnD):
     def _on_solver_done(self, gen, slider_args, msg):
         if gen != self.solver_gen: return  # el usuario pulsó Cancel: no tocar nada
         self.solver_busy = False
+        self._mv_descartar("Manual layout discarded: new default architecture.")   # v0.71
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
         self.arch_key = self.solver_key = self._arch_key()   # v0.66
@@ -1420,6 +1426,7 @@ class MegaStripApp(CTkDnD):
     def send_ai_message(self):
         user_text = self.chat_input.get().strip()
         if not user_text: return
+        if not self._mv_confirmar_chat(): return   # v0.71: el chat no pisa el MODO MANUAL sin preguntar
         self.chat_input.delete(0, 'end')
         self.append_chat("You", user_text)
         
@@ -2071,6 +2078,7 @@ class MegaStripApp(CTkDnD):
 
     def cargar_archivos_campana(self, files):
         """Pone los ELEMENTS de una campaña en las zonas de FILES (sin autoimport: ya vienen clasificados)."""
+        self._mv_descartar()   # v0.71: otra campaña -> modo automático
         files = files or {}
         anims = [a for a in files.get("anim_zones") or [] if a] or ([files["anim_zone"]] if files.get("anim_zone") else [])
         self.archivos_cargados = {
@@ -2092,6 +2100,7 @@ class MegaStripApp(CTkDnD):
 
     def aplicar_config_campana(self, cfg):
         """Carga en Manual Edit la arquitectura guardada de una campaña y la pinta."""
+        self._mv_descartar()   # v0.71
         self.current_hide_edges = bool(cfg.get("hide_extreme_edges", False))
         self.current_under_hotspots = bool(cfg.get("under_hotspots", False))  # JSON antiguos: como antes
         self.current_even_spacing = bool(cfg.get("even_spacing", False))      # v0.62 (JSON antiguos: como antes)
@@ -2129,6 +2138,7 @@ class MegaStripApp(CTkDnD):
             
             config = self._config_ui()
             res = calcular_layout_data(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, config)
+            res = self._mv_aplicar(res)   # v0.71: arquitectura en MODO MANUAL (si la hay)
             if res:
                 res["config"] = config
                 res["fps"] = self.fps_actual()  # v0.57: fps del render, de la columna FPS de la hoja
@@ -2168,6 +2178,7 @@ class MegaStripApp(CTkDnD):
     def trigger_update(self, event=None, *args):
         """Marca la preview como pendiente y, si ya hay arquitectura, la recalcula sola tras una pausa corta."""
         if not hasattr(self, "lbl_preview_status"): return
+        self._mv_check_firma()   # v0.71: otro estadio / tamaño / ELEMENTS -> vuelta al modo automático
         if getattr(self, "campaign_panel", None): self.campaign_panel.on_ui_change()  # v0.58
         self.preview_dirty = True
         self.player.interrupt()  # pausa mientras se tocan parámetros; reanuda al soltar
@@ -2284,7 +2295,7 @@ class MegaStripApp(CTkDnD):
             if self._shown_strip_player:
                 self.player_show(self._shown_strip)
             else:
-                self._pintar_label(self.lbl_live_preview, self._shown_strip)
+                self._pintar_label(self.lbl_live_preview, self._mv_decorar(self._shown_strip))
         if self._shown_sys is not None:
             if self._shown_sys_player:
                 self.sys_player_show(self._shown_sys)
@@ -2429,6 +2440,7 @@ class MegaStripApp(CTkDnD):
 
         self.render_gen += 1
         gen = self.render_gen
+        self._render_datos = (gen, datos)   # v0.71: lo que se va a ver (para el modo manual)
         self.preview_dirty = False
         first_idx = self.preview_current_idx if 0 <= self.preview_current_idx < PREVIEW_FRAMES else 0
         self.btn_create_arch.configure(state="disabled", text="✨ Building Preview...")
@@ -2484,6 +2496,8 @@ class MegaStripApp(CTkDnD):
 
     def _on_first_preview_frame(self, gen, idx, res, sys_canvas, strip3d=None, p=None):
         if gen != self.render_gen: return
+        rd = getattr(self, "_render_datos", None)
+        if rd and rd[0] == gen: self._disp_datos = rd[1]   # v0.71
         self.pil_preview_images = [None] * PREVIEW_FRAMES
         self.pil_sys_images = [None] * PREVIEW_FRAMES
         self.pil_strip3d_images = [None] * PREVIEW_FRAMES
@@ -2513,10 +2527,11 @@ class MegaStripApp(CTkDnD):
 
     def _update_preview_status_label(self):
         if self.preview_dirty: return  # no pisar el aviso de cambios pendientes
+        manual = " · ✋ MANUAL" if self.manual is not None else ""   # v0.71
         if self.preview_frames_ready < PREVIEW_FRAMES:
-            self.lbl_preview_status.configure(text=f"ARCHITECTURE PREVIEW (Updated · loading frames {self.preview_frames_ready}/{PREVIEW_FRAMES})", text_color=self.c_magenta)
+            self.lbl_preview_status.configure(text=f"ARCHITECTURE PREVIEW (Updated{manual} · loading frames {self.preview_frames_ready}/{PREVIEW_FRAMES})", text_color=self.c_magenta)
         else:
-            self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Updated)", text_color=self.c_magenta)
+            self.lbl_preview_status.configure(text=f"ARCHITECTURE PREVIEW (Updated{manual})", text_color=self.c_magenta)
 
     def _on_preview_error(self, gen, e):
         if gen != self.render_gen: return
@@ -2906,6 +2921,7 @@ class MegaStripApp(CTkDnD):
             w = getattr(self, attr, None)
             if w is not None and w.winfo_exists(): w.destroy()
         self._shown_strip, self._shown_strip_player = img, True
+        img = self._mv_decorar(img)   # v0.71: contornos del modo manual
         self._player_target.show(self.lbl_live_preview._label, self._oscurecer(img) if self.loading_overlay_on else img)
 
     @staticmethod
@@ -3051,7 +3067,7 @@ class MegaStripApp(CTkDnD):
                 img_strip, self.zoom_factor_strip, self.pan_x_strip, self.pan_y_strip, cw_strip, ch_strip
             )
             self._shown_strip, self._shown_strip_player = final_strip, False
-            self._pintar_label(self.lbl_live_preview, final_strip)
+            self._pintar_label(self.lbl_live_preview, self._mv_decorar(final_strip))   # v0.71: contornos del modo manual
 
         if not (self.player.engaged and self.player.ready):
             self._refrescar_3d()  # v0.46: key frame actual en 3D PREVIEW (con el reproductor lo pinta player.render)
@@ -3115,11 +3131,13 @@ class MegaStripApp(CTkDnD):
         self.actualizar_imagen_preview()
 
     def on_drag_start(self, event, view_type):
+        if view_type == "strip" and self._mv_press(event): return   # v0.71: modo manual
         self.drag_start_x = event.x_root
         self.drag_start_y = event.y_root
         self.is_dragging = False
         
     def on_drag_motion(self, event, view_type):
+        if view_type == "strip" and self._mv_motion(event): return
         dx = event.x_root - self.drag_start_x
         dy = event.y_root - self.drag_start_y
         
@@ -3140,6 +3158,7 @@ class MegaStripApp(CTkDnD):
             self.actualizar_imagen_preview()
 
     def on_drag_release(self, event, view_type):
+        if view_type == "strip" and self._mv_release(event): return
         if not self.is_dragging:
             if self.player.engaged and self.player.ready:
                 self.player.toggle()  # clic en cualquiera de las dos previews: play / pausa
