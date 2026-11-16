@@ -312,14 +312,15 @@ class QueueManager:
         if not data: return
         
         self.cancel_render_flag = False
-        self.app.lbl_overlay_title.configure(text="RENDERING DIRECT FILE...", text_color=self.app.c_magenta)
+        titulo = "RENDERING PREVIEW..." if render_type == "PREVIEW" else "RENDERING DIRECT FILE..."
+        self.app.lbl_overlay_title.configure(text=titulo, text_color=self.app.c_magenta)
         self.app.overlay_frame.lift()
         self.app.overlay_frame.place(relx=0.5, rely=0.5, relwidth=1, relheight=1, anchor="center")
         self.app.overlay_bar.set(0)
         self.app.lbl_overlay_status.configure(text="Starting video engine...", text_color="gray")
         self.app.btn_overlay_cancel.configure(text="Cancel Render", state="normal", fg_color="#C0392B", hover_color="#E74C3C", command=self.cancel_direct_render)
         
-        ext = ".mp4" if render_type == "SYSTEM" else ".mov"
+        ext = ".mp4" if render_type in ("SYSTEM", "PREVIEW") else ".mov"
         out_dir = self.app.output_path_var.get()
         base_name = self.app.output_filename_var.get().strip()
         preset = self.app.stadium_selector_global.get()
@@ -361,7 +362,10 @@ class QueueManager:
             self.app.after(0, lambda p=percent, s=status_str: self.update_overlay_ui(s, p))
             
         try:
-            if render_type == "MEGASTRIP": 
+            if render_type == "PREVIEW":   # v0.77: botón Render Preview
+                renderizar_preview_3d(json_path, out_path, progress_callback=update_progress,
+                                      cancel_check=lambda: self.cancel_render_flag)
+            elif render_type == "MEGASTRIP": 
                 renderizar_megastrip(json_path, out_path, progress_callback=update_progress, cancel_check=lambda: self.cancel_render_flag)
             else: 
                 renderizar_system_file(json_path, out_path, progress_callback=update_progress, cancel_check=lambda: self.cancel_render_flag, row_target="1ST_ROW")

@@ -413,8 +413,8 @@ def _probar_encoder(codec, args):
             pass
 
 
-def _hw_args(codec):
-    rate = ["-b:v", SYSTEM_BITRATE, "-minrate", SYSTEM_BITRATE, "-maxrate", SYSTEM_BITRATE, "-bufsize", SYSTEM_BUFSIZE]
+def _hw_args(codec, bitrate=SYSTEM_BITRATE, bufsize=SYSTEM_BUFSIZE):
+    rate = ["-b:v", bitrate, "-minrate", bitrate, "-maxrate", bitrate, "-bufsize", bufsize]
     if codec == "h264_nvenc":
         return ["-preset", "p4", "-rc", "cbr", *rate, "-pix_fmt", "yuv420p", *args_rec709("yuv420p")]
     if codec == "h264_qsv":
@@ -441,14 +441,14 @@ def elegir_encoder():
     return _hw_cache["auto"]
 
 
-def _cmd_encoder(codec, w, h, fps, out):
+def _cmd_encoder(codec, w, h, fps, out, bitrate=SYSTEM_BITRATE, bufsize=SYSTEM_BUFSIZE, x264_preset=X264_PRESET):
     head = [FFMPEG_BINARY, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps),
             "-i", "-", "-an"]
     if codec == "libx264":
-        enc = ["-c:v", "libx264", "-preset", X264_PRESET, "-b:v", SYSTEM_BITRATE, "-minrate", SYSTEM_BITRATE,
-               "-maxrate", SYSTEM_BITRATE, "-bufsize", SYSTEM_BUFSIZE, "-pix_fmt", "yuv420p", *args_rec709("yuv420p")]
+        enc = ["-c:v", "libx264", "-preset", x264_preset, "-b:v", bitrate, "-minrate", bitrate,
+               "-maxrate", bitrate, "-bufsize", bufsize, "-pix_fmt", "yuv420p", *args_rec709("yuv420p")]
     else:
-        enc = ["-c:v", codec, *_hw_args(codec)]
+        enc = ["-c:v", codec, *_hw_args(codec, bitrate, bufsize)]
     return head + enc + [out]
 
 
@@ -502,14 +502,14 @@ class _Encoder:
 
 
 # ---------------------------------------------------------------- Render
-def _render(escena, out, w, h, make_frame, progress_callback, cancel_check):
+def _render(escena, out, w, h, make_frame, progress_callback, cancel_check, **enc_kw):
     codecs = [elegir_encoder()]
     if codecs[0] != "libx264":
         codecs.append("libx264")
     n = escena.n_frames
     frames = escena.frames()
     for intento, codec in enumerate(codecs):
-        enc = _Encoder(_cmd_encoder(codec, w, h, escena.fps, out))
+        enc = _Encoder(_cmd_encoder(codec, w, h, escena.fps, out, **enc_kw))
         last_pct = -1.0
         try:
             for i in range(n):
@@ -617,82 +617,45 @@ def renderizar_system_file(json_path, output_filename, progress_callback=None, c
 # ---------------------------------------------------------------- v0.58: previsualización 3D (campañas)
 PREVIEW3D_SIZE = (1920, 1080)
 PREVIEW3D_FPS = 25
-
-
-def _fuente_titulo(px):
-    from PIL import ImageFont
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for cand in (os.path.join(base, "Assets", "Montserrat-Bold.ttf"),
-                 os.path.join(os.path.dirname(os.path.dirname(base)), "Assets", "Montserrat-Bold.ttf")):
-        if os.path.isfile(cand):
-            try:
-                return ImageFont.truetype(cand, px)
-            except Exception:
-                pass
-    try:
-        return ImageFont.load_default(size=px)
-    except TypeError:   # Pillow < 10.1
-        return ImageFont.load_default()
+# v0.77: la preview es solo para validar: algo más de compresión y el preset más rápido de x264
+PREVIEW3D_BITRATE = "8000k"
+PREVIEW3D_BUFSIZE = "16000k"
+PREVIEW3D_X264_PRESET = "superfast"
 
 
 def renderizar_preview_3d(json_path, output_filename, progress_callback=None, cancel_check=None,
-                          size=PREVIEW3D_SIZE, titulo=None, filas_planas=6):
-    """Vídeo MP4 de validación de una campaña: arriba la maqueta 3D del estadio (la misma vista inicial que
-    3D PREVIEW) y abajo el strip completo en plano, partido en `filas_planas` filas.
+                          size=PREVIEW3D_SIZE, titulo=None, filas_planas=None):
+    """Vídeo MP4 de validación de una campaña (v0.77: distribución de la preview de referencia "Single Row"):
+    3D PREVIEW con una cámara que panea del centro al lado derecho y vuelve, a su derecha CORNER y GOAL,
+    debajo DETAIL (la ANIM ZONE justo a la derecha del CB) y abajo la arquitectura (GOALLINE LEFT, TOUCHLINE,
+    GOALLINE RIGHT) con sus rótulos. La composición está en preview_layout.ComposicionPreview.
 
     Usa la misma escena que el System File (mismos decodificadores y composición) y vista_3d.Escena3D
     (PIL puro, sin ventana) para proyectar cada frame. Se renderiza a 25 fps: es solo para validar.
+    `filas_planas` ya no se usa (se mantiene por compatibilidad).
     """
-    from PIL import ImageDraw
-    from vista_3d import Escena3D, geometria_estadio, escala_textura
+    from preview_layout import ComposicionPreview
 
     with open(json_path, "r", encoding="utf-8") as f:
         datos = json.load(f)
     escena = _Escena(datos, PREVIEW3D_FPS)
+    comp = None
     try:
         W_out, H_out = size
-        w_total, h_total = escena.w, escena.h
-        pad = max(8, H_out // 54)
-
-        # Strip en plano: n filas del ancho útil
-        n = max(1, int(filas_planas))
-        row_w = W_out - 2 * pad
-        row_h = max(2, int(round(h_total * row_w * n / float(w_total))))
-        gap = max(4, pad // 2)
-        flat_h = n * row_h + (n - 1) * gap if n else 0
-        alto_3d = H_out - flat_h - 2 * pad if n else H_out
-
-        goal_line = datos["zonas"]["ZONA_1"]["width"]
-        amplify = bool(datos.get("config", {}).get("amplify", False))
-        L, W, bandas = geometria_estadio(w_total, goal_line, h_total, amplify)
-        e3d = Escena3D()
-        e3d.size = (W_out, alto_3d)
-        e3d.set_scene(L, W, bandas, reset=True)
-        k = escala_textura(w_total)
-        tex_size = (max(1, int(round(w_total * k))), max(1, int(round(h_total * k))))
-
-        if titulo is None:
-            meta = datos.get("archie") or {}
-            titulo = "  ·  ".join(t for t in (meta.get("campaign"), meta.get("stadium")) if t)
-        font = _fuente_titulo(max(14, H_out // 40))
-        lienzo = Image.new("RGB", (W_out, H_out), (38, 40, 44))
+        comp = ComposicionPreview(datos, escena.w, escena.h, size=(W_out, H_out), titulo=titulo)
+        n_frames = max(1, escena.n_frames)
+        contador = [0]
 
         def make_frame(strip):
-            tex = strip.resize(tex_size, Image.Resampling.BILINEAR) if k < 1.0 else strip
-            e3d.set_strip(tex, w_total, h_total)
-            lienzo.paste(e3d.render(smooth=True).convert("RGB"), (0, 0))
-            if n:
-                plano = strip.resize((row_w * n, row_h), Image.Resampling.BILINEAR)
-                y = alto_3d + pad
-                for i in range(n):
-                    lienzo.paste(plano.crop((i * row_w, 0, (i + 1) * row_w, row_h)), (pad, y))
-                    y += row_h + gap
-            if titulo:
-                ImageDraw.Draw(lienzo).text((pad * 2, pad * 2), titulo, fill=(255, 255, 255), font=font)
-            return lienzo.tobytes()
+            t = (contador[0] % n_frames) / float(n_frames)   # si se repite con libx264 vuelve a empezar
+            contador[0] += 1
+            return comp.frame(strip, t).tobytes()
 
-        debug(f"[Render rápido] PREVIEW 3D {W_out}x{H_out} @ {PREVIEW3D_FPS} fps, textura {tex_size}, "
-              f"{n} filas planas de {row_h}px")
-        _render(escena, output_filename, W_out, H_out, make_frame, progress_callback, cancel_check)
+        debug(f"[Render rápido] PREVIEW 3D {W_out}x{H_out} @ {PREVIEW3D_FPS} fps, textura {comp.tex_size}, "
+              f"{n_frames} frames")
+        _render(escena, output_filename, W_out, H_out, make_frame, progress_callback, cancel_check,
+                bitrate=PREVIEW3D_BITRATE, bufsize=PREVIEW3D_BUFSIZE, x264_preset=PREVIEW3D_X264_PRESET)
     finally:
+        if comp is not None:
+            comp.close()
         escena.close()

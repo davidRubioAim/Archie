@@ -653,6 +653,7 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         self.btn_frame.grid_columnconfigure(0, weight=1)
         self.btn_frame.grid_columnconfigure(1, weight=1)
         self.btn_frame.grid_columnconfigure(2, weight=1)
+        self.btn_frame.grid_columnconfigure(3, weight=1)  # v0.77: Render Preview
 
         self.left_btn_frame = ctk.CTkFrame(self.btn_frame, fg_color="transparent")
         self.left_btn_frame.grid(row=0, column=0, sticky="ew", padx=(0, 5))
@@ -703,6 +704,23 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
             hover_color="#D1007A", 
             command=lambda: self.queue_manager.run_direct_render("SYSTEM")
         ).grid(row=0, column=1, sticky="ew")
+
+        # v0.77: Render Preview (vídeo 3D_PREVIEW: 3D desde la cámara 1, CORNER, GOAL, DETAIL y arquitectura)
+        self.preview_btn_frame = ctk.CTkFrame(self.btn_frame, fg_color="transparent")
+        self.preview_btn_frame.grid(row=0, column=3, sticky="ew", padx=(10, 0))
+        self.preview_btn_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkButton(
+            self.preview_btn_frame,
+            text="Render Preview",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=35,
+            fg_color="#2b2b2b",
+            hover_color="#404040",
+            border_width=2,
+            border_color=self.c_magenta,
+            text_color=self.c_white,
+            command=lambda: self.queue_manager.run_direct_render("PREVIEW")
+        ).grid(row=0, column=0, sticky="ew")
 
         # --- CONTENEDOR EXCLUSIVO PARA QUEUE MANAGER (Ocupa todo el ancho cuando está visible) ---
         self.bottom_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent", width=0, height=0)
