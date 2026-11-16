@@ -31,7 +31,10 @@ from vista_3d import Escena3D, _v_cross, _v_dot, _v_sub
 PLATE_UNICO = "plate_A_ancho"   # v0.83: todos los estadios usan este plate (None = el de proporción más parecida)
 REPARTO_FONDO = 0.3        # parte de la diferencia de proporción que absorbe el plate (squeeze de la imagen);
                            # el resto lo absorbe el perímetro, que se adapta al plate
-REFLEJO_LED = 0.0          # v0.83: sin reflejo de las pantallas en el césped (parecía plástico y parpadeaba)
+REFLEJO_LED = 0.9          # v0.84: intensidad del reflejo de las pantallas en el césped (0 = sin reflejo)
+REFLEJO_ALTO = 0.45        # largo del reflejo respecto al alto de la pantalla (corto: pegado al LED)
+REFLEJO_BLUR_H = 0.012     # desenfoque horizontal del reflejo (fracción del ancho de la vista)
+REFLEJO_BLUR_V = 0.022     # desenfoque vertical (fracción del alto): la hierba lo "arrastra" hacia abajo
 BRILLO_LED = 0.18          # halo de las pantallas (0 = sin halo)
 VERSION_CACHE = 1
 
@@ -312,6 +315,33 @@ class FondoPlate:
 # ---------------------------------------------------------------- pantallas sobre el fondo
 _LUTS = {}
 _NEGROS = {}
+_REFLEJO_TEX = {}
+_GRADIENTES = {}
+_LUT_CESPED = [min(255, int(v * 2.4)) for v in range(256)]   # luminancia del césped (~100) -> ~240
+
+
+def _blur_aniso(img, rx, ry):
+    """Desenfoque con radio distinto en horizontal y vertical (dos pasadas de caja ~ gaussiana)."""
+    try:
+        f = ImageFilter.BoxBlur((rx, ry))
+        return img.filter(f).filter(f)
+    except TypeError:          # Pillow antiguo: sin radio por eje, se aproxima reduciendo en vertical
+        w, h = img.size
+        k = max(1.0, ry / max(rx, 1e-3))
+        peq = img.resize((w, max(2, int(h / k))), Image.Resampling.BOX).filter(ImageFilter.BoxBlur(rx)).filter(
+            ImageFilter.BoxBlur(rx))
+        return peq.resize((w, h), Image.Resampling.BILINEAR)
+
+
+def _gradiente_reflejo(size):
+    """Degradado vertical de la textura reflejada: 0 arriba (lejos del suelo en el espejo) -> 1 abajo (junto al LED)."""
+    if size not in _GRADIENTES:
+        w, h = size
+        t = (np.arange(h, dtype=np.float32) + 0.5) / h
+        col = (np.clip(t, 0, 1) ** 1.2 * 255).astype(np.uint8)
+        g = Image.fromarray(np.repeat(col[:, None], w, axis=1), "L")
+        _GRADIENTES[size] = Image.merge("RGB", (g, g, g))
+    return _GRADIENTES[size]
 
 
 def _lut(f):
@@ -330,7 +360,7 @@ class EscenaLED(Escena3D):
     """Escena3D que solo pinta las pantallas, sobre un fondo dado, con reflejo en el césped y halo.
     Sin fondo (render normal) se comporta igual que Escena3D."""
 
-    def _bandas(self, img, cam, espejo=False, mascara=None):
+    def _bandas(self, img, cam, espejo=False, mascara=None, esc_espejo=1.0):
         near = self._near()
         eye = cam[0]
         chunk_len = max(self.L, self.W) / 32
@@ -339,7 +369,9 @@ class EscenaLED(Escena3D):
             o, d = self._side_geom(b["side"])
             n_in = _v_cross(d, (0.0, 1.0, 0.0))
             K = max(1, math.ceil(b["length"] / chunk_len))
-            y0, y1 = (b["y0"], b["y1"]) if not espejo else (-b["y0"], -b["y1"])
+            if espejo and b["y0"] > 0:
+                continue                      # con AMPLIFY solo se refleja la 1st row (la que toca el suelo)
+            y0, y1 = (b["y0"], b["y1"]) if not espejo else (-b["y0"] * esc_espejo, -b["y1"] * esc_espejo)
             for k in range(K):
                 s0 = b["along"] + b["length"] * k / K
                 s1 = b["along"] + b["length"] * (k + 1) / K
@@ -373,6 +405,55 @@ class EscenaLED(Escena3D):
             if dm is not None:
                 dm.polygon(dst, fill=255)
 
+    def _reflejo(self, fondo):
+        """v0.84: reflejo de las pantallas en el césped.
+        - Las pantallas se reflejan en el suelo (espejo bajo la línea del suelo), pero cortas (REFLEJO_ALTO) y
+          con un degradado que se apaga al alejarse del LED: queda pegado a la pantalla.
+        - Se pinta a tamaño final y se reduce con media por cajas, nunca a resolución baja: así no parpadea.
+        - Desenfoque mucho mayor en vertical que en horizontal (la hierba difumina la luz hacia abajo) y se
+          modula con la luz del propio césped (franjas de corte, textura): no parece plástico ni hielo."""
+        w, h = fondo.size
+        # texturas del reflejo: reducidas en horizontal (van muy desenfocadas) y con el degradado ya aplicado
+        tex_ref = {}
+        for key, t in self.tex.items():
+            cache = _REFLEJO_TEX.get(key)
+            if cache is not None and cache[0] is t:
+                tex_ref[key] = cache[1]
+                continue
+            pq = t.resize((max(2, t.width // 16), max(2, t.height // 2)), Image.Resampling.BOX)
+            grad = _gradiente_reflejo(pq.size)
+            r = ImageChops.multiply(pq, grad)
+            _REFLEJO_TEX[key] = (t, r)
+            tex_ref[key] = r
+        tam, tex = self.size, self.tex
+        self.size, self.tex = (w, h), tex_ref
+        try:
+            ref = Image.new("RGB", (w, h), (0, 0, 0))
+            soporte = Image.new("L", (w, h), 0)
+            self._bandas(ref, self._camera(), espejo=True, mascara=soporte, esc_espejo=REFLEJO_ALTO)
+        finally:
+            self.size, self.tex = tam, tex
+        # todo lo demás a media resolución (el reflejo va muy desenfocado): se reduce con media por cajas
+        mw, mh = max(8, w // 2), max(8, h // 2)
+        ref = ref.resize((mw, mh), Image.Resampling.BOX)
+        soporte = soporte.resize((mw, mh), Image.Resampling.BOX)
+        # desenfoque anisótropo (mucho más en vertical), normalizado con el propio soporte: el color no se
+        # diluye con el negro de alrededor y el borde queda suave
+        rx = max(1.0, REFLEJO_BLUR_H * mw)
+        ry = max(1.0, REFLEJO_BLUR_V * mh)
+        r = np.asarray(_blur_aniso(ref, rx, ry), np.float32)
+        sp = np.asarray(_blur_aniso(soporte, rx, ry), np.float32)[:, :, None] / 255.0
+        alfa = np.clip(sp * 1.6, 0.0, 1.0)
+        # solo por debajo del borde inferior de las pantallas: el desenfoque no sube a las pantallas ni a la grada
+        m = np.asarray(soporte) > 8
+        primera = np.where(m.any(axis=0), m.argmax(axis=0), mh)
+        alfa = alfa * (np.arange(mh)[:, None] >= primera[None, :])[:, :, None]
+        # integración con el césped: el reflejo solo se ve donde la hierba devuelve luz (franjas, textura)
+        lum = np.asarray(fondo.resize((mw, mh), Image.Resampling.BOX).convert("L"), np.float32)[:, :, None]
+        lum = np.minimum(lum * (2.4 / 255.0), 1.0)
+        col = r / np.maximum(sp, 0.08) * alfa * lum * REFLEJO_LED
+        return Image.fromarray(np.clip(col, 0, 255).astype(np.uint8), "RGB").resize((w, h), Image.Resampling.BILINEAR)
+
     def render_sobre(self, fondo, delantera=None):
         """Pantallas (pintadas al tamaño de la escena, con supersampling) sobre `fondo`, que ya está al tamaño
         final. Devuelve PIL RGB del tamaño de `fondo`."""
@@ -385,25 +466,14 @@ class EscenaLED(Escena3D):
             led, mascara = led.reduce(k), mascara.reduce(k)
         if led.size != fondo.size:
             led, mascara = led.resize(fondo.size), mascara.resize(fondo.size)
-        # reflejo en el césped y halo: muy desenfocados, se calculan a 1/4 del tamaño y se suman de una vez
-        peq = (max(8, fondo.size[0] // 4), max(8, fondo.size[1] // 4))
-        luz = None
-        if REFLEJO_LED > 0:
-            tam = self.size
-            self.size = peq
-            try:
-                ref = Image.new("RGB", peq, (0, 0, 0))
-                self._bandas(ref, self._camera(), espejo=True)
-            finally:
-                self.size = tam
-            luz = ref.filter(ImageFilter.BoxBlur(1)).point(_lut(REFLEJO_LED))
-        if BRILLO_LED > 0:
-            g = led.resize(peq, Image.Resampling.BOX).filter(ImageFilter.BoxBlur(2)).point(_lut(BRILLO_LED))
-            luz = g if luz is None else ImageChops.add(luz, g)
         img = fondo.copy()
+        if REFLEJO_LED > 0:
+            img = ImageChops.add(img, self._reflejo(fondo))       # el reflejo va por debajo de las pantallas
         img.paste(led, (0, 0), mascara)
-        if luz is not None:
-            img = ImageChops.add(img, luz.resize(fondo.size, Image.Resampling.BILINEAR))
+        if BRILLO_LED > 0:
+            peq = (max(8, fondo.size[0] // 4), max(8, fondo.size[1] // 4))
+            g = led.resize(peq, Image.Resampling.BOX).filter(ImageFilter.BoxBlur(2)).point(_lut(BRILLO_LED))
+            img = ImageChops.add(img, g.resize(fondo.size, Image.Resampling.BILINEAR))
         if delantera is not None:
             img.paste(delantera, (0, 0), delantera)
         return img
