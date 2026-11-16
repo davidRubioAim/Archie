@@ -26,6 +26,7 @@ CLI (informe de aprendizaje):  python Core\\hotspot_solver.py [carpeta_Config]
 import copy
 import glob
 import hashlib
+import threading
 import json
 import math
 import os
@@ -294,12 +295,23 @@ def leer_referencia(path):
     }
 
 
+_FIRMAS = {}   # path -> ((tamaño, mtime), sha1 del contenido)
+
+
 def _firma(paths):
+    """v0.75: firma por contenido (nombre + sha1), no por fecha. Al instalar una versión nueva los JSON de
+    referencia se extraen con otra fecha pero son los mismos: así no se vuelve a aprender sin motivo."""
     hsh = hashlib.sha1()
-    for p in sorted(paths):
+    for p in sorted(paths, key=lambda x: os.path.basename(x).lower()):
         try:
             st = os.stat(p)
-            hsh.update(f"{os.path.basename(p)}|{st.st_size}|{int(st.st_mtime)}".encode())
+            k = (st.st_size, st.st_mtime)
+            c = _FIRMAS.get(p)
+            if c is None or c[0] != k:
+                with open(p, "rb") as f:
+                    c = (k, hashlib.sha1(f.read()).hexdigest())
+                _FIRMAS[p] = c
+            hsh.update(f"{os.path.basename(p).lower()}|{c[1]}".encode())
         except OSError:
             pass
     return hsh.hexdigest()
@@ -598,23 +610,72 @@ def _guardar_aprendizaje(config_dir, firma, pesos, lineas):
         log_error(f"No se pudo guardar el aprendizaje: {e}")
 
 
-def pesos_actuales(config_dir=None):
-    """Pesos aprendidos si las referencias no han cambiado; si han cambiado, vuelve a aprender."""
-    refs, firma = cargar_referencias(config_dir)
-    if not refs:
-        return cargar_reglas(config_dir)["pesos"]
+_APRENDIZAJE = {"hilo": None, "lock": threading.Lock()}
+
+
+def _aprender_y_guardar(config_dir):
+    pesos, lineas = aprender(config_dir)   # aprender() ya guarda el resultado
+    for l in lineas:
+        debug(f"[Hotspots] {l}")   # v0.75: informe técnico solo con ARCHIE_DEBUG=1
+    return pesos
+
+
+def aprender_en_segundo_plano(config_dir=None):
+    """v0.75: si las referencias han cambiado, aprende los pesos en un hilo (al abrir la app), para que el primer
+    Create Architecture no tenga que esperar."""
+    with _APRENDIZAJE["lock"]:
+        h = _APRENDIZAJE["hilo"]
+        if h is not None and h.is_alive():
+            return h
+        h = threading.Thread(target=lambda: _aprender_si_hace_falta(config_dir), daemon=True)
+        _APRENDIZAJE["hilo"] = h
+        h.start()
+        return h
+
+
+def _leer_aprendizaje(config_dir):
     path = os.path.join(_cfg_dir(config_dir), REFS_DIR, LEARN_FILE)
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if data.get("firma") == firma:
-            return data["pesos"]
+            return json.load(f)
     except Exception:
-        pass
-    pesos, lineas = aprender(config_dir)
-    for l in lineas:
-        print(f"  [Hotspots] {l}")
-    return pesos
+        return None
+
+
+def _aprender_si_hace_falta(config_dir=None):
+    try:
+        refs, firma = cargar_referencias(config_dir)
+        if not refs:
+            return
+        data = _leer_aprendizaje(config_dir)
+        if data and data.get("firma") == firma:
+            return
+        _aprender_y_guardar(config_dir)
+    except Exception as e:
+        log_error(f"Hotspots: no se pudo aprender de las referencias: {e}")
+
+
+def pesos_actuales(config_dir=None):
+    """Pesos aprendidos si las referencias no han cambiado. v0.75: si han cambiado y ya hay unos pesos
+    aprendidos, se usan esos mientras se aprende en segundo plano (no se bloquea el cálculo). Solo la primera
+    vez, sin pesos guardados, se espera al aprendizaje."""
+    refs, firma = cargar_referencias(config_dir)
+    if not refs:
+        return cargar_reglas(config_dir)["pesos"]
+    data = _leer_aprendizaje(config_dir)
+    if data and data.get("firma") == firma:
+        return data["pesos"]
+    h = _APRENDIZAJE["hilo"]
+    if data and data.get("pesos"):
+        if h is None or not h.is_alive():
+            aprender_en_segundo_plano(config_dir)
+        return data["pesos"]
+    if h is not None and h.is_alive() and h is not threading.current_thread():
+        h.join()
+        data = _leer_aprendizaje(config_dir)
+        if data and data.get("pesos"):
+            return data["pesos"]
+    return _aprender_y_guardar(config_dir)
 
 
 # ---------------------------------------------------------------- API (misma firma que auto_solver.resolver)

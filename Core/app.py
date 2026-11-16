@@ -44,6 +44,7 @@ else:
 
 CONFIG_DIR = os.path.join(MASTER_DIR, "Config")
 hotspot_solver.configurar(CONFIG_DIR)
+hotspot_solver.aprender_en_segundo_plano(CONFIG_DIR)   # v0.75: si las referencias han cambiado, aprende ya (sin bloquear)
 ASSETS_DIR = os.path.join(MASTER_DIR, "Assets")
 
 
