@@ -1,9 +1,10 @@
 """
-v0.72: MODO MANUAL en la Architecture Preview (interfaz).
+v0.73: MODO MANUAL en la Architecture Preview (interfaz).
 
 Mixin de MegaStripApp: clic sobre un elemento = selección / arrastre con espejo (el modo manual se activa solo),
 menú de clic derecho (Duplicate / Remove), Supr / Ctrl+D / Esc, bloqueo de sliders y vuelta al modo automático
-(con el RESET del panel MEDIA ASSETS). Sin botones Manual / Magnet / Reset ni flechas.
+(con el RESET del panel MEDIA ASSETS). Botón 🧲 SNAP (huecos iguales) en modo LOGO; en LOGO UNDER el snap a la
+rejilla va siempre activado. La barra de ayuda flota bajo el título y no mueve los paneles.
 La lógica de la arquitectura (espejo, empuje, fronteras, LOGO UNDER) vive en manual_layout.py.
 """
 import tkinter as tk
@@ -34,8 +35,10 @@ AYUDA_MANUAL = (
     "cover the Center Board.\n"
     "• Right click an element: Duplicate / Remove. Duplicate moves the element half a step to one side and "
     "drops the copy on the other side.\n"
-    "• LOGO UNDER: logos can't be moved. Duplicate / Remove adds or removes one logo in that section and the "
-    "equidistant grid is rebuilt. ANIM ZONES snap to the logo grid.\n"
+    "• 🧲 SNAP (LOGO mode): elements move freely; SNAP re-spaces every section with equal gaps, keeping the "
+    "order, and copies the last edited side to the other one.\n"
+    "• LOGO UNDER: snap is always on, ANIM ZONES snap to the logo grid. Logos can't be moved: Duplicate / Remove "
+    "adds or removes one logo in that section and the equidistant grid is rebuilt.\n"
     "• RESET (bottom of the MEDIA ASSETS panel) discards the manual layout and goes back to automatic: "
     "sliders and chat drive the layout again.\n\n"
     "While the layout is manual the distribution sliders are locked. Changing the stadium, its size, the logo "
@@ -46,7 +49,7 @@ AYUDA_MANUAL = (
     "The 3D Preview shows the changes but can't be edited. Not available in AMPLIFY mode yet."
 )
 
-PISTA_MANUAL = "✋ MANUAL MODE · Drag: move · Right click: Duplicate / Remove · Del · Ctrl+D · Esc"
+PISTA_MANUAL = "✋ MANUAL MODE · Drag: move · Right click: Duplicate / Remove · Del · Ctrl+D · Esc · ? guide"
 
 
 class ManualModeMixin:
@@ -72,15 +75,19 @@ class ManualModeMixin:
         """Botones en la cabecera de la Architecture Preview y barra de ayuda (fila 3 del contenedor)."""
         bc = dict(height=20, fg_color="#2b2b2b", hover_color="#3a3a3a", border_width=1, border_color="gray")
         ctk.CTkButton(self.preview_header, text="?", width=24, command=self._mv_ayuda, **bc).pack(side="right", padx=(5, 10))
+        self.btn_snap = ctk.CTkButton(self.preview_header, text="🧲 SNAP", width=70, command=self._mv_snap, **bc)
+        self.btn_snap.pack(side="right", padx=5)
 
-        self.manual_bar = ctk.CTkFrame(self.preview_container, fg_color="transparent")
-        self.manual_bar.grid_columnconfigure(0, weight=1)
+        # Barra de ayuda: flota (place) arriba a la izquierda de la preview, bajo el título. place() no reparte
+        # sitio, así que mostrarla u ocultarla no mueve los paneles ni la imagen.
+        self.manual_bar = ctk.CTkFrame(self.preview_image_container, fg_color="#151515", corner_radius=4)
         self.lbl_manual_hint = ctk.CTkLabel(self.manual_bar, text=PISTA_MANUAL, font=ctk.CTkFont(size=11),
-                                            text_color="gray", anchor="w")
-        self.lbl_manual_hint.grid(row=0, column=0, sticky="ew")
+                                            text_color="#9a9a9a", anchor="w", height=18)
+        self.lbl_manual_hint.pack(side="left", padx=(8, 0))
         self.lbl_manual_msg = ctk.CTkLabel(self.manual_bar, text="", font=ctk.CTkFont(size=11, weight="bold"),
-                                           text_color=C_AVISO, anchor="e")
-        self.lbl_manual_msg.grid(row=0, column=1, sticky="e", padx=(10, 0))
+                                           text_color=C_AVISO, anchor="w", height=18)
+        self.lbl_manual_msg.pack(side="left", padx=(12, 8))
+        self._manual_bar_on = False
 
         lbl = self.lbl_live_preview
         lbl.bind("<Button-3>", self._mv_menu)
@@ -101,10 +108,22 @@ class ManualModeMixin:
     def _mv_refresh_ui(self):
         if not hasattr(self, "manual_bar"):
             return
-        if self._mv_activo():
-            self.manual_bar.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 6))
-        else:
-            self.manual_bar.grid_remove()
+        on = self._mv_activo()
+        if on != self._manual_bar_on:
+            self._manual_bar_on = on
+            if on:
+                self.manual_bar.place(x=0, y=0, anchor="nw")
+                self.manual_bar.lift()
+            else:
+                self.manual_bar.place_forget()
+        d = self._disp_datos
+        lu = bool(((d or {}).get("config") or {}).get("logo_under"))
+        ok = ManualLayout.soportado(d)[0] and not lu
+        try:
+            self.btn_snap.configure(state="normal" if ok else "disabled",
+                                    text_color="#DCE4EE" if ok else "gray")
+        except Exception:
+            pass
         self._mv_cursor("")
 
     def _mv_msg(self, text, color=C_AVISO, segundos=6):
@@ -282,7 +301,8 @@ class ManualModeMixin:
             self._mv_bloquear(True)
             if not getattr(self, "_manual_ayuda_vista", False):
                 self._manual_ayuda_vista = True
-                self.after(6500, lambda: self._mv_msg("MANUAL MODE on · press ? for the guide.", "gray", 8))
+                self.after(6500, lambda: None if self.lbl_manual_msg.cget("text") else
+                           self._mv_msg("MANUAL MODE on · press ? for the guide.", "gray", 8))
         self.manual = model
         self._manual_tmp = None
         self._mv_refresh_ui()
@@ -654,6 +674,17 @@ class ManualModeMixin:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _mv_snap(self):
+        """🧲 SNAP (modo LOGO): huecos iguales en cada tramo, mismo orden, y espejo del último lado editado."""
+        m = self._mv_modelo()
+        if m is None:
+            return
+        if m.lu:
+            self._mv_msg("LOGO UNDER already snaps to the logo grid.", "gray", 4)
+            return
+        if self._mv_operar(lambda mm: mm.magnet()):
+            self._mv_msg("SNAP: equal spacing in every section.", "gray", 4)
 
     def _mv_duplicar(self, uid):
         self._mv_operar(lambda m: m.duplicar(uid))

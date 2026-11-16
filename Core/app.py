@@ -612,7 +612,7 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         self.lbl_sys_image.bind("<ButtonPress-1>", lambda e: self.on_drag_start(e, "sys"))
         self.lbl_sys_image.bind("<B1-Motion>", lambda e: self.on_drag_motion(e, "sys"))
         self.lbl_sys_image.bind("<ButtonRelease-1>", lambda e: self.on_drag_release(e, "sys"))
-        self._mv_build_ui()   # v0.72: modo manual (clic sobre un elemento, botón ? y clic derecho)
+        self._mv_build_ui()   # v0.73: modo manual (clic sobre un elemento, 🧲 SNAP, ? y clic derecho)
         
         self.sys_image_container.bind("<Configure>", self.trigger_resize)
         self.preview_image_container.bind("<Configure>", self.trigger_resize)
@@ -1797,7 +1797,18 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         if not file_path: return
         name = os.path.basename(file_path).lower().replace(" ", "").replace("_", "").replace("-", "")
         
+        es_logo = file_path == (self.archivos_cargados or {}).get("static_logo")
+        if "logounder" not in name:
+            # v0.73: un logo normal después de un LOGO UNDER (que activó el modo solo) vuelve al modo LOGO
+            if es_logo and getattr(self, "_lu_por_logo", False) and self.logo_under_var.get():
+                self._lu_por_logo = False
+                self.logo_under_var.set(False)
+                self.chk_logo_under.deselect()
+                self.toggle_logo_under_mode()
+            return
         if "logounder" in name:
+            if es_logo:
+                self._lu_por_logo = True
             if not self.logo_under_var.get():
                 self.logo_under_var.set(True)
                 self.chk_logo_under.select() 
@@ -2126,6 +2137,7 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         estado["vars"]["amplify"] = self.amplify_var.get()      # amplify es del estadio
         self.architecture_created = False
         self._apply_ui_state(estado)
+        self._lu_por_logo = False   # v0.73: el LOGO UNDER de la campaña manda
         self.check_and_activate_logo_under(self.archivos_cargados.get("static_logo"))
         self._init_history_state()
 
@@ -2499,6 +2511,7 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         if gen != self.render_gen: return
         rd = getattr(self, "_render_datos", None)
         if rd and rd[0] == gen: self._disp_datos = rd[1]   # v0.71
+        self._mv_refresh_ui()   # v0.73: 🧲 SNAP solo en modo LOGO
         self.pil_preview_images = [None] * PREVIEW_FRAMES
         self.pil_sys_images = [None] * PREVIEW_FRAMES
         self.pil_strip3d_images = [None] * PREVIEW_FRAMES
