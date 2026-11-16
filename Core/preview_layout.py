@@ -26,6 +26,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from vista_3d import Escena3D, geometria_estadio
 
+try:   # v0.82: fondo de estadio a partir de los plates de Assets/plates (sin plates, el fondo degradado de antes)
+    import fondo_plates as _fp
+except Exception:  # pragma: no cover
+    _fp = None
+
 # ---------------------------------------------------------------- Rejilla (px sobre 1920x1080)
 REF_W, REF_H = 1920, 1080
 GAP = 9                                   # separación negra entre ventanas
@@ -48,6 +53,8 @@ PAN_BANDA_Y = 0.36      # altura (fracción desde arriba) a la que van las panta
 SUPERSAMPLING = 2       # las vistas 3D se pintan al doble y se reducen: bordes sin dientes de sierra
 PAN_MUESTRAS = 400        # muestras de la trayectoria del paneo
 PAN_SUAVIZADO_ESQUINA = 0.06  # anchura (fracción del giro total) del redondeo de la esquina
+DETAIL_ESTIRAR_GRADA = 2.5  # v0.82: en DETAIL, lo que hay por encima de las pantallas se comprime (más grada)
+FONDO_PLATES = True       # v0.82: estadio de Assets/plates detrás de las pantallas (False = fondo degradado de antes)
 CAM1_ALTURA_M = 17.0    # cámara 1 (la de la tele): altura sobre el césped
 CAM1_DISTANCIA_M = 22.0  # cámara 1: distancia por detrás del touchline cercano, en el centro del campo
 FOV_MIN_PREVIEW, FOV_MAX_PREVIEW = 2.0, 70.0
@@ -125,6 +132,14 @@ class ComposicionPreview:
         m = min(self.L, self.W) * 0.06                     # margen bandas-campo de vista_3d.render
         self.u = (self.L - 2 * m) / METROS_CAMPO            # 1 metro en unidades del strip
         self.sz = (self.W - 2 * m) / 68.0
+        self.plate = None
+        self.fondo = None
+        if FONDO_PLATES and _fp is not None:
+            try:
+                self._ajustar_a_plate()
+            except Exception as ex:   # el fondo nunca debe impedir la preview
+                print("[preview] plates desactivados:", ex)
+                self.plate = None
 
         # v0.77: la textura se reduce por un factor entero (Image.reduce, media por cajas: ~8x más rápido que
         # BILINEAR) hasta quedar por debajo del mismo tope de ancho que la 3D Preview
@@ -148,12 +163,18 @@ class ComposicionPreview:
         self._preparar_detail()
         self._preparar_arquitectura()
         self._preparar_rotulos()
+        if self.plate is not None:
+            try:
+                self._preparar_fondo()
+            except Exception as ex:
+                print("[preview] plates desactivados:", ex)
+                self.fondo = None
 
     # ------------------------------------------------------------ 3D
     def _escena(self, rect):
         """Escena3D para una ventana. v0.78: se pinta a SUPERSAMPLING x el tamaño y se reduce (media por cajas):
         antialiasing de las diagonales del perímetro y de las líneas del campo, sin parpadeo al mover la cámara."""
-        e = Escena3D()
+        e = _fp.EscenaLED() if _fp is not None else Escena3D()
         e.size = ((rect[2] - rect[0]) * SUPERSAMPLING, (rect[3] - rect[1]) * SUPERSAMPLING)
         e.set_scene(self.L, self.W, self.bandas, reset=True)
         return e
@@ -441,6 +462,66 @@ class ComposicionPreview:
         img = e3d.render(smooth=True)
         return img.reduce(SUPERSAMPLING) if SUPERSAMPLING > 1 else img
 
+    def _render_con_fondo(self, e3d, fijo=None):
+        """v0.82: pantallas sobre el plate. `fijo` = (fondo, delante) ya calculados (CORNER y GOAL)."""
+        if fijo is None:
+            fijo = self.fondo.vista(_fp.Cam.de_escena(e3d, 1.0 / SUPERSAMPLING))
+        return e3d.render_sobre(*fijo)
+
+    # ------------------------------------------------------------ v0.82: fondo con plates
+    def _ajustar_a_plate(self):
+        """Elige el plate con la proporción TL/GL más parecida y reparte la diferencia: el perímetro 3D se estira
+        hasta la proporción intermedia (el plate se deforma hasta esa misma proporción en _preparar_fondo)."""
+        tl_gl = self.L / self.W
+        meta = _fp.elegir_plate(tl_gl)
+        if meta is None:
+            return
+        objetivo = _fp.proporcion_compromiso(tl_gl, meta["tl_gl"])
+        W_c = self.L / objetivo
+        k = W_c / self.W
+        if abs(k - 1.0) > 1e-6:
+            bandas = []
+            for b in self.bandas:
+                if b["side"] in ("GLL", "GLR"):
+                    b = dict(b, along=b["along"] * k, length=b["length"] * k)
+                bandas.append(b)
+            self.bandas = bandas
+            self.W = W_c
+        self.plate = meta
+        print("[preview] plate %s (TL/GL %.3f) para un estadio %.3f: perímetro a %.3f"
+              % (os.path.basename(meta["_png"]), meta["tl_gl"], tl_gl, objetivo))
+
+    def _preparar_fondo(self):
+        u = self.u
+        led = min(b["y1"] - b["y0"] for b in self.bandas) / u      # alto de la 1st row (con AMPLIFY hay dos)
+        eye = np.array(self._cam1()) / u
+        self.fondo = _fp.FondoPlate(self.plate, self.L / u, self.W / u, led, eye)
+        ss = 1.0 / SUPERSAMPLING
+        self.fijo_corner = self.fondo.vista(_fp.Cam.de_escena(self.e_corner, ss))
+        self.fijo_goal = self.fondo.vista(_fp.Cam.de_escena(self.e_goal, ss))
+        cam = self._camara_detail()
+        if cam is not None:
+            self.det_bg = self.fondo.detail(cam, y_corte=self.top / u, estirar=DETAIL_ESTIRAR_GRADA)
+
+    def _camara_detail(self):
+        """Cámara ortográfica de DETAIL (en metros): de frente al touchline lejano, un poco desde arriba."""
+        x0, y0, x1, y1 = self.r_detail
+        bw, bh = x1 - x0, y1 - y0
+        cx = (self.det_src[0] + self.det_src[1]) / 2.0
+        if not (self.gl <= cx <= self.gl + self.L):
+            return None
+        u = self.u
+        xw = (-self.L / 2 + (cx - self.gl)) / u
+        s = self.det_scale * u                                  # px por metro
+        fila_led = self.det_y - y0 + self.det_led_h / 2.0
+        a = math.radians(4.0)
+        f = np.array([0.0, -math.sin(a), -math.cos(a)])
+        r = np.array([1.0, 0.0, 0.0])
+        up = np.cross(r, f)
+        led_c = min(b["y1"] for b in self.bandas) / u / 2.0     # centro de la 1st row
+        Q = np.array([xw, led_c + (fila_led - bh / 2.0) / s, -self.W / 2 / u])
+        return _fp.Cam(Q - f * 60.0, r, up, f, 1.0, (bw, bh), orto=s)   # 60 m: la "distancia" de detail()
+
     def close(self):
         if self._pool is not None:
             self._pool.shutdown(wait=True)
@@ -458,8 +539,13 @@ class ComposicionPreview:
         # mientras este hilo compone DETAIL y la arquitectura (zonas del lienzo que no se solapan)
         if self._pool is None:
             self._pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="preview3d")
-        vistas = [(self._pool.submit(self._render_vista, e), r)
-                  for e, r in ((self.e_main, self.r_main), (self.e_corner, self.r_corner), (self.e_goal, self.r_goal))]
+        if self.fondo is not None:
+            vistas = [(self._pool.submit(self._render_con_fondo, e, fijo), r)
+                      for e, fijo, r in ((self.e_main, None, self.r_main), (self.e_corner, self.fijo_corner, self.r_corner),
+                                         (self.e_goal, self.fijo_goal, self.r_goal))]
+        else:
+            vistas = [(self._pool.submit(self._render_vista, e), r)
+                      for e, r in ((self.e_main, self.r_main), (self.e_corner, self.r_corner), (self.e_goal, self.r_goal))]
         lz = self.lienzo
         self._pintar_detail(strip)
         self._pintar_arquitectura(tex)

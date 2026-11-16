@@ -1,0 +1,37 @@
+{
+  "nombre": "A_ancho",
+  "tl_gl": 1.42,
+  "touchline_m": 114.693,
+  "goalline_m": 80.772,
+  "led_alto_m": 0.95,
+  "camara": {
+    "ojo_m": [
+      0.0,
+      17.0,
+      62.386
+    ],
+    "r": [
+      0.961662,
+      -0.0,
+      0.274237
+    ],
+    "u": [
+      0.061496,
+      0.974533,
+      -0.215649
+    ],
+    "f": [
+      0.267253,
+      -0.224246,
+      -0.937171
+    ],
+    "focal_px": 3800.081,
+    "ancho": 6144,
+    "alto": 2048
+  },
+  "ejes": "x a lo largo del touchline (derecha +), y arriba, z hacia la cámara; origen en el centro del campo",
+  "cam1": {
+    "altura_m": 17.0,
+    "distancia_m": 22.0
+  }
+}
