@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image
 
+import compat_ffmpeg  # noqa: F401  v0.78: MoviePy con ffmpeg 8 ('Stream group'), antes de usar MoviePy
 from moviepy.config import FFMPEG_BINARY
 from moviepy.tools import cross_platform_popen_params
 from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos

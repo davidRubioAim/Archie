@@ -1,6 +1,7 @@
 import math
 import os
 import traceback
+import compat_ffmpeg  # noqa: F401  v0.78: MoviePy con ffmpeg 8 ('Stream group')
 from moviepy import VideoFileClip
 from PIL import Image, ImageDraw, ImageFont
 from log_utils import debug, log_error

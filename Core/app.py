@@ -10,6 +10,7 @@ import numpy as np
 import threading
 import gc
 from PIL import Image, ImageDraw, ImageFont, ImageTk
+import compat_ffmpeg  # noqa: F401  v0.78: MoviePy con ffmpeg 8 ('Stream group'), antes de usar MoviePy
 from moviepy import VideoFileClip
 
 from dotenv import load_dotenv

@@ -40,6 +40,8 @@ COL_GUIDE = (200, 200, 200)
 PAN_ZOOM = 2.0          # zoom del paneo en el extremo del GLR (x1 en el centro)
 TEX_MAX_PREVIEW = 16384  # ancho máximo de la textura de las vistas 3D
 REDUCING_GAP = 2.0      # resize rápido (reduce + bilinear) para la textura y la arquitectura
+PAN_BANDA_Y = 0.36      # altura (fracción desde arriba) a la que van las pantallas durante el paneo
+SUPERSAMPLING = 2       # las vistas 3D se pintan al doble y se reducen: bordes sin dientes de sierra
 PAN_HOLD = 0.08          # fracción del ciclo quieta en cada extremo del paneo (centro y lado derecho)
 CAM1_ALTURA_M = 17.0    # cámara 1 (la de la tele): altura sobre el césped
 CAM1_DISTANCIA_M = 22.0  # cámara 1: distancia por detrás del touchline cercano, en el centro del campo
@@ -144,8 +146,10 @@ class ComposicionPreview:
 
     # ------------------------------------------------------------ 3D
     def _escena(self, rect):
+        """Escena3D para una ventana. v0.78: se pinta a SUPERSAMPLING x el tamaño y se reduce (media por cajas):
+        antialiasing de las diagonales del perímetro y de las líneas del campo, sin parpadeo al mover la cámara."""
         e = Escena3D()
-        e.size = (rect[2] - rect[0], rect[3] - rect[1])
+        e.size = ((rect[2] - rect[0]) * SUPERSAMPLING, (rect[3] - rect[1]) * SUPERSAMPLING)
         e.set_scene(self.L, self.W, self.bandas, reset=True)
         return e
 
@@ -189,30 +193,37 @@ class ComposicionPreview:
         _apuntar(self.e_goal, self._cam1(), P, fov)
 
     def _preparar_pan(self):
-        """Paneo desde la cámara 1: del centro del campo (con el CB detrás) al goal line right, y vuelta.
-        El zoom va de x1 (centro) a PAN_ZOOM (GLR) y vuelve a x1."""
+        """v0.78: paneo desde la cámara 1 que sigue el recorrido del perímetro: del centro del touchline (CB) a la
+        esquina y por el goal line right hasta su mitad, y vuelta. El objetivo de la cámara va siempre sobre las
+        pantallas, así los LED no salen nunca de cuadro. El zoom va de x1 (centro) a PAN_ZOOM (GLR) y vuelve a x1."""
         hl, hw, u, top = self.L / 2, self.W / 2, self.u, self.top
-        r = 9.15 * u   # círculo central
+        r = 9.15 * u   # círculo central: el encuadre inicial lo incluye junto con el CB
         pts_a = [(x, 0.0, z) for x in (-r, r) for z in (-r, r)] + \
                 [(x, y, -hw) for x in (-0.16 * self.L, 0.16 * self.L) for y in (0.0, top)]
-        z0 = -hw
-        z1 = -hw + (self.gl if self.gl > 0 else self.W)
-        pts_b = [(hl, y, z) for z in (z0, z1) for y in (0.0, top)] + [(hl - 18 * u, 0.0, 0.0)]
-        self.pan_a = self._encuadre(self.e_main, pts_a, relleno=0.95)
-        P_b, _ = self._encuadre(self.e_main, pts_b, relleno=0.95)
-        # zoom x1 en el centro -> x2 mirando al GLR (mitad de tan(FOV/2))
-        fov_b = math.degrees(2 * math.atan(math.tan(math.radians(self.pan_a[1]) / 2) / PAN_ZOOM))
-        self.pan_b = (P_b, fov_b)
+        self.fov_a = self._encuadre(self.e_main, pts_a, relleno=0.95)[1]
+        self.fov_b = math.degrees(2 * math.atan(math.tan(math.radians(self.fov_a) / 2) / PAN_ZOOM))
+        self.tramo_tl = hl                                    # del centro del TL a la esquina derecha
+        self.tramo_glr = self.gl / 2.0 if self.gl > 0 else 0.0  # de la esquina a la mitad del GLR
+
+    def _punto_perimetro(self, s):
+        """Punto (mundo, a media altura de las pantallas) a una fracción s del recorrido centro TL -> mitad GLR."""
+        hl, hw = self.L / 2, self.W / 2
+        d = s * (self.tramo_tl + self.tramo_glr)
+        y = self.top / 2
+        if d <= self.tramo_tl:
+            return (d, y, -hw)
+        return (hl, y, -hw + (d - self.tramo_tl))
 
     def _camara_pan(self, t):
-        """t en [0, 1) a lo largo del vídeo: centro -> GLR -> centro, con pausas en los extremos.
-        La cámara no se mueve: se interpola hacia dónde mira y el zoom."""
+        """t en [0, 1) a lo largo del contenido: centro -> GLR -> centro, con pausas en los extremos.
+        La cámara no se mueve: solo cambian hacia dónde mira (siguiendo el perímetro) y el zoom."""
         tri = 1.0 - abs(2.0 * t - 1.0)                              # 0 -> 1 -> 0
         s = _suave((tri - PAN_HOLD) / max(1e-6, 1.0 - 2 * PAN_HOLD))
-        (pa, fa), (pb, fb) = self.pan_a, self.pan_b
-        ta, tb = math.tan(math.radians(fa) / 2), math.tan(math.radians(fb) / 2)
-        fov = math.degrees(2 * math.atan(ta + (tb - ta) * s))
-        _apuntar(self.e_main, self._cam1(), _lerp(pa, pb, s), fov)
+        ta, tb = math.tan(math.radians(self.fov_a) / 2), math.tan(math.radians(self.fov_b) / 2)
+        tv = ta + (tb - ta) * s
+        _apuntar(self.e_main, self._cam1(), self._punto_perimetro(s), math.degrees(2 * math.atan(tv)))
+        # las pantallas quedan a PAN_BANDA_Y del alto (desde arriba): se ve el campo debajo
+        self.e_main.rotar_camara(0.0, math.atan((0.5 - PAN_BANDA_Y) * 2 * tv))
 
     # ------------------------------------------------------------ DETAIL
     def _centro_detail(self):
@@ -339,7 +350,9 @@ class ComposicionPreview:
                 d.line((gx - half, yb, gx + half, yb), fill=COL_GUIDE, width=2)
                 d.line((gx - half, yb, gx - half, yr - 3), fill=COL_GUIDE, width=2)
                 d.line((gx + half, yb, gx + half, yr - 3), fill=COL_GUIDE, width=2)
-                self._punteado(d, gx, yb, yr - 3)
+                # v0.78: la discontinua va en tercios: al final del 1er tercio en GOAL LEFT y del 2º en GOAL RIGHT
+                tercio = 1.0 / 3.0 if nombre == "GOAL LEFT" else 2.0 / 3.0
+                self._punteado(d, gx - half + 2 * half * tercio, yb, yr - 3)
             f["y"] = y + asc + aire
             y += alto + sep
         self.arch_bg = fondo
@@ -382,6 +395,11 @@ class ComposicionPreview:
             _texto(ImageDraw.Draw(parche), (xy[0] - x0, xy[1] - y0), txt, font, anchor)
             self.rotulos.append((parche, (x0, y0)))
 
+    @staticmethod
+    def _render_vista(e3d):
+        img = e3d.render(smooth=True)
+        return img.reduce(SUPERSAMPLING) if SUPERSAMPLING > 1 else img
+
     def close(self):
         if self._pool is not None:
             self._pool.shutdown(wait=True)
@@ -399,7 +417,7 @@ class ComposicionPreview:
         # mientras este hilo compone DETAIL y la arquitectura (zonas del lienzo que no se solapan)
         if self._pool is None:
             self._pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="preview3d")
-        vistas = [(self._pool.submit(e.render, True), r)
+        vistas = [(self._pool.submit(self._render_vista, e), r)
                   for e, r in ((self.e_main, self.r_main), (self.e_corner, self.r_corner), (self.e_goal, self.r_goal))]
         lz = self.lienzo
         self._pintar_detail(strip)

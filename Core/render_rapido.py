@@ -12,6 +12,7 @@ Sustituye la composición de MoviePy por ffmpeg directo, con la misma idea que e
 
 Ajustes: RENDER_FPS, ENCODER, X264_PRESET.
 """
+import itertools
 import json
 import math
 import os
@@ -24,6 +25,7 @@ import threading
 import numpy as np
 from PIL import Image
 
+import compat_ffmpeg  # noqa: F401  v0.78: MoviePy con ffmpeg 8 ('Stream group')
 from moviepy.config import FFMPEG_BINARY
 from moviepy.tools import cross_platform_popen_params
 from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
@@ -622,13 +624,109 @@ PREVIEW3D_BITRATE = "8000k"
 PREVIEW3D_BUFSIZE = "16000k"
 PREVIEW3D_X264_PRESET = "superfast"
 
+# v0.78: intro y outro de AIM. Cada archivo lleva el color arriba y el alfa (en grises) abajo, en un H.264 normal
+# (1920x2160): se decodifica en cualquier equipo y pesa ~11 MB (los .mov ProRes 4444 originales pesan >100 MB).
+PREVIEW_INTRO = "AIM_Intro_Preview.mp4"
+PREVIEW_OUTRO = "AIM_Outro_Preview.mp4"
+INTRO_FPS_ORIGEN = 30.0       # fps de los .mov originales (los frames de abajo se cuentan a este ritmo)
+INTRO_CONTENIDO_DESDE = 50    # la intro es opaca hasta el frame 50 (01:20): ahí empieza el contenido
+OUTRO_OPACO_EN = 18           # el outro tapa todo en su frame 18: ahí termina el contenido
+
+
+def _ruta_asset(nombre):
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for cand in (os.path.join(base, "Assets", nombre),
+                 os.path.join(os.path.dirname(os.path.dirname(base)), "Assets", nombre)):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+_LUT_ALFA = [0 if v <= 8 else 255 if v >= 247 else v for v in range(256)]   # limpia el ruido del H.264
+
+
+class _Superpuesto:
+    """Lee una intro / outro (color arriba + alfa abajo) frame a frame, ya al tamaño y fps de la preview."""
+
+    def __init__(self, path, size, fps):
+        self.w, self.h = size
+        cmd = [FFMPEG_BINARY, "-v", "error", "-i", path, "-vf", f"fps={fps},scale={self.w}:{self.h * 2}",
+               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+        self.proc = _popen(cmd, stderr=subprocess.DEVNULL)
+        self.bytes = self.w * self.h * 2 * 3
+        self.frames = []          # se lee entero (~60 frames): así se sabe cuánto dura
+        while True:
+            buf = self.proc.stdout.read(self.bytes)
+            if len(buf) < self.bytes:
+                break
+            img = Image.frombytes("RGB", (self.w, self.h * 2), buf)
+            color = img.crop((0, 0, self.w, self.h))
+            alfa = img.crop((0, self.h, self.w, self.h * 2)).convert("L").point(_LUT_ALFA)
+            self.frames.append((color, alfa))
+        self.close()
+
+    def __len__(self):
+        return len(self.frames)
+
+    def close(self):
+        try:
+            self.proc.kill()
+        except Exception:
+            pass
+
+
+class _EscenaPreview(_Escena):
+    """La escena del strip con intro y outro: frames() da dicts {strip, k, capas} (k = frame del contenido)."""
+
+    def __init__(self, datos, fps):
+        super().__init__(datos, fps)
+        self.n_contenido = max(1, self.n_frames)
+        size = tuple(datos.get("_preview_size") or PREVIEW3D_SIZE)
+        self.intro = self.outro = None
+        self.n_pre = self.n_ov = 0
+        if datos.get("_preview_intro_outro", True):
+            for attr, nombre in (("intro", PREVIEW_INTRO), ("outro", PREVIEW_OUTRO)):
+                path = _ruta_asset(nombre)
+                if not path:
+                    debug(f"[Render rápido] PREVIEW: sin {nombre} en Assets, se omite")
+                    continue
+                try:
+                    sup = _Superpuesto(path, size, fps)
+                    if len(sup):
+                        setattr(self, attr, sup)
+                except Exception as e:
+                    log_error(f"[Render rápido] PREVIEW: no se pudo leer {nombre}: {e}")
+        if self.intro:
+            self.n_pre = min(len(self.intro), int(round(INTRO_CONTENIDO_DESDE / INTRO_FPS_ORIGEN * fps)))
+        if self.outro:
+            self.n_ov = min(len(self.outro), self.n_contenido, int(round(OUTRO_OPACO_EN / INTRO_FPS_ORIGEN * fps)))
+        n_post = (len(self.outro) - self.n_ov) if self.outro else 0
+        self.n_frames = self.n_pre + self.n_contenido + n_post
+
+    def frames(self):
+        intro, outro = (self.intro.frames if self.intro else []), (self.outro.frames if self.outro else [])
+        for i in range(self.n_pre):
+            yield {"strip": None, "k": -1, "capas": [intro[i]]}
+        inicio_outro = self.n_contenido - self.n_ov
+        # _Escena.frames() cuenta con self.n_frames (ahora el total): se corta en los frames del contenido
+        for k, strip in enumerate(itertools.islice(super().frames(), self.n_contenido)):
+            capas = []
+            if self.n_pre + k < len(intro):
+                capas.append(intro[self.n_pre + k])
+            if outro and k >= inicio_outro:
+                capas.append(outro[k - inicio_outro])
+            yield {"strip": strip, "k": k, "capas": capas}
+        for j in range(self.n_ov, len(outro)):
+            yield {"strip": None, "k": -1, "capas": [outro[j]]}
+
 
 def renderizar_preview_3d(json_path, output_filename, progress_callback=None, cancel_check=None,
-                          size=PREVIEW3D_SIZE, titulo=None, filas_planas=None):
+                          size=PREVIEW3D_SIZE, titulo=None, filas_planas=None, intro_outro=True):
     """Vídeo MP4 de validación de una campaña (v0.77: distribución de la preview de referencia "Single Row"):
     3D PREVIEW con una cámara que panea del centro al lado derecho y vuelve, a su derecha CORNER y GOAL,
     debajo DETAIL (la ANIM ZONE justo a la derecha del CB) y abajo la arquitectura (GOALLINE LEFT, TOUCHLINE,
     GOALLINE RIGHT) con sus rótulos. La composición está en preview_layout.ComposicionPreview.
+    v0.78: empieza con la intro de AIM y termina con el outro (Assets/AIM_Intro_Preview.mp4 y AIM_Outro_Preview.mp4).
 
     Usa la misma escena que el System File (mismos decodificadores y composición) y vista_3d.Escena3D
     (PIL puro, sin ventana) para proyectar cada frame. Se renderiza a 25 fps: es solo para validar.
@@ -638,21 +736,26 @@ def renderizar_preview_3d(json_path, output_filename, progress_callback=None, ca
 
     with open(json_path, "r", encoding="utf-8") as f:
         datos = json.load(f)
-    escena = _Escena(datos, PREVIEW3D_FPS)
+    W_out, H_out = size
+    datos["_preview_size"] = [W_out, H_out]
+    datos["_preview_intro_outro"] = bool(intro_outro)
+    escena = _EscenaPreview(datos, PREVIEW3D_FPS)
     comp = None
     try:
-        W_out, H_out = size
         comp = ComposicionPreview(datos, escena.w, escena.h, size=(W_out, H_out), titulo=titulo)
-        n_frames = max(1, escena.n_frames)
-        contador = [0]
 
-        def make_frame(strip):
-            t = (contador[0] % n_frames) / float(n_frames)   # si se repite con libx264 vuelve a empezar
-            contador[0] += 1
-            return comp.frame(strip, t).tobytes()
+        def make_frame(item):
+            capas = item["capas"]
+            if item["strip"] is None:            # solo intro / outro (opacos)
+                return capas[-1][0].tobytes()
+            n = escena.n_contenido
+            img = comp.frame(item["strip"], (item["k"] % n) / float(n))
+            for color, alfa in capas:            # la intro se va y el outro entra por encima del contenido
+                img = Image.composite(color, img, alfa)
+            return img.tobytes()
 
         debug(f"[Render rápido] PREVIEW 3D {W_out}x{H_out} @ {PREVIEW3D_FPS} fps, textura {comp.tex_size}, "
-              f"{n_frames} frames")
+              f"{escena.n_contenido} frames de contenido, {escena.n_frames} en total")
         _render(escena, output_filename, W_out, H_out, make_frame, progress_callback, cancel_check,
                 bitrate=PREVIEW3D_BITRATE, bufsize=PREVIEW3D_BUFSIZE, x264_preset=PREVIEW3D_X264_PRESET)
     finally:

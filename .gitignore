@@ -21,3 +21,6 @@ dist/
 Config/nas_index.json
 Config/archie_settings.json
 Config/campaign_cache.json
+
+# v0.78: originales ProRes de la intro/outro (>100 MB, no caben en GitHub); se usan los *_Preview.mp4
+Assets/*_Clean.mov
