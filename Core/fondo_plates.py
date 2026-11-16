@@ -28,8 +28,10 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 from vista_3d import Escena3D, _v_cross, _v_dot, _v_sub
 
-REPARTO_FONDO = 0.5        # parte de la diferencia de proporción que absorbe el plate (el resto, el perímetro)
-REFLEJO_LED = 0.18         # reflejo de las pantallas en el césped (0 = sin reflejo)
+PLATE_UNICO = "plate_A_ancho"   # v0.83: todos los estadios usan este plate (None = el de proporción más parecida)
+REPARTO_FONDO = 0.3        # parte de la diferencia de proporción que absorbe el plate (squeeze de la imagen);
+                           # el resto lo absorbe el perímetro, que se adapta al plate
+REFLEJO_LED = 0.0          # v0.83: sin reflejo de las pantallas en el césped (parecía plástico y parpadeaba)
 BRILLO_LED = 0.18          # halo de las pantallas (0 = sin halo)
 VERSION_CACHE = 1
 
@@ -100,10 +102,14 @@ def plates_disponibles():
 
 
 def elegir_plate(tl_gl):
-    """El plate con la proporción TL/GL más parecida (en escala logarítmica)."""
+    """v0.83: PLATE_UNICO si está en Assets/plates; si no, el de proporción TL/GL más parecida (escala log)."""
     ps = plates_disponibles()
     if not ps:
         return None
+    if PLATE_UNICO:
+        for p in ps:
+            if os.path.splitext(os.path.basename(p["_png"]))[0] == PLATE_UNICO:
+                return p
     return min(ps, key=lambda p: abs(math.log(tl_gl / p["tl_gl"])))
 
 
