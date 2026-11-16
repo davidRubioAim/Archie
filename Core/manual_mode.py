@@ -1,5 +1,5 @@
 """
-v0.74: MODO MANUAL en la Architecture Preview (interfaz).
+v0.76: MODO MANUAL en la Architecture Preview (interfaz). Espacio = play / pausa.
 
 Mixin de MegaStripApp: clic sobre un elemento = selección / arrastre con espejo (el modo manual se activa solo),
 menú de clic derecho (Duplicate / Remove), Supr / Ctrl+D / Esc, bloqueo de sliders y vuelta al modo automático
@@ -43,7 +43,7 @@ AYUDA_MANUAL = (
     "sliders and chat drive the layout again.\n\n"
     "While the layout is manual the distribution sliders are locked. Changing the stadium, its size, the logo "
     "or the ANIM ZONES goes back to automatic. Writing to the assistant asks first.\n\n"
-    "Keys: Del: Remove · Ctrl+D: Duplicate · Esc: deselect. Undo / Redo work too.\n"
+    "Keys: Space: play / pause · Del: Remove · Ctrl+D: Duplicate · Esc: deselect. Undo / Redo work too.\n"
     "Click on an empty area: play / pause. Drag on an empty area or with the middle mouse button: pan.\n\n"
     "The queue, direct render and AE JSON use the manual layout as it is when you add the job. "
     "The 3D Preview shows the changes but can't be edited. Not available in AMPLIFY mode yet."
@@ -129,7 +129,8 @@ class ManualModeMixin:
         lbl.bind("<ButtonRelease-2>", self._mv_pan_end)
         for seq, fn in (("<Delete>", self._mv_key_remove),
                         ("<Control-d>", self._mv_key_duplicate), ("<Control-D>", self._mv_key_duplicate),
-                        ("<Escape>", self._mv_key_escape)):
+                        ("<Escape>", self._mv_key_escape),
+                        ("<KeyPress-space>", self._mv_key_space), ("<KeyRelease-space>", self._mv_key_space_up)):
             self.bind_all(seq, fn, add="+")
         self._mv_refresh_ui()
 
@@ -788,10 +789,28 @@ class ManualModeMixin:
 
     # ================================================================== teclado
     def _mv_tecla_ok(self):
-        w = self.focus_get()
+        try:
+            w = self.focus_get()
+        except Exception:
+            w = None
         if isinstance(w, (tk.Entry, tk.Text)):
             return False
         return True
+
+    def _mv_key_space(self, event):
+        """v0.76: Espacio = play / pausa de la preview (como el clic en una zona vacía).
+        No actúa mientras se escribe (chat, campos) ni repite al mantener la tecla pulsada."""
+        if not self._mv_tecla_ok() or getattr(self, "_space_held", False):
+            return None
+        self._space_held = True
+        if self.player.ready:          # igual que el botón ▶ del reproductor
+            self.player.toggle()
+        elif self.pil_preview_images:  # sin vídeos: pasa al siguiente key frame, como el clic
+            self.ciclar_preview()
+        return "break"
+
+    def _mv_key_space_up(self, event):
+        self._space_held = False
 
     def _mv_key_remove(self, event):
         if not self._mv_tecla_ok() or self.manual_sel is None:
