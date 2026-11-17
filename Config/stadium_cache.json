@@ -10,7 +10,10 @@
         "Canvas Mask": 96,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": ""
     },
     "TSG Hoffenheim": {
         "Competition": "NONE",
@@ -23,33 +26,26 @@
         "Canvas Mask": 0,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
-    },
-    "TSG Hoffenheim (Fascia)": {
-        "Competition": "NONE",
-        "Width": 11360,
-        "Height": 90,
-        "Goal Line Size": 0,
-        "Center Board Width": 0,
-        "Canvas Width": 1920,
-        "Canvas Height": 1080,
-        "Canvas Mask": 0,
-        "Offset X": 0,
-        "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 192,
+        "Amplify": false,
+        "Mapping": "01_TSG_HOFFENHEIM FEM_MAPPING_NO CB_4K.png"
     },
     "F.C St. Gallen": {
         "Competition": "NONE",
-        "Width": 40320,
+        "Width": 40896,
         "Height": 144,
-        "Goal Line Size": 11808,
+        "Goal Line Size": 12096,
         "Center Board Width": 0,
         "Canvas Width": 3840,
         "Canvas Height": 2160,
         "Canvas Mask": 96,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 30
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": "Mapping_File_St.Gallen_140cabinets.png"
     },
     "C.F Montreal": {
         "Competition": "NONE",
@@ -62,7 +58,10 @@
         "Canvas Mask": 96,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": ""
     },
     "R.C A Coruña": {
         "Competition": "NONE",
@@ -75,7 +74,10 @@
         "Canvas Mask": 48,
         "Offset X": 360,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 72,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Lyon": {
         "Competition": "NONE",
@@ -88,7 +90,10 @@
         "Canvas Mask": 48,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 50
+        "FPS": 50,
+        "Cabinet Height": 72,
+        "Amplify": false,
+        "Mapping": ""
     },
     "PSG - Parc des Prince (UEFA)": {
         "Competition": "UCL",
@@ -101,7 +106,10 @@
         "Canvas Mask": 0,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Real Madrid - Santiago Bernabéu Stadium (UEFA)": {
         "Competition": "UCL",
@@ -114,7 +122,10 @@
         "Canvas Mask": 0,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Club Brugge - Jan Breydel Stadium (UEFA)": {
         "Competition": "UCL",
@@ -127,7 +138,10 @@
         "Canvas Mask": 96,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Galatasaray - RAMS Park (UEFA)": {
         "Competition": "UCL",
@@ -140,7 +154,10 @@
         "Canvas Mask": 0,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 90,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Chelsea - UEFA Women": {
         "Competition": "UWCL",
@@ -153,7 +170,10 @@
         "Canvas Mask": 96,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Olympique Lyonnaise - UEFA Women": {
         "Competition": "UWCL",
@@ -166,7 +186,10 @@
         "Canvas Mask": 48,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 72,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Paris FC - UEFA Women": {
         "Competition": "UWCL",
@@ -179,7 +202,10 @@
         "Canvas Mask": 96,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Real Madrid - UEFA Women": {
         "Competition": "UWCL",
@@ -192,7 +218,10 @@
         "Canvas Mask": 96,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Inter Milan - UEFA Women": {
         "Competition": "UWCL",
@@ -205,7 +234,10 @@
         "Canvas Mask": 0,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 90,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Paris Saint Germain - UEFA Women": {
         "Competition": "UWCL",
@@ -218,7 +250,10 @@
         "Canvas Mask": 96,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 144,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Lillestrom - UEL - UEFA": {
         "Competition": "UEL",
@@ -231,7 +266,10 @@
         "Canvas Mask": 0,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 60
+        "FPS": 60,
+        "Cabinet Height": 90,
+        "Amplify": false,
+        "Mapping": ""
     },
     "Lillestrom - UEL - UEFA - Digital Overlay": {
         "Competition": "UEL",
@@ -244,6 +282,66 @@
         "Canvas Mask": 0,
         "Offset X": 0,
         "Offset Y": 0,
-        "FPS": 50
+        "FPS": 50,
+        "Cabinet Height": 72,
+        "Amplify": false,
+        "Mapping": ""
+    },
+    "Deportivo A Coruña": {
+        "Competition": "NONE",
+        "Width": 19008,
+        "Height": 144,
+        "Goal Line Size": 5256,
+        "Center Board Width": 800,
+        "Canvas Width": 1920,
+        "Canvas Height": 1080,
+        "Canvas Mask": 48,
+        "Offset X": 360,
+        "Offset Y": 0,
+        "FPS": 60,
+        "Cabinet Height": 72,
+        "Amplify": true,
+        "Mapping": "mapping 1st row.png",
+        "Row 2": {
+            "Center Board Width": 800,
+            "Canvas Width": 1920,
+            "Canvas Height": 1080,
+            "Canvas Mask": 48,
+            "Offset X": 210,
+            "FPS": 60,
+            "Mapping": "mapping 2st row.png"
+        }
+    },
+    "FC Red Bull Salzburg": {
+        "Competition": "NONE",
+        "Width": 20160,
+        "Height": 72,
+        "Goal Line Size": 5472,
+        "Center Board Width": 0,
+        "Canvas Width": 1920,
+        "Canvas Height": 1080,
+        "Canvas Mask": 0,
+        "Offset X": 0,
+        "Offset Y": 0,
+        "FPS": 60,
+        "Cabinet Height": 72,
+        "Amplify": false,
+        "Mapping": "Mapping.png"
+    },
+    "FC Luzern": {
+        "Competition": "NONE",
+        "Width": 19728,
+        "Height": 72,
+        "Goal Line Size": 5184,
+        "Center Board Width": 0,
+        "Canvas Width": 1920,
+        "Canvas Height": 1080,
+        "Canvas Mask": 0,
+        "Offset X": 0,
+        "Offset Y": 0,
+        "FPS": 60,
+        "Cabinet Height": 72,
+        "Amplify": false,
+        "Mapping": "LUZERN_MAPPING_24_25_PER_HD_240716.png"
     }
 }

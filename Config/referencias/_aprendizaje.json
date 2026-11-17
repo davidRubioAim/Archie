@@ -1,0 +1,28 @@
+{
+  "firma": "bd74556e72ad0d8cc6088589932049d4ff9c0bd8",
+  "pesos": {
+    "hot_ok": 1000.0,
+    "pegadas": -800.0,
+    "anims": 100.0,
+    "fit": 45.0,
+    "exceso": -8.0,
+    "cerca": 30.0,
+    "sep": 0.0,
+    "stretch": -4.0,
+    "offset": -2.0,
+    "plantilla": 120.0
+  },
+  "informe": [
+    "Referencias: 9 · Archie reproduce 6/9 · pesos: hot_ok=1000.0, pegadas=-800.0, anims=100.0, fit=45.0, exceso=-8.0, cerca=30.0, sep=0.0, stretch=-4.0, offset=-2.0, plantilla=120.0",
+    "OK  Chelsea - UEFA Women - PLAY STATION.json: referencia {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 8} | Archie {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 8}",
+    "DIF Club Brugge - Jan Breydel Stadium _UEFA_ - 12_MASTERCARD_LOGO.json: referencia {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 6} | Archie {'goal_L': 1, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 6}",
+    "OK  Club Brugge - Jan Breydel Stadium _UEFA_ - 14_PLAY STATION_LOGO.json: referencia {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 8} | Archie {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 8}",
+    "OK  Lillestrom - UEL - UEFA - 12_MASTERCARD_LOGO.json: referencia {'goal_L': 1, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 6} | Archie {'goal_L': 1, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 6}",
+    "OK  Paris FC - UEFA Women - 14_PLAY STATION_LOGO.json: referencia {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 8} | Archie {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 8}",
+    "OK  Real Madrid - UEFA Women - 12_MASTERCARD_LOGO.json: referencia {'goal_L': 1, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 6} | Archie {'goal_L': 1, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 6}",
+    "OK  Real Madrid - UEFA Women - 14_PLAY STATION_LOGO.json: referencia {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 8} | Archie {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 8}",
+    "DIF St Gallen - PLAY STATION.json: referencia {'goal_L': 3, 'corner_L': 2, 'centro': 1, 'cerca_L': 1, 'sep': 2, 'anims': 8} | Archie {'goal_L': 3, 'corner_L': 2, 'centro': 2, 'cerca_L': 1, 'sep': 2, 'anims': 8}",
+    "DIF TSG Hoffenheim - ABNB-LIGA-251201.json: referencia {'goal_L': 1, 'corner_L': 2, 'centro': 1, 'cerca_L': 1, 'sep': 1, 'anims': 6} | Archie {'goal_L': 3, 'corner_L': 2, 'centro': 3, 'cerca_L': 0, 'sep': 2, 'anims': 6}"
+  ],
+  "fecha": "2026-11-17 12:10:04"
+}

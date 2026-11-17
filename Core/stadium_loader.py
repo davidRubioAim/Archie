@@ -28,8 +28,8 @@ from edge_cases import cargar_overrides, aplicar_overrides
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 FETCH_TIMEOUT = 6
-DEFAULT_SHEET_ID = "1k-DcjAS_4barGv6X280Y6EyryiQVjhbhnae7hlBkkg4"  # TESTS AIM Sport - Atlas Venue Specs
-# Hoja anterior (sin columnas Amplify/Mapping): 15hfgbbpTAd06OEmSR6Zpad3-xjgN_CiSuLtnS5-ExL0
+DEFAULT_SHEET_ID = "15hfgbbpTAd06OEmSR6Zpad3-xjgN_CiSuLtnS5-ExL0"  # AIM Sport - Atlas Venue Specs (Master Atlas)
+# v0.87: la hoja TESTS (1k-DcjAS_4barGv6X280Y6EyryiQVjhbhnae7hlBkkg4) ya no se usa
 DEFAULT_SHEET_GID = "1272902361"   # pestaña MASTER ATLAS
 
 # Columna de la hoja (normalizada) -> clave que espera la app
