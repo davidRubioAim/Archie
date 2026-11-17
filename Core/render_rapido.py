@@ -32,6 +32,7 @@ from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
 
 from log_utils import debug, log_error
 from edge_cases import edge_de, filas_system, logos_bajo_anims
+from alpha_utils import es_premultiplicado, despremultiplicar  # v0.87: rebaba negra en alfas premultiplicados
 
 RENDER_FPS = 25        # v0.57: solo para JSON antiguos sin "fps"; el fps sale del perfil del estadio (columna FPS de la hoja)
 ENCODER = "auto"        # "auto": GPU si hay y funciona, si no CPU · "cpu": siempre libx264 · o un codec concreto ("h264_nvenc"...)
@@ -131,7 +132,10 @@ def _frame(path, t, w, h, alpha):
     out, err = _popen(cmd).communicate()
     if len(out) < w * h * bpp:
         raise RuntimeError(f"ffmpeg no devolvió frame de {os.path.basename(path)} @ {t:.2f}s: {err.decode('utf8', 'ignore')[-200:]}")
-    return Image.frombytes(mode, (w, h), out[:w * h * bpp])
+    out = out[:w * h * bpp]
+    if alpha and es_premultiplicado(path):
+        out = bytes(despremultiplicar(out, w, h))
+    return Image.frombytes(mode, (w, h), out)
 
 
 # ---------------------------------------------------------------- Decodificador (1 proceso ffmpeg por vídeo)
@@ -144,6 +148,7 @@ class _Decoder:
         self.total_w = sum(self.widths)
         self.frame_size = self.total_w * h * self.bpp
         self.offsets = np.cumsum([0] + self.widths[:-1]).tolist()
+        self.premult = bool(alpha) and es_premultiplicado(path)  # v0.87
 
         dur = _info(path)[0]
         loop = ["-stream_loop", "-1"] if dur and dur < n_frames / fps else []
@@ -171,6 +176,8 @@ class _Decoder:
                 buf = self.proc.stdout.read(self.frame_size)
                 if not buf or len(buf) < self.frame_size:
                     break
+                if self.premult:  # v0.87: en el hilo del decodificador, en paralelo a la composición
+                    buf = despremultiplicar(buf, self.total_w, self.h)
                 self.q.put(buf)
                 got += 1
         except Exception as e:

@@ -128,7 +128,14 @@ class FrameCache:
                 debug(f"FrameCache: frame vacío en t={t:.3f}s de '{os.path.basename(path)}', reintentando en t=0")
                 return self._decode(path, 0.0, height, info)
             raise RuntimeError(proc.stderr.decode(errors="ignore")[:300] or "ffmpeg no devolvió datos")
-        arr = np.frombuffer(data[:expected], dtype=np.uint8).reshape((out_h, out_w, 4))
+        data = data[:expected]
+        try:  # v0.87: alfa premultiplicado (ProRes 4444 de AE) -> recto, sin rebaba negra en la preview
+            from alpha_utils import es_premultiplicado, despremultiplicar
+            if es_premultiplicado(path):
+                data = despremultiplicar(data, out_w, out_h)
+        except Exception as e:
+            debug(f"FrameCache: no se pudo comprobar el alfa de '{os.path.basename(path)}': {e}")
+        arr = np.frombuffer(data, dtype=np.uint8).reshape((out_h, out_w, 4))
         return Image.fromarray(arr, "RGBA")
 
     def _store(self, key, img):
