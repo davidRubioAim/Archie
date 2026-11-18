@@ -328,6 +328,8 @@ class QueueManager:
         safe_filename = self.generate_safe_filename(base_name, preset, render_type, ext, out_dir)
         out_path = os.path.join(out_dir, safe_filename)
         json_path = out_path.replace(ext, ".json")
+        if render_type == "PREVIEW":
+            data["estadio_preview"] = preset          # v0.88: plate a medida del estadio (Assets/plates)
         
         if render_type == "SYSTEM":
             data["system_setup"] = {

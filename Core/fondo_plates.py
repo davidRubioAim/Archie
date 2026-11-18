@@ -7,6 +7,8 @@ Cada plate es una panorámica de un estadio tipo vista desde la CÁMARA 1, con s
     plate_<nombre>_delante.png    (opcional) mate de lo que va DELANTE de las pantallas: porterías y banderines
                                   (vale una silueta rellena: la opacidad de la red sale del brillo del plate)
     plate_<nombre>_led.png        (opcional, solo de control) mate del perímetro LED
+v0.88: plate_<perfil>.png (sin .json) es la preview a medida de un estadio (p. ej. plate_PSG.png): se usa cuando
+el perfil seleccionado es ese estadio, con la cámara y el perímetro del plate A.
 
 Archie elige el plate con la proporción TL/GL más parecida a la del estadio y reparte la diferencia:
   - el perímetro 3D de la preview se estira hasta una proporción intermedia (REPARTO_FONDO);
@@ -22,7 +24,9 @@ import hashlib
 import json
 import math
 import os
+import re
 import tempfile
+import unicodedata
 
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
@@ -93,34 +97,87 @@ def homografia(placa, vista):
 
 
 # ---------------------------------------------------------------- plates disponibles
+def _meta_plate(js, png):
+    try:
+        meta = json.load(open(js, encoding="utf-8"))
+        meta["tl_gl"] = float(meta["touchline_m"]) / float(meta["goalline_m"])
+    except Exception:
+        return None
+    meta["_png"] = png
+    d = png[:-4] + "_delante.png"
+    meta["_delante"] = d if os.path.isfile(d) else None
+    return meta
+
+
 def plates_disponibles():
+    """Plates de proporción (plate_X.png con su plate_X.json). Los plates de estadio sin .json no entran aquí."""
     out = []
     for js in sorted(glob.glob(os.path.join(CARPETA_PLATES, "plate_*.json"))):
         png = js[:-5] + ".png"
-        if not os.path.isfile(png):
-            continue
-        try:
-            meta = json.load(open(js, encoding="utf-8"))
-            meta["tl_gl"] = float(meta["touchline_m"]) / float(meta["goalline_m"])
-        except Exception:
-            continue
-        meta["_png"] = png
-        d = js[:-5] + "_delante.png"
-        meta["_delante"] = d if os.path.isfile(d) else None
-        out.append(meta)
+        if os.path.isfile(png):
+            meta = _meta_plate(js, png)
+            if meta is not None:
+                out.append(meta)
     return out
 
 
-def elegir_plate(tl_gl):
-    """v0.83: PLATE_UNICO si está en Assets/plates; si no, el de proporción TL/GL más parecida (escala log)."""
+def _normalizar(txt):
+    """'PSG - Parc des Princes' -> 'psgparcdesprinces' (sin acentos, mayúsculas, espacios ni signos)."""
+    t = unicodedata.normalize("NFKD", str(txt or "")).encode("ascii", "ignore").decode("ascii").lower()
+    return re.sub(r"[^a-z0-9]", "", t)
+
+
+def _nombres_perfil(estadio):
+    """Formas del nombre del perfil con las que puede casar un plate: completo, club y estadio
+    ('PSG - Parc des Princes' -> psgparcdesprinces, psg, parcdesprinces). Quita el '- 1st' / '- 2nd' del dropdown."""
+    limpio = re.sub(r"\s*-\s*(1st|2nd)(\s*row)?\s*$", "", str(estadio or "").strip(), flags=re.I)
+    partes = [limpio] + [x for x in re.split(r"\s+-\s+", limpio) if x.strip()]
+    return {n for n in (_normalizar(x) for x in partes) if n}
+
+
+def plate_de_estadio(estadio, base):
+    """v0.88: preview a medida de un estadio: Assets/plates/plate_<perfil>.png.
+    <perfil> puede ser el nombre completo del perfil, el club o el estadio (sin importar acentos, mayúsculas ni
+    espacios): plate_PSG.png sirve para 'PSG - Parc des Princes'. Un plate_<perfil>.json propio puede añadir
+    "estadios": [nombres de perfil] para casar con otros perfiles.
+    Sin .json propio usa la cámara y las medidas de `base` (el plate A): el perímetro tiene que ser el mismo.
+    Sin _delante propio usa el de `base` (porterías y banderines en el mismo sitio)."""
+    if not estadio or base is None:
+        return None
+    nombres = _nombres_perfil(estadio)
+    for png in sorted(glob.glob(os.path.join(CARPETA_PLATES, "plate_*.png"))):
+        stem = os.path.basename(png)[6:-4]
+        if stem.lower().endswith(("_delante", "_led")) or png == base["_png"]:
+            continue
+        js = png[:-4] + ".json"
+        meta = _meta_plate(js, png) if os.path.isfile(js) else None
+        claves = {_normalizar(stem)} | {_normalizar(x) for x in ((meta or {}).get("estadios") or [])}
+        if not (claves & nombres):
+            continue
+        if meta is None:
+            meta = {k: v for k, v in base.items() if not k.startswith("_")}
+            meta["nombre"] = stem
+            meta["_png"] = png
+            d = png[:-4] + "_delante.png"
+            meta["_delante"] = d if os.path.isfile(d) else base.get("_delante")
+        return meta
+    return None
+
+
+def elegir_plate(tl_gl, estadio=None):
+    """v0.83: PLATE_UNICO si está en Assets/plates; si no, el de proporción TL/GL más parecida (escala log).
+    v0.88: si hay un plate a medida para el perfil de estadio (plate_<perfil>.png), ese."""
     ps = plates_disponibles()
     if not ps:
         return None
+    base = None
     if PLATE_UNICO:
         for p in ps:
             if os.path.splitext(os.path.basename(p["_png"]))[0] == PLATE_UNICO:
-                return p
-    return min(ps, key=lambda p: abs(math.log(tl_gl / p["tl_gl"])))
+                base = p
+    if base is None:
+        base = min(ps, key=lambda p: abs(math.log(tl_gl / p["tl_gl"])))
+    return plate_de_estadio(estadio, base) or base
 
 
 def proporcion_compromiso(tl_gl_estadio, tl_gl_plate, reparto=REPARTO_FONDO):

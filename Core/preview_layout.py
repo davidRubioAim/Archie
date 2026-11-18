@@ -473,7 +473,9 @@ class ComposicionPreview:
         """Elige el plate con la proporción TL/GL más parecida y reparte la diferencia: el perímetro 3D se estira
         hasta la proporción intermedia (el plate se deforma hasta esa misma proporción en _preparar_fondo)."""
         tl_gl = self.L / self.W
-        meta = _fp.elegir_plate(tl_gl)
+        # v0.88: perfil de estadio (preview directa: "estadio_preview"; campañas y worker: archie.stadium)
+        estadio = self.datos.get("estadio_preview") or (self.datos.get("archie") or {}).get("stadium")
+        meta = _fp.elegir_plate(tl_gl, estadio)
         if meta is None:
             return
         objetivo = _fp.proporcion_compromiso(tl_gl, meta["tl_gl"])
