@@ -30,3 +30,10 @@ Assets/plates/Archive/
 # v0.87: worker silencioso (estado local y logs)
 Config/worker_state.json
 logs/
+*.psd
+
+# v0.89: plates a medida por estadio (vienen de la carpeta de Drive, ver Core/plates_drive.py)
+Assets/plates/estadios/
+Assets/plates/plate_*
+!Assets/plates/plate_A_ancho*
+Assets/plates/*.psd

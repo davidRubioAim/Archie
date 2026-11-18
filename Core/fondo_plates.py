@@ -7,6 +7,7 @@ Cada plate es una panorámica de un estadio tipo vista desde la CÁMARA 1, con s
     plate_<nombre>_delante.png    (opcional) mate de lo que va DELANTE de las pantallas: porterías y banderines
                                   (vale una silueta rellena: la opacidad de la red sale del brillo del plate)
     plate_<nombre>_led.png        (opcional, solo de control) mate del perímetro LED
+v0.89: los plates a medida están en una carpeta de Google Drive (plates_drive.py) y se bajan a Assets/plates/estadios.
 v0.88: plate_<perfil>.png (sin .json) es la preview a medida de un estadio (p. ej. plate_PSG.png): se usa cuando
 el perfil seleccionado es ese estadio, con la cámara y el perímetro del plate A.
 
@@ -31,6 +32,7 @@ import unicodedata
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
+import plates_drive as _drive
 from vista_3d import Escena3D, _v_cross, _v_dot, _v_sub
 
 PLATE_UNICO = "plate_A_ancho"   # v0.83: todos los estadios usan este plate (None = el de proporción más parecida)
@@ -145,7 +147,11 @@ def plate_de_estadio(estadio, base):
     if not estadio or base is None:
         return None
     nombres = _nombres_perfil(estadio)
-    for png in sorted(glob.glob(os.path.join(CARPETA_PLATES, "plate_*.png"))):
+    # v0.89: primero la carpeta de Drive (se baja a Assets/plates/estadios solo lo de este estadio, si ha cambiado)
+    cache = _drive.sincronizar(lambda stem: _normalizar(stem) in nombres)
+    candidatos = (sorted(glob.glob(os.path.join(cache, "plate_*.png")))
+                  + sorted(glob.glob(os.path.join(CARPETA_PLATES, "plate_*.png"))))
+    for png in candidatos:
         stem = os.path.basename(png)[6:-4]
         if stem.lower().endswith(("_delante", "_led")) or png == base["_png"]:
             continue
