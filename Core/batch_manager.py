@@ -7,6 +7,7 @@ from moviepy import VideoFileClip
 
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from log_utils import debug, log_error
+from stadium_loader import AMPLIFY_ACTIVO  # v0.91
 from edge_cases import edge_de, pintar_zonas_negras
 from auto_solver import resolver as resolver_arquitectura, completar_goal  # v0.61 / v0.66
 
@@ -311,7 +312,7 @@ class BatchManager:
             "qty_gl_under": int(self.app.qty_gl_under_slider.get()),
             "qty_tl_under": int(self.app.qty_tl_under_slider.get()),
             "show_cb": getattr(self.app, "show_cb_var", ctk.BooleanVar(value=True)).get(),
-            "amplify": bool(stadium_info.get("Amplify")) or ("AMPLIFY" in stadium_name.upper()),
+            "amplify": AMPLIFY_ACTIVO and (bool(stadium_info.get("Amplify")) or ("AMPLIFY" in stadium_name.upper())),
             "invert_order": getattr(self.app, "invert_order_var", ctk.BooleanVar(value=False)).get(),
             "hide_extreme_edges": getattr(self.app, "current_hide_edges", False),
             "max_anim_gl": int(self.app.max_anim_gl_slider.get()),

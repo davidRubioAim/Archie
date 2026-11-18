@@ -21,7 +21,7 @@ from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from edge_cases import edge_de, filas_system, restar_zonas, pintar_zonas_negras, logos_bajo_anims
 from queue_manager import QueueManager
 from batch_manager import BatchManager
-from stadium_loader import load_stadium_library as cargar_estadios
+from stadium_loader import load_stadium_library as cargar_estadios, AMPLIFY_ACTIVO  # v0.91
 from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
@@ -1125,7 +1125,7 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
             self.inputs[key] = entry
 
         self.amplify_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
+        self.amplify_check = ctk.CTkCheckBox(
             self.col_right, 
             text="⚡ AMPLIFY Mode (Flexbox layout for 2-row strips)", 
             font=ctk.CTkFont(size=11, weight="bold"), 
@@ -1133,7 +1133,10 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
             command=self.on_amplify_toggle, 
             fg_color=self.c_magenta,
             hover_color="#D1007A"
-        ).pack(padx=20, pady=(15, 5), anchor="w", fill="x")
+        )
+        self.amplify_check.pack(padx=20, pady=(15, 5), anchor="w", fill="x")
+        if not AMPLIFY_ACTIVO:   # v0.91: AMPLIFY desactivado de momento
+            self.amplify_check.configure(state="disabled", text="⚡ AMPLIFY Mode (disabled for now)")
 
         self.invert_order_var = ctk.BooleanVar(value=False)
 
@@ -1342,6 +1345,7 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
 
     def aplicar_parametros_ia(self, qty_goal: int, qty_corner: int, qty_cb: int, qty_tl: int, stretch_limit: int, squash_logos: bool, stretch_fit_per: bool, gl_offset: int, corner_logo: bool, logo_under: bool = False, qty_gl_under: int = 1, qty_tl_under: int = 1, show_cb: bool = True, amplify: bool = False, invert_order: bool = False, max_anim_gl: int = 0, max_anim_tl: int = 0, margin: int = 20, margin_tl: int = -1) -> dict:
         self.reset_zooms_and_pan()
+        amplify = bool(amplify) and AMPLIFY_ACTIVO   # v0.91: AMPLIFY desactivado de momento
         config_prueba = {
             "stretch_limit": stretch_limit, "squash_logos": squash_logos, "stretch_fit_per": stretch_fit_per,
             "qty_goal": qty_goal, "qty_corner": qty_corner, "qty_cb": qty_cb, "qty_tl": qty_tl, 
@@ -1695,6 +1699,8 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         self.trigger_update()
 
     def on_amplify_toggle(self):
+        if not AMPLIFY_ACTIVO and self.amplify_var.get():   # v0.91: ni el perfil, ni el chat, ni un estado guardado
+            self.amplify_var.set(False)
         if self.amplify_var.get():
             self.btn_toggle_row.pack(side="right", padx=5)
         else:
@@ -1966,7 +1972,7 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
                   f"zonas negras {self.edge_case_actual.get('zonas_negras')})")
         
         # v0.51: la hoja trae columna Amplify (y/n); el nombre con "AMPLIFY" se mantiene por compatibilidad
-        self.amplify_var.set(bool(data.get("Amplify")) or "AMPLIFY" in choice.upper())
+        self.amplify_var.set(AMPLIFY_ACTIVO and (bool(data.get("Amplify")) or "AMPLIFY" in choice.upper()))
         self.on_amplify_toggle()
         
         for key, entry in self.inputs.items():

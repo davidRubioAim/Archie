@@ -54,6 +54,9 @@ SUPERSAMPLING = 2       # las vistas 3D se pintan al doble y se reducen: bordes 
 PAN_MUESTRAS = 400        # muestras de la trayectoria del paneo
 PAN_SUAVIZADO_ESQUINA = 0.06  # anchura (fracción del giro total) del redondeo de la esquina
 DETAIL_ESTIRAR_GRADA = 2.5  # v0.82: en DETAIL, lo que hay por encima de las pantallas se comprime (más grada)
+DETAIL_MARGEN = 0.02        # v0.91: margen (fracción del ancho visible) entre el borde izquierdo de DETAIL y el CB
+DETAIL_HUECO_NEGRO = 1.0    # v0.91: hueco (x alto del LED) antes de la ANIM ZONE que cuenta como zona negra
+DETAIL_LED_MAX = 0.85       # v0.91: alto máximo del LED en DETAIL (fracción de la franja)
 FONDO_PLATES = True       # v0.82: estadio de Assets/plates detrás de las pantallas (False = fondo degradado de antes)
 CAM1_ALTURA_M = 17.0    # cámara 1 (la de la tele): altura sobre el césped
 CAM1_DISTANCIA_M = 22.0  # cámara 1: distancia por detrás del touchline cercano, en el centro del campo
@@ -303,19 +306,31 @@ class ComposicionPreview:
                        key=lambda e: e["x_absoluta"])
         if anims:
             a = anims[0]
-            return a["x_absoluta"] + a["width"] / 2.0, float(a["width"])
+            # v0.91: límite izquierdo de DETAIL: el final del CB (o el del hueco negro antes de la ANIM ZONE)
+            limite = ref if cb is not None else None
+            prev = [e["x_absoluta"] + e["width"] for e in elems if e["x_absoluta"] + e["width"] <= a["x_absoluta"] + 1]
+            if prev and a["x_absoluta"] - max(prev) > DETAIL_HUECO_NEGRO * self.h_total:
+                limite = max(limite or 0.0, float(a["x_absoluta"]))
+            elif not prev and cb is None:
+                limite = float(a["x_absoluta"])
+            return a["x_absoluta"] + a["width"] / 2.0, float(a["width"]), limite
         if cb is not None:
-            return ref + cb["width"] / 2.0, float(cb["width"])
-        return centro_tl, self.w_total / 8.0
+            return ref + cb["width"] / 2.0, float(cb["width"]), None
+        return centro_tl, self.w_total / 8.0, None
 
     def _preparar_detail(self):
         x0, y0, x1, y1 = self.r_detail
         bw, bh = x1 - x0, y1 - y0
-        cx, ancho = self._centro_detail()
+        cx, ancho, limite = self._centro_detail()
         # la ANIM ZONE ocupa ~la mitad de la franja, con el LED entre el 30% y el 50% del alto
         s = 0.5 * bw / max(1.0, ancho)
         led_h = max(0.30 * bh, min(0.50 * bh, self.h_total * s))
         s = led_h / float(self.h_total)
+        # v0.91: la ANIM ZONE sigue centrada, pero se amplía lo que haga falta para que el CB (en negro) quede
+        # fuera de la franja por la izquierda
+        if limite is not None and cx - limite > 1.0:
+            s_min = bw / (2.0 * (cx - limite) * (1.0 - DETAIL_MARGEN))
+            s = min(max(s, s_min), DETAIL_LED_MAX * bh / float(self.h_total))
         self.det_scale = s
         self.det_led_h = max(2, int(round(led_h)))
         cw = bw / s

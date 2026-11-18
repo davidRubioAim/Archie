@@ -2,7 +2,8 @@
 v0.89: previews a medida de cada estadio desde una carpeta de Google Drive (fuera del repositorio de GitHub).
 
 La carpeta (compartida como "cualquiera con el enlace") tiene los plate_<perfil>.png de cada estadio y, si hacen
-falta, su plate_<perfil>_delante.png y plate_<perfil>.json. Archie solo baja lo que necesita el estadio que se va a
+falta, su plate_<perfil>_delante.png y plate_<perfil>.json. v0.90: el .json puede llevar solo
+{"estadios": ["Perfil 1", "Perfil 2"]} para que otros perfiles usen el mismo plate. Archie solo baja lo que necesita el estadio que se va a
 renderizar y lo guarda en Assets/plates/estadios/ (ignorado por git). Solo se vuelve a bajar si el archivo de Drive
 ha cambiado (id, tamaño o fecha distintos). Sin red o si Drive falla, se usa lo que ya hay en la caché y, si no hay
 nada, el plate A.
@@ -106,35 +107,50 @@ def _leer_indice():
         return {}
 
 
+def _actualizar(files, nombre, indice, log):
+    """Baja `nombre` de Drive a la caché si no está o si ha cambiado. Si falla, se queda la copia local."""
+    destino = os.path.join(CARPETA_CACHE, nombre)
+    try:
+        firma = _firma(files[nombre])
+        if os.path.isfile(destino) and indice.get(nombre) == firma:
+            return
+        log("[plates] bajando %s de Drive..." % nombre)
+        t0 = time.time()
+        _bajar(files[nombre], destino)
+        indice[nombre] = firma
+        log("[plates] %s listo (%.1f s)" % (nombre, time.time() - t0))
+    except Exception as e:
+        log("[plates] no se pudo actualizar %s (%s): se usa la copia local si existe." % (nombre, e))
+
+
+def _alias_cache(stem):
+    try:
+        with open(os.path.join(CARPETA_CACHE, "plate_%s.json" % stem), encoding="utf-8") as f:
+            v = json.load(f).get("estadios") or []
+        return [v] if isinstance(v, str) else [str(x) for x in v]
+    except Exception:
+        return []
+
+
 def sincronizar(casa, log=print):
-    """Baja (o actualiza) de Drive los plates cuyo nombre cumple casa(stem) -> bool, con sus _delante/.json.
+    """Baja (o actualiza) de Drive los plates para los que casa(stem, alias) es True, con sus _delante/.json.
+    alias = "estadios" del plate_<stem>.json (v0.90: los .json, que son pequeños, se bajan siempre para leerlos).
     Devuelve la carpeta de la caché. Nunca lanza excepciones: si algo falla, se queda lo que haya en la caché."""
     try:
         files = listar(log)
         if not files:
             return CARPETA_CACHE
-        stems = {n[6:-4] for n in files if n.lower().startswith("plate_") and n.lower().endswith(".png")}
-        elegidos = [s for s in stems if not s.lower().endswith(("_delante", "_led")) and casa(s)]
-        if not elegidos:
-            return CARPETA_CACHE
         os.makedirs(CARPETA_CACHE, exist_ok=True)
         indice = _leer_indice()
-        for s in elegidos:
-            for nombre in ("plate_%s.png" % s, "plate_%s_delante.png" % s, "plate_%s.json" % s):
-                if nombre not in files:
-                    continue
-                destino = os.path.join(CARPETA_CACHE, nombre)
-                try:
-                    firma = _firma(files[nombre])
-                    if os.path.isfile(destino) and indice.get(nombre) == firma:
-                        continue
-                    log("[plates] bajando %s de Drive..." % nombre)
-                    t0 = time.time()
-                    _bajar(files[nombre], destino)
-                    indice[nombre] = firma
-                    log("[plates] %s listo (%.1f s)" % (nombre, time.time() - t0))
-                except Exception as e:
-                    log("[plates] no se pudo actualizar %s (%s): se usa la copia local si existe." % (nombre, e))
+        stems = {n[6:-4] for n in files if n.lower().startswith("plate_") and n.lower().endswith(".png")}
+        stems = {s for s in stems if not s.lower().endswith(("_delante", "_led"))}
+        for s in stems:
+            if "plate_%s.json" % s in files:
+                _actualizar(files, "plate_%s.json" % s, indice, log)
+        for s in (s for s in stems if casa(s, _alias_cache(s))):
+            for nombre in ("plate_%s.png" % s, "plate_%s_delante.png" % s):
+                if nombre in files:
+                    _actualizar(files, nombre, indice, log)
         with open(INDICE, "w", encoding="utf-8") as f:
             json.dump(indice, f, indent=1)
     except Exception as e:

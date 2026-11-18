@@ -147,8 +147,12 @@ def plate_de_estadio(estadio, base):
     if not estadio or base is None:
         return None
     nombres = _nombres_perfil(estadio)
+
+    def casa(stem, alias):
+        return bool(({_normalizar(stem)} | {_normalizar(x) for x in alias}) & nombres)
+
     # v0.89: primero la carpeta de Drive (se baja a Assets/plates/estadios solo lo de este estadio, si ha cambiado)
-    cache = _drive.sincronizar(lambda stem: _normalizar(stem) in nombres)
+    cache = _drive.sincronizar(casa)
     candidatos = (sorted(glob.glob(os.path.join(cache, "plate_*.png")))
                   + sorted(glob.glob(os.path.join(CARPETA_PLATES, "plate_*.png"))))
     for png in candidatos:
@@ -156,11 +160,10 @@ def plate_de_estadio(estadio, base):
         if stem.lower().endswith(("_delante", "_led")) or png == base["_png"]:
             continue
         js = png[:-4] + ".json"
-        meta = _meta_plate(js, png) if os.path.isfile(js) else None
-        claves = {_normalizar(stem)} | {_normalizar(x) for x in ((meta or {}).get("estadios") or [])}
-        if not (claves & nombres):
+        if not casa(stem, _alias(js)):
             continue
-        if meta is None:
+        meta = _meta_plate(js, png) if os.path.isfile(js) else None
+        if meta is None:            # sin .json o .json solo con "estadios": cámara y medidas del plate A
             meta = {k: v for k, v in base.items() if not k.startswith("_")}
             meta["nombre"] = stem
             meta["_png"] = png
@@ -168,6 +171,16 @@ def plate_de_estadio(estadio, base):
             meta["_delante"] = d if os.path.isfile(d) else base.get("_delante")
         return meta
     return None
+
+
+def _alias(js):
+    """v0.90: "estadios" de plate_<perfil>.json: otros perfiles que usan el mismo plate."""
+    try:
+        with open(js, encoding="utf-8") as f:
+            v = json.load(f).get("estadios") or []
+        return [v] if isinstance(v, str) else [str(x) for x in v]
+    except Exception:
+        return []
 
 
 def elegir_plate(tl_gl, estadio=None):

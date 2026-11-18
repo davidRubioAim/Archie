@@ -27,6 +27,9 @@ import urllib.request
 from edge_cases import cargar_overrides, aplicar_overrides
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+# v0.91: AMPLIFY (2nd row) desactivado de momento en toda la app (arquitectura, previews y system files):
+# aunque la hoja tenga una fila "- 2nd" o la columna Amplify, el estadio se trata como de una sola fila.
+AMPLIFY_ACTIVO = False
 FETCH_TIMEOUT = 6
 DEFAULT_SHEET_ID = "15hfgbbpTAd06OEmSR6Zpad3-xjgN_CiSuLtnS5-ExL0"  # AIM Sport - Atlas Venue Specs (Master Atlas)
 # v0.87: la hoja TESTS (1k-DcjAS_4barGv6X280Y6EyryiQVjhbhnae7hlBkkg4) ya no se usa
@@ -249,7 +252,21 @@ def load_stadium_library(config_dir, log=print, fallback_dirs=()):
     data, source = _load_base_library(config_dir, log, fallback_dirs)
     overrides = cargar_overrides([*reversed(fallback_dirs), config_dir], log)
     data = _with_custom(aplicar_overrides({k: v for k, v in data.items() if k != "Custom"}, overrides, DEFAULTS, log))
+    if not AMPLIFY_ACTIVO:
+        data = {k: _sin_amplify(k, v) for k, v in data.items()}
     return data, source
+
+
+def _sin_amplify(nombre, perfil):
+    """v0.91: perfil de una sola fila: Amplify apagado y el alto de una fila (Cabinet Height, o la mitad del alto
+    de las dos filas si la hoja no trae Cabinet Height)."""
+    if not isinstance(perfil, dict) or not (perfil.get("Amplify") or "AMPLIFY" in str(nombre).upper()):
+        return perfil
+    p = dict(perfil)
+    p["Amplify"] = False
+    cab = int(p.get("Cabinet Height") or 0)
+    p["Height"] = cab if cab > 0 else max(1, int(p.get("Height") or 0) // 2)
+    return p
 
 
 def _load_base_library(config_dir, log=print, fallback_dirs=()):

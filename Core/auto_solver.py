@@ -12,6 +12,7 @@ import os
 from motor_distribucion import calcular_layout_data
 from frame_cache import FRAME_CACHE
 from log_utils import debug, log_error
+from stadium_loader import AMPLIFY_ACTIVO  # v0.91
 
 # Claves de la config de calcular_layout_data que se guardan por campaña (más "margin")
 CONFIG_KEYS = ("stretch_limit", "squash_logos", "stretch_fit_per", "qty_goal", "qty_corner", "qty_cb", "qty_tl",
@@ -180,7 +181,7 @@ def config_campana(perfil, nombre_estadio, archivos, defaults):
         "qty_gl_under": int(defaults["qty_gl_under"]),
         "qty_tl_under": int(defaults["qty_tl_under"]),
         "show_cb": True,
-        "amplify": bool(perfil.get("Amplify")) or "AMPLIFY" in (nombre_estadio or "").upper(),
+        "amplify": AMPLIFY_ACTIVO and (bool(perfil.get("Amplify")) or "AMPLIFY" in (nombre_estadio or "").upper()),
         "invert_order": bool(defaults.get("invert_order", False)),
         "max_anim_gl": int(defaults["max_anim_gl"]),
         "max_anim_tl": int(defaults["max_anim_tl"]),
