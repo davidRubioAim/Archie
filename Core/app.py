@@ -32,6 +32,8 @@ from campaign_panel import CampaignPanel  # v0.58: pestaña CAMPAIGNS (batch de 
 from video_player import PreviewPlayer, PhotoTarget, Escena, Vista, PLAYER_FPS
 from vista_3d import Visor3D, geometria_estadio, escala_textura
 from manual_mode import ManualModeMixin  # v0.71: MODO MANUAL en la Architecture Preview
+from json_import import JsonImportMixin  # v0.93: IMPORT JSON (arquitectura aprobada)
+from drop_global import GlobalDropMixin  # v0.93: soltar ELEMENTS / JSON en cualquier parte de la ventana
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -137,7 +139,7 @@ class CTkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
         super().__init__(*args, **kwargs)
         self.TkdndVersion = TkinterDnD._require(self)
 
-class MegaStripApp(ManualModeMixin, CTkDnD):
+class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
     def _set_window_icon(self):
         """Icono de ventana y barra de tareas a partir de Assets/logo_Archie.ico.
         No se usa iconbitmap(): el lector de .ico de Tk no entiende las capas guardadas como PNG (lo habitual en .ico
@@ -624,6 +626,11 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         self.sys_image_container.bind("<Configure>", self.trigger_resize)
         self.preview_image_container.bind("<Configure>", self.trigger_resize)
 
+        # v0.93: ELEMENTS (uno o varios) y JSON de Archie se pueden soltar en cualquier parte de la ventana.
+        # Las drop zones de MEDIA ASSETS siguen teniendo prioridad (son drop targets propios).
+        self.drop_target_register(DND_FILES)
+        self.dnd_bind('<<Drop>>', self.on_drop_global)
+
         # --- NUEVO CONTENEDOR DE CONTROLES DE EXPORTACIÓN (Debajo de Previews) ---
         self.preview_area.grid_rowconfigure(3, weight=0) 
         
@@ -669,6 +676,16 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
             text_color=self.c_text_dark,
             command=lambda: self.queue_manager.export_ae_json()
         ).grid(row=0, column=0, sticky="ew")
+        ctk.CTkButton(   # v0.93: recupera un JSON exportado (estadio, ELEMENTS, sliders y posiciones exactas)
+            self.left_btn_frame,
+            text="📂",
+            font=ctk.CTkFont(size=15),
+            width=35, height=35,
+            fg_color="#E0E0E0",
+            hover_color="#D0D0D0",
+            text_color=self.c_text_dark,
+            command=self.importar_json
+        ).grid(row=0, column=1, padx=(5, 0))
 
         self.center_btn_frame = ctk.CTkFrame(self.btn_frame, fg_color="transparent")
         self.center_btn_frame.grid(row=0, column=1, sticky="ew", padx=5)
@@ -1641,7 +1658,11 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         self.trigger_update()
 
     def update_anim_zone(self, event, idx):
-        file_path = event.data.strip('{}')
+        paths = self._dnd_paths(event)
+        if self._drop_especial(paths):   # v0.93: varios ELEMENTS (p. ej. el grupo de ANIM) o un JSON
+            self._soltar_archivos(paths)
+            return
+        file_path = paths[0]
         self.archivos_cargados["anim_zones"][idx] = file_path
         if idx == 0:
             self.archivos_cargados["anim_zone"] = file_path 
@@ -1990,7 +2011,11 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
         if folder := ctk.filedialog.askdirectory(title="Select Destination"): self.output_path_var.set(folder)
 
     def on_drop(self, event, key):
-        file_path = event.data.strip('{}')
+        paths = self._dnd_paths(event)
+        if self._drop_especial(paths):   # v0.93: varios ELEMENTS o un JSON -> cada uno a su sitio
+            self._soltar_archivos(paths)
+            return
+        file_path = paths[0]
         self.archivos_cargados[key] = file_path
         self.drop_labels[key].configure(text=f"Loaded:\n{os.path.basename(file_path)}", text_color="#2CC985")
         if key == "center_board":
@@ -2185,6 +2210,10 @@ class MegaStripApp(ManualModeMixin, CTkDnD):
             res = self._mv_aplicar(res)   # v0.71: arquitectura en MODO MANUAL (si la hay)
             if res:
                 res["config"] = config
+                # v0.93: estadio y margin en el JSON para poder importarlo tal cual (📂 junto a Generate AE Import)
+                res["archie"] = {"version": self.current_version_str,
+                                 "stadium": self.stadium_selector_global.get(),
+                                 "config": {"margin": margin}}
                 res["fps"] = self.fps_actual()  # v0.57: fps del render, de la columna FPS de la hoja
                 # NUEVO BLOQUE: system_file para After Effects
                 sys_w = int(self.inputs["Canvas Width"].get() or 3840)
