@@ -697,7 +697,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
             fg_color="#2b2b2b", 
             hover_color="#404040", 
             text_color=self.c_white, 
-            command=self.batch_manager.open_modal
+            command=self.batch_add_to_queue   # v0.94: en CAMPAIGNS manda las campañas READY a la cola
         ).pack(fill="both", expand=True)
 
         self.right_btn_frame = ctk.CTkFrame(self.btn_frame, fg_color="transparent")
@@ -2135,6 +2135,15 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
                 "qty_gl_under": d["sliders"]["qty_gl_under"], "qty_tl_under": d["sliders"]["qty_tl_under"],
                 "max_anim_gl": d["sliders"]["max_anim_gl"], "max_anim_tl": d["sliders"]["max_anim_tl"],
                 "invert_order": d["vars"]["invert_order"], "stretch_fit": d["vars"]["stretch_fit"]}
+
+    def batch_add_to_queue(self):
+        """v0.94: con la pestaña CAMPAIGNS y campañas en CAMPAIGN CODES, todas las READY van a la cola de render.
+        Si no, el Batch Setup de estadios de siempre."""
+        panel = getattr(self, "campaign_panel", None)
+        if panel and self.media_mode.get() == "CAMPAIGNS" and panel.approved:
+            panel.batch_add_queue()
+        else:
+            self.batch_manager.open_modal()
 
     def on_media_mode(self, mode):
         if mode == "CAMPAIGNS":

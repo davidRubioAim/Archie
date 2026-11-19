@@ -6,8 +6,11 @@ Pestaña CAMPAIGNS de Media Assets: batch de campañas para el estadio seleccion
   CAMPAIGN CODES: la lista que se procesa, con su estado. Al hacer clic en una campaña se cargan sus ELEMENTS
   (NAS) y SU arquitectura en Manual Edit y en las tres previews. Cada campaña guarda su propia arquitectura.
 
-Botones: Mark as reviewed (guarda el JSON de arquitectura) y Export ready campaigns (System File + JSON
-+ vídeo de previsualización 3D de cada campaña lista para renderizar, a la cola de render).
+v0.94: la columna Status es un botón por campaña: WIP (naranja) <-> READY (verde) al hacer clic; MISSING (rojo)
+si no tiene ELEMENTS listos. El aviso de ELEMENTS solo sale al hacer clic en MISSING o en el nombre de esa campaña,
+y nunca hay más de uno abierto. Sin Mark as reviewed ni Export ready campaigns: los botones de abajo (Generate AE
+Import, Generate SYSTEM FILE, Render Preview) trabajan con la campaña que se está previsualizando y Batch Add to
+Queue manda a la cola de render todas las campañas READY (System File + JSON + vídeo 3D de cada una).
 """
 import copy
 import re
@@ -19,6 +22,7 @@ import tkinter.font as tkfont
 from tkinter import ttk, messagebox
 
 import customtkinter as ctk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 import campaign_batch as cb
 from campaign_loader import load_campaigns, normalizar_codigo, codigo_valido
@@ -26,14 +30,52 @@ from nas_campaigns import NasIndex, mensaje, ST_READY
 from auto_solver import config_campana, CONFIG_KEYS
 from log_utils import debug, log_error
 
-COLORES = {
-    cb.S_CHECKING: "#7A7A7A", cb.S_NO_NAS: "#C0392B", cb.S_MISSING: "#C0392B", cb.S_INCOMPLETE: "#C0392B",
-    cb.S_REVIEW_FILES: "#E67E22", cb.S_PENDING: "#7A7A7A", cb.S_UNREVIEWED: "#2E86C1", cb.S_REVIEWED: "#27AE60",
-}
-ICONOS = {
-    cb.S_CHECKING: "…", cb.S_NO_NAS: "⚠", cb.S_MISSING: "⚠", cb.S_INCOMPLETE: "⚠", cb.S_REVIEW_FILES: "?",
-    cb.S_PENDING: "○", cb.S_UNREVIEWED: "◐", cb.S_REVIEWED: "✔",
-}
+# v0.94: botón de estado (columna Status) -> (texto, color)
+FALTAN = (cb.S_NO_NAS, cb.S_MISSING, cb.S_INCOMPLETE)
+PILL_WIP, PILL_READY, PILL_MISSING, PILL_CHECKING = "WIP", "READY", "MISSING", "…"
+PILLS = {PILL_WIP: "#E67E22", PILL_READY: "#27AE60", PILL_MISSING: "#C0392B", PILL_CHECKING: "#9A9A9A"}
+
+
+def pill_de(estado):
+    if estado == cb.S_CHECKING:
+        return PILL_CHECKING
+    if estado in FALTAN:
+        return PILL_MISSING
+    return PILL_READY if estado == cb.S_REVIEWED else PILL_WIP
+
+
+def _fuente_pill(px):
+    core = os.path.dirname(os.path.abspath(__file__))
+    for base in (os.path.dirname(core), os.path.dirname(os.path.dirname(os.path.dirname(core)))):
+        cand = os.path.join(base, "Assets", "Montserrat-Bold.ttf")
+        if os.path.isfile(cand):
+            try:
+                return ImageFont.truetype(cand, px)
+            except Exception:
+                pass
+    for cand in ("arialbd.ttf", "DejaVuSans-Bold.ttf"):
+        try:
+            return ImageFont.truetype(cand, px)
+        except Exception:
+            pass
+    try:
+        return ImageFont.load_default(size=px)
+    except TypeError:   # Pillow < 10.1
+        return ImageFont.load_default()
+
+
+def _imagen_pill(texto, color, w, h, ss=4):
+    """Píldora redondeada con el texto centrado (se dibuja a 4x y se reduce para suavizar los bordes)."""
+    W, H = w * ss, h * ss
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((0, 0, W - 1, H - 1), radius=H // 2, fill=color)
+    font = _fuente_pill(int(H * 0.56))
+    x0, y0, x1, y1 = d.textbbox((0, 0), texto, font=font)
+    d.text(((W - (x1 - x0)) / 2 - x0, (H - (y1 - y0)) / 2 - y0), texto, font=font, fill="white")
+    return img.resize((w, h), Image.LANCZOS)
+
+
 TREE_ROWS = 7
 CAPTURE_DELAY_MS = 500
 LOAD_SETTLE_MS = 900
@@ -57,6 +99,11 @@ class CampaignPanel:
         self.pending_activate = None
         self._capture_timer = None
         self.exporting = False
+        self._drag = None
+        self._drag_win = None
+        self._dialogo = None          # v0.94: único aviso de ELEMENTS abierto
+        self._popup_code = None       # v0.94: campaña cuyo aviso se pidió con un clic (se enseña tras comprobarla)
+        self._ready_tras_carga = None  # v0.94: campaña que pasa a READY en cuanto termine de cargarse
         self.local_dir = cb.leer_ajustes(config_dir).get("architecture_dir")
 
         self.frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -77,13 +124,22 @@ class CampaignPanel:
         self._fuente = fuente
         alto_fila = fuente.metrics("linespace") + 6
         w_code = fuente.measure("ADID-RMXX-261001") + 18
-        w_status = fuente.measure("◐ Not reviewed") + 18
+        # v0.94: píldoras de estado del alto de la fila
+        pill_h = max(14, alto_fila - 6)
+        fp = _fuente_pill(int(pill_h * 0.56))
+        pill_w = max(int(fp.getlength(t)) for t in PILLS) + pill_h
+        self._pills = {t: ImageTk.PhotoImage(_imagen_pill(t, c, pill_w, pill_h), master=f) for t, c in PILLS.items()}
+        w_status = pill_w + 16
         style.configure("Archie.Treeview", font=fuente, rowheight=alto_fila, background=app.c_white,
                         fieldbackground=app.c_white, foreground=app.c_text_dark, borderwidth=0)
         style.configure("Archie.Treeview.Heading", font=(fuente.actual("family"), 9, "bold"), background=app.c_light_grey,
                         foreground=app.c_text_dark, relief="flat")
         style.map("Archie.Treeview", background=[("selected", app.c_light_magenta)],
                   foreground=[("selected", app.c_text_dark)])
+        # v0.94: la columna de árbol (#0) solo enseña la píldora, sin hueco para el desplegable
+        style.layout("Archie.Treeview.Item", [("Treeitem.padding", {"sticky": "nswe", "children": [
+            ("Treeitem.image", {"side": "left", "sticky": ""}),
+            ("Treeitem.text", {"side": "left", "sticky": ""})]})])
 
         top = ctk.CTkFrame(f, fg_color="transparent")
         top.pack(fill="x", padx=5, pady=(0, 6))
@@ -151,40 +207,25 @@ class CampaignPanel:
                       highlightcolor="#E0E0E0")
         rw.pack(fill="both", expand=True)
         self.right_wrap = rw
-        self.tree_r = ttk.Treeview(rw, columns=("status", "code"), show="headings", height=TREE_ROWS,
+        self.tree_r = ttk.Treeview(rw, columns=("code",), show=("tree", "headings"), height=TREE_ROWS,
                                    style="Archie.Treeview", selectmode="extended")
-        self.tree_r.heading("status", text="Status")
+        self.tree_r.heading("#0", text="Status")
         self.tree_r.heading("code", text="Code")
-        self.tree_r.column("status", width=w_status, minwidth=w_status, stretch=False)
+        self.tree_r.column("#0", width=w_status, minwidth=w_status, stretch=False, anchor="center")
         self.tree_r.column("code", width=w_code, minwidth=w_code, stretch=True)
         sr = ttk.Scrollbar(rw, orient="vertical", command=self.tree_r.yview)
         self.tree_r.configure(yscrollcommand=sr.set)
         self.tree_r.pack(side="left", fill="both", expand=True)
         sr.pack(side="right", fill="y")
-        for st, color in COLORES.items():
-            self.tree_r.tag_configure(st, foreground=color)
         self.tree_r.tag_configure("active", background="#FDEAF4")
         self.lbl_drop_hint = tk.Label(rw, text="Drag campaigns here", fg="#A0A0A0",
                                       bg=app.c_white, font=(fuente.actual("family"), 9))
         self.lbl_drop_hint.place(relx=0.5, rely=0.55, anchor="center")
 
-        # --- abajo: estado, acciones y aviso
+        # --- abajo: estado (v0.94: sin Mark as reviewed / Export ready campaigns ni el aviso de los JSON)
         self.lbl_info = ctk.CTkLabel(f, text="", font=ctk.CTkFont(size=11), text_color=app.c_text_muted,
                                      anchor="w", justify="left", wraplength=640)
         self.lbl_info.pack(fill="x", padx=5, pady=(4, 0))
-        acts = ctk.CTkFrame(f, fg_color="transparent")
-        acts.pack(fill="x", padx=5, pady=(4, 0))
-        acts.grid_columnconfigure(0, weight=1)
-        acts.grid_columnconfigure(1, weight=1)
-        self.btn_review = ctk.CTkButton(acts, text="✔ Mark as reviewed", height=30, fg_color="#27AE60",
-                                        hover_color="#2ECC71", font=app.font_t2, command=self.marcar_revisada,
-                                        state="disabled")
-        self.btn_review.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.btn_export = ctk.CTkButton(acts, text="Export ready campaigns", height=30, fg_color=app.c_magenta,
-                                        hover_color="#D1007A", font=app.font_t2, command=self.exportar)
-        self.btn_export.grid(row=0, column=1, sticky="ew", padx=(4, 0))
-        ctk.CTkLabel(f, text="ⓘ " + cb.DISCLAIMER, font=ctk.CTkFont(size=10), text_color=app.c_text_muted,
-                     anchor="w", justify="left", wraplength=660).pack(fill="x", padx=5, pady=(4, 0))
 
         # --- eventos
         tl, tr = self.tree_l, self.tree_r
@@ -193,7 +234,11 @@ class CampaignPanel:
         tl.bind("<ButtonRelease-1>", self._drag_release, add="+")
         tl.bind("<Double-1>", lambda e: self.agregar(self._sel(tl)))
         tl.bind("<Return>", lambda e: self.agregar(self._sel(tl)))
-        tr.bind("<<TreeviewSelect>>", lambda e: self._on_select_right())
+        # v0.94: clic en la píldora = WIP <-> READY (o aviso si es MISSING); clic en el código = previsualizar
+        tr.bind("<ButtonRelease-1>", self._click_right, add="+")
+        tr.bind("<KeyRelease-Up>", lambda e: self._on_select_right())
+        tr.bind("<KeyRelease-Down>", lambda e: self._on_select_right())
+        tr.bind("<Return>", lambda e: self._on_select_right(popup=True))
         tr.bind("<Delete>", lambda e: self.quitar(self._sel(tr)))
         tr.bind("<BackSpace>", lambda e: self.quitar(self._sel(tr)))
         tr.bind("<Button-3>", self._menu_right)
@@ -345,15 +390,14 @@ class CampaignPanel:
             return
         st = self.estado(code)
         tags = [st] + (["active"] if code == self.active else [])
-        self.tree_r.item(code, values=(f"{ICONOS[st]} {cb.ETIQUETAS[st]}", code), tags=tags)
+        self.tree_r.item(code, text="", image=self._pills[pill_de(st)], values=(code,), tags=tags)
         if code == self.active:
             self._actualizar_info()
 
     def _actualizar_cabeceras(self):
         n = len(self.approved)
-        ok = sum(1 for c in self.approved if cb.exportable(self.estado(c)))
-        rev = sum(1 for c in self.approved if self.estado(c) == cb.S_REVIEWED)
-        self.lbl_right.configure(text=f"CAMPAIGN CODES ({n})" + (f" · {ok} ready to render · {rev} reviewed" if n else ""))
+        ready = sum(1 for c in self.approved if self.estado(c) == cb.S_REVIEWED)
+        self.lbl_right.configure(text=f"CAMPAIGN CODES ({n})" + (f" · {ready} READY" if n else ""))
         if n:
             self.lbl_drop_hint.place_forget()
         else:
@@ -362,26 +406,20 @@ class CampaignPanel:
     def _actualizar_info(self, extra=None):
         if extra is not None:
             self.lbl_info.configure(text=extra[0], text_color=extra[1])
-            if not self.active:
-                self.btn_review.configure(state="disabled", text="✔ Mark as reviewed")
             return
         code = self.active
         if not code:
-            self.lbl_info.configure(text="Click a campaign in CAMPAIGN CODES to load its Elements and architecture for this stadium.",
+            self.lbl_info.configure(text="Click a campaign in CAMPAIGN CODES to preview it. Click WIP to mark it READY.",
                                     text_color=self.app.c_text_muted)
-            self.btn_review.configure(state="disabled", text="✔ Mark as reviewed")
             return
-        st = self._state(code)
         name = self.by_code.get(code, {}).get("name", "")
         estado = self.estado(code)
-        txt = f"Editing {code}" + (f" · {name}" if name else "") + f" · {cb.ETIQUETAS[estado]}"
-        if st.saved_path and st.reviewed:
-            txt += f"\nSaved: {st.saved_path}"
-        self.lbl_info.configure(text=txt, text_color=COLORES.get(estado, self.app.c_text_muted))
-        if st.reviewed:
-            self.btn_review.configure(state="normal", text="↺ Mark as not reviewed")
-        else:
-            self.btn_review.configure(state="normal" if st.config else "disabled", text="✔ Mark as reviewed")
+        pill = pill_de(estado)
+        txt = f"Previewing {code}" + (f" · {name}" if name else "") + f" · {pill}"
+        if estado == cb.S_REVIEW_FILES:
+            info = self.elements.get(code) or {}
+            txt += "\n" + mensaje(code, info).split("\n")[0] + " Check the Elements, then click WIP to mark it READY."
+        self.lbl_info.configure(text=txt, text_color=PILLS[pill] if pill != PILL_CHECKING else self.app.c_text_muted)
 
     # ================================================================ añadir / quitar
     def agregar_desde_buscador(self):
@@ -410,9 +448,10 @@ class CampaignPanel:
         else:
             self._set_buscador("")
             if ya and not nuevos:
-                self._actualizar_info((f"{', '.join(ya)} is already in the list.", "#E67E22"))
                 self.tree_r.selection_set(ya[0])
                 self.tree_r.see(ya[0])
+                self.activar(ya[0])
+                self._actualizar_info((f"{', '.join(ya)} is already in the list.", "#E67E22"))
 
     def _set_buscador(self, texto):
         self.entry_code.delete(0, "end")
@@ -433,7 +472,7 @@ class CampaignPanel:
                 continue
             nuevos.append(code)
             self.approved.append(code)
-            self.tree_r.insert("", "end", iid=code, values=("", code))
+            self.tree_r.insert("", "end", iid=code, text="", values=(code,))
             self._marcar_izquierda(code, True)
             self._pintar_fila(code)
             if code in self.elements:
@@ -450,6 +489,7 @@ class CampaignPanel:
             self.tree_r.see(nuevos[-1])
             if not self.active:
                 self.tree_r.selection_set(nuevos[0])
+                self.activar(nuevos[0])   # v0.94: sin aviso; si le faltan ELEMENTS queda en MISSING
         return nuevos
 
     def quitar(self, codes):
@@ -534,18 +574,73 @@ class CampaignPanel:
         return False
 
     # ================================================================ activar campaña
-    def _on_select_right(self):
+    def _on_select_right(self, popup=False):
         sel = self._sel(self.tree_r)
         if len(sel) != 1:
             return
         code = sel[0]
         if code != self.active:
+            self.activar(code, popup=popup)
+
+    def _click_right(self, e):
+        """v0.94: clic en la píldora de Status o en el código de una campaña de CAMPAIGN CODES."""
+        if e.state & 0x0005:          # Shift / Ctrl: solo selección múltiple (para quitar varias)
+            return
+        tr = self.tree_r
+        if tr.identify_region(e.x, e.y) not in ("tree", "cell"):
+            return
+        code = tr.identify_row(e.y)
+        if not code:
+            return
+        en_pill = tr.identify_column(e.x) == "#0"
+        self.app.after_idle(lambda: self._click_estado(code) if en_pill else self._click_codigo(code))
+
+    def _click_codigo(self, code):
+        if not self.tree_r.exists(code):
+            return
+        if code != self.active or self.estado(code) in FALTAN:
+            self.activar(code, popup=True)
+
+    def _click_estado(self, code):
+        """WIP -> READY -> WIP. MISSING abre el aviso de ELEMENTS."""
+        if not self.tree_r.exists(code) or self.exporting:
+            return
+        estado = self.estado(code)
+        if estado == cb.S_CHECKING:
+            return
+        if estado in FALTAN:
+            self.activar(code, popup=True)
+            return
+        st = self._state(code)
+        if estado == cb.S_REVIEWED:
+            st.reviewed = False
+            self._ready_tras_carga = None
+            self._guardar_silencioso(code)
+            self._pintar_fila(code)
+            self._actualizar_cabeceras()
+            return
+        if code == self.active and not self.loading and not self.app.solver_busy:
+            self._capturar()
+            if st.config:
+                self._marcar_ready(code)
+            else:
+                self._actualizar_info((f"{code}: create the architecture before marking it READY.", "#E67E22"))
+            return
+        # Todavía no está cargada: se carga (previsualiza) y pasa a READY al terminar
+        self._ready_tras_carga = code
+        if code != self.active:
             self.activar(code)
 
-    def activar(self, code):
+    def activar(self, code, popup=False):
         app = self.app
         if self.exporting:
             return
+        if popup:
+            self._popup_code = code
+        elif self._popup_code != code:
+            self._popup_code = None
+        if self._ready_tras_carga and self._ready_tras_carga != code:
+            self._ready_tras_carga = None
         if app.solver_busy:
             self.pending_activate = code
             return
@@ -557,7 +652,7 @@ class CampaignPanel:
             return
         st = self._state(code)
         estado = self.estado(code)
-        if estado in (cb.S_NO_NAS, cb.S_MISSING, cb.S_INCOMPLETE) and code not in self._rechecked:
+        if estado in FALTAN and code not in self._rechecked:
             # Puede que el estudio ya haya subido los Elements: se vuelve a mirar el NAS antes de avisar
             self._rechecked.add(code)
             self.elements.pop(code, None)
@@ -567,14 +662,18 @@ class CampaignPanel:
             self._comprobar(code)
             return
         self._rechecked.discard(code)
-        if estado in (cb.S_NO_NAS, cb.S_MISSING, cb.S_INCOMPLETE):
+        if estado in FALTAN:
             anterior = self.active
             self.active = None
             if anterior:
                 self._pintar_fila(anterior)
-            self._actualizar_info((f"{code}: " + mensaje(code, info).split("\n")[0], "#C0392B"))
-            self._dialogo_elements(code, info)
+            self._ready_tras_carga = None
+            self._actualizar_info((f"{code}: MISSING · " + mensaje(code, info).split("\n")[0], "#C0392B"))
+            if self._popup_code == code:    # v0.94: el aviso solo sale si se hizo clic en la campaña
+                self._dialogo_elements(code, info)
+            self._popup_code = None
             return
+        self._popup_code = None
 
         anterior, self.active = self.active, code
         self.active_stadium = self.stadium()
@@ -590,9 +689,7 @@ class CampaignPanel:
         else:
             app.preparar_campana_nueva()
             app.auto_create_architecture()   # al terminar llama a on_solver_done
-        if estado == cb.S_REVIEW_FILES:
-            self._dialogo_elements(code, info)
-        self._actualizar_info()
+        self._actualizar_info()   # v0.94: "Check files" se explica aquí, sin ventana
 
     def on_solver_done(self, msg):
         """Lo llama app._on_solver_done: la arquitectura por defecto de la campaña activa ya está en la interfaz."""
@@ -611,6 +708,9 @@ class CampaignPanel:
         # Línea base: lo que quedó en la interfaz (los sliders pueden redondear o acotar valores)
         st.config = self.app.config_actual()
         st.files = copy.deepcopy(self.app.archivos_cargados)
+        if self._ready_tras_carga == code and st.config:
+            self._marcar_ready(code)
+        self._ready_tras_carga = None
         self._pintar_fila(code)
         self._actualizar_cabeceras()
 
@@ -672,7 +772,7 @@ class CampaignPanel:
         messagebox.showinfo(
             "Save architecture",
             f"{motivo}\n\nArchie cannot write to the campaign folder on the NAS (read-only access). "
-            "Please choose a local folder to save the architecture JSON files.\n\n" + cb.DISCLAIMER, parent=self.app)
+            "Please choose a local folder to save the architecture JSON files.", parent=self.app)
         folder = ctk.filedialog.askdirectory(title="Folder for the architecture JSON files")
         if folder:
             self.local_dir = folder
@@ -691,79 +791,81 @@ class CampaignPanel:
             st.saved_path, st.saved_at = path, doc["archie"]["saved_at"]
         return path, donde
 
-    def marcar_revisada(self):
-        code = self.active
-        if not code:
-            return
-        self._capturar()
-        st = self._state(code)
-        if st.reviewed:
-            st.reviewed = False
-            self._pintar_fila(code)
-            self._actualizar_cabeceras()
-            return
-        if not st.config:
-            return
-        st.reviewed = True
+    def _guardar_silencioso(self, code):
+        """Guarda el JSON (NAS o carpeta local ya elegida) sin preguntar nada."""
         try:
-            path, donde = self._guardar(code)
+            doc = self._documento(code)
+            path, _ = cb.guardar(doc, self.nas, code, self.stadium(), self.local_dir)
+            if path:
+                st = self._state(code)
+                st.saved_path, st.saved_at = path, doc["archie"]["saved_at"]
         except Exception as e:
             log_error(f"[Campañas] guardando {code}: {e}")
-            path, donde = None, None
+
+    def _marcar_ready(self, code):
+        """v0.94: la campaña pasa a READY (sustituye a Mark as reviewed) y se guarda su JSON de arquitectura."""
+        st = self._state(code)
+        if not st.config:
+            return
+        if self.estado(code) == cb.S_REVIEW_FILES:
+            st.files_manual = True   # el PM da por buenos los ELEMENTS elegidos
+        st.reviewed = True
+        try:
+            path, _ = self._guardar(code)
+        except Exception as e:
+            log_error(f"[Campañas] guardando {code}: {e}")
+            path = None
         self._pintar_fila(code)
         self._actualizar_cabeceras()
-        if path:
-            where = "on the NAS" if donde == "nas" else "locally"
-            self._actualizar_info((f"✔ {code} reviewed · architecture saved {where}:\n{path}", "#27AE60"))
+        if self.estado(code) != cb.S_REVIEWED:
+            self._actualizar_info()
+        elif path:
+            self._actualizar_info((f"✔ {code} READY · architecture saved: {path}", "#27AE60"))
         else:
-            self._actualizar_info((f"✔ {code} reviewed, but the architecture JSON could not be saved.", "#E67E22"))
+            self._actualizar_info((f"✔ {code} READY (the architecture JSON could not be saved).", "#E67E22"))
 
     # ================================================================ exportar
-    def exportar(self):
-        if self.exporting:
-            return
+    def batch_add_queue(self):
+        """v0.94 (Batch Add to Queue en la pestaña CAMPAIGNS): todas las campañas READY a la cola de render."""
         app = self.app
+        titulo = "Batch Add to Queue"
+        if self.exporting:
+            self._actualizar_info(("Campaigns are already being added to the render queue…", app.c_text_muted))
+            return
         self._capturar()
         stadium = self.stadium()
         perfil = self._perfil()
         if not perfil or stadium == "Custom":
-            messagebox.showwarning("Export campaigns", "Select a stadium profile first.", parent=app)
-            return
-        if not self.approved:
-            messagebox.showinfo("Export campaigns", "Add the campaigns to export by typing their codes first.",
-                                parent=app)
+            messagebox.showwarning(titulo, "Select a stadium profile first.", parent=app)
             return
         estados = {c: self.estado(c) for c in self.approved}
-        targets = [c for c in self.approved if cb.exportable(estados[c])]
-        skipped = [c for c in self.approved if c not in targets]
+        targets = [c for c in self.approved if estados[c] == cb.S_REVIEWED]
+        no_ready = [c for c in self.approved if c not in targets]
         if not targets:
-            messagebox.showwarning("Export campaigns", "None of the campaigns can be rendered yet.\n\n" +
-                                   self._resumen_saltadas(skipped, estados), parent=app)
+            messagebox.showwarning(titulo, "No campaign is READY yet. Click WIP next to a campaign to mark it READY."
+                                   "\n\n" + self._resumen_saltadas(no_ready, estados), parent=app)
             return
-        sin_revisar = [c for c in targets if estados[c] != cb.S_REVIEWED]
-        texto = f"Export {len(targets)} campaign(s) for {stadium}?\n\nEach one: System File + architecture JSON + 3D preview video."
-        if sin_revisar:
-            texto += (f"\n\n{len(sin_revisar)} campaign(s) have not been reviewed and will use their current "
-                      f"(automatic or edited) architecture:\n" + "\n".join("   " + c for c in sin_revisar[:15]) +
-                      ("\n   …" if len(sin_revisar) > 15 else ""))
-        if skipped:
-            texto += "\n\nSkipped:\n" + self._resumen_saltadas(skipped, estados)
-        if not messagebox.askyesno("Export campaigns", texto, parent=app):
-            return
+        if no_ready:
+            texto = (f"{len(no_ready)} campaign(s) are not READY and will NOT be added to the render queue:\n\n" +
+                     self._resumen_saltadas(no_ready, estados) +
+                     f"\n\n{len(targets)} READY campaign(s) will be added for {stadium}.")
+            if not messagebox.askokcancel(titulo, texto, icon="warning", parent=app):
+                return
         out_root = app.output_path_var.get()
         defaults = app.ui_defaults_campana()
         self.exporting = True
-        self.btn_export.configure(state="disabled", text="Preparing…")
+        self._actualizar_info((f"Preparing {len(targets)} READY campaign(s)…", app.c_text_muted))
         threading.Thread(target=self._export_worker, args=(targets, stadium, perfil, out_root, defaults),
                          daemon=True).start()
 
     def _resumen_saltadas(self, codes, estados):
-        return "\n".join(f"   {c}: {cb.ETIQUETAS[estados[c]]}" for c in codes[:20]) + ("\n   …" if len(codes) > 20 else "")
+        return "\n".join(f"   {c}: {pill_de(estados[c])}" for c in codes[:20]) + ("\n   …" if len(codes) > 20 else "")
 
     def _export_worker(self, targets, stadium, perfil, out_root, defaults):
         trabajos, errores, sin_guardar = [], [], []
         for i, code in enumerate(targets, 1):
-            self.app.after(0, lambda i=i, c=code: self.btn_export.configure(text=f"Preparing {i}/{len(targets)}…"))
+            self.app.after(0, lambda i=i, c=code: self._actualizar_info(
+                (f"Preparing {c} ({i}/{len(targets)})…", self.app.c_text_muted)))
             st = self._state(code, stadium)
             try:
                 if st.config is None:
@@ -807,10 +909,10 @@ class CampaignPanel:
                         st = self._state(code, stadium)
                         st.saved_path, st.saved_at = path, doc["archie"]["saved_at"]
         self.exporting = False
-        self.btn_export.configure(state="normal", text="Export ready campaigns")
         self._actualizar_cabeceras()
+        self._actualizar_info()
         if errores:
-            messagebox.showerror("Export campaigns", "Some campaigns could not be prepared:\n\n" + "\n".join(errores),
+            messagebox.showerror("Batch Add to Queue", "Some campaigns could not be prepared:\n\n" + "\n".join(errores),
                                  parent=self.app)
         if trabajos:
             self._actualizar_info((f"{len(trabajos)} campaign(s) added to the render queue · "
@@ -821,7 +923,16 @@ class CampaignPanel:
     # ================================================================ avisos
     def _dialogo_elements(self, code, info):
         app = self.app
+        # v0.94: un solo aviso a la vez (el anterior se cierra)
+        if self._dialogo is not None:
+            try:
+                if self._dialogo.winfo_exists():
+                    self._dialogo.destroy()
+            except tk.TclError:
+                pass
+            self._dialogo = None
         win = ctk.CTkToplevel(app)
+        self._dialogo = win
         win.title(f"Campaign {code}")
         win.transient(app)
         win.configure(fg_color=app.c_white)
