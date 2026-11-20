@@ -151,9 +151,20 @@ def ruta_local(local_dir, code, stadium):
     return os.path.join(local_dir, code, safe_name(stadium) + ".json")
 
 
+def base_codigo(key):
+    """v0.97: 'JETX-UEFA-260501_C1_SPANISH' -> 'JETX-UEFA-260501' (las variantes van detrás del código)."""
+    return key[:16]
+
+
+def variante_de(key):
+    """v0.97: 'JETX-UEFA-260501_C1_SPANISH' -> 'C1_SPANISH' ('' si es la campaña sin variantes)."""
+    return key[16:].lstrip("_")
+
+
 def ruta_nas(nas, code, stadium):
-    d = nas.archie_dir(code)
-    return os.path.join(d, safe_name(stadium) + ".json") if d else None
+    d = nas.archie_dir(base_codigo(code))
+    var = variante_de(code)
+    return os.path.join(d, safe_name(stadium) + (f"_{var}" if var else "") + ".json") if d else None
 
 
 def _escribir(path, doc):

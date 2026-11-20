@@ -13,6 +13,9 @@ nas_campaigns.inspeccionar solo mira los .mov sueltos en <CÓDIGO>\\Output\\Elem
   - Los archivos comunes ("") completan lo que falte en cada versión (p.ej. un BG compartido por C1 y C2).
     Si solo hay comunes, hay una única versión "" (el caso de siempre).
   - Cada versión se clasifica igual que en Archie: ANIM (todas), LOGO / BG / CB (uno; si hay varios -> revisar).
+  - v0.97 (idiomas=True, lo usa la pestaña CAMPAIGNS): un idioma en el nombre (..._ANIM_SPANISH, ..._ANIM_INGLES)
+    separa variantes dentro de cada versión ("C1 SPANISH", "C1 ENGLISH"); los archivos sin idioma de esa versión
+    (LOGO, BG...) completan cada idioma. Sinónimos agrupados: INGLES = ENGLISH = ENG, ESPANOL = SPANISH = ESP...
 
 Resultado:
   {"status": no_nas | not_found | found, "path": carpeta Elements,
@@ -21,13 +24,32 @@ Resultado:
 import os
 import re
 
-from auto_import import detectar_tipo, EXTENSIONES_ELEMENTS
+from auto_import import detectar_tipo, EXTENSIONES_ELEMENTS, _tokens
 from nas_campaigns import REQUIRED, ST_NO_NAS, ST_NOT_FOUND, ST_INCOMPLETE, ST_REVIEW, ST_READY, _isdir_timeout
 
 ST_FOUND = "found"
 MAX_DEPTH = 3
 IGNORAR = {"ARCHIE", "OLD", "ARCHIVE", "BACKUP", "TEMP", "TMP"}
 VERSION_RE = re.compile(r"(?:^|[^A-Z0-9])C(\d{1,2})(?![0-9A-Z])")
+# v0.97: palabra del nombre -> idioma. Sin EN / ES / DE: en castellano son preposiciones ("FONDO_EN_MOVIMIENTO").
+IDIOMAS = {
+    "SPANISH": "SPANISH", "ESPANOL": "SPANISH", "CASTELLANO": "SPANISH", "ESP": "SPANISH", "SPA": "SPANISH",
+    "ENGLISH": "ENGLISH", "INGLES": "ENGLISH", "ENG": "ENGLISH", "UK": "ENGLISH",
+    "FRENCH": "FRENCH", "FRANCES": "FRENCH", "FRA": "FRENCH", "FR": "FRENCH",
+    "PORTUGUESE": "PORTUGUESE", "PORTUGUES": "PORTUGUESE", "POR": "PORTUGUESE", "PT": "PORTUGUESE",
+    "ITALIAN": "ITALIAN", "ITALIANO": "ITALIAN", "ITA": "ITALIAN",
+    "GERMAN": "GERMAN", "ALEMAN": "GERMAN", "DEU": "GERMAN", "GER": "GERMAN",
+    "CATALAN": "CATALAN", "CATALA": "CATALAN", "CAT": "CATALAN",
+    "BASQUE": "BASQUE", "EUSKERA": "BASQUE", "GALICIAN": "GALICIAN", "GALLEGO": "GALICIAN",
+    "ARABIC": "ARABIC", "ARABE": "ARABIC", "DUTCH": "DUTCH", "NEERLANDES": "DUTCH",
+}
+
+
+def idioma_de(nombre):
+    for t in _tokens(nombre):
+        if t in IDIOMAS:
+            return IDIOMAS[t]
+    return None
 
 
 def _version_de(texto):
@@ -86,7 +108,7 @@ def _variante(key, por_tipo, carpeta):
             "dir": carpeta}
 
 
-def inspeccionar_variantes(nas, code):
+def inspeccionar_variantes(nas, code, idiomas=False):
     base = nas.inspeccionar(code)          # resuelve la carpeta (reescanea el índice si hace falta) y el NAS
     res = {"status": base["status"], "path": base.get("path") or "", "variants": []}
     if base["status"] == ST_NO_NAS:
@@ -97,28 +119,36 @@ def inspeccionar_variantes(nas, code):
         return res
     res["path"] = ed
 
-    grupos, carpetas = {}, {}
+    grupos, carpetas = {}, {}          # (versión, idioma) -> rutas · versión -> carpeta
     for path, rel in _listar(ed):
         if detectar_tipo(path) is None:
             continue
-        key = _version_de(os.path.basename(path)) or (_version_de(rel) if rel else None) or \
+        ver = _version_de(os.path.basename(path)) or (_version_de(rel) if rel else None) or \
             (rel.split(os.sep)[0] if rel else "")
-        grupos.setdefault(key, []).append(path)
-        carpetas.setdefault(key, os.path.join(ed, rel) if rel else ed)
+        lang = idioma_de(os.path.basename(path)) if idiomas else None
+        grupos.setdefault((ver, lang), []).append(path)
+        carpetas.setdefault(ver, os.path.join(ed, rel) if rel else ed)
     if not grupos:
         res["status"] = ST_NOT_FOUND
         return res
 
-    comunes = grupos.pop("", [])
-    if not grupos:
-        res["variants"] = [_variante("", _clasificar(comunes), ed)]
-    else:
-        tipos_comunes = _clasificar(comunes)
-        for key in sorted(grupos, key=_orden):
-            propios = _clasificar(grupos[key])
-            for t, lst in tipos_comunes.items():   # lo común completa lo que la versión no tiene
+    def completar(propios, *fuentes):
+        """Lo que la variante no tiene lo ponen los archivos comunes (de su versión y después los sueltos)."""
+        for fuente in fuentes:
+            for t, lst in _clasificar(fuente).items():
                 if not propios[t]:
                     propios[t] = list(lst)
-            res["variants"].append(_variante(key, propios, carpetas[key]))
+        return propios
+
+    versiones = sorted({v for v, _ in grupos if v}, key=_orden) or [""]
+    for ver in versiones:
+        langs = sorted({l for (v, l) in grupos if l and v in (ver, "")})
+        for lang in langs or [None]:
+            propios = _clasificar(grupos.get((ver, lang), []) + (grupos.get(("", lang), []) if ver and lang else []))
+            comunes_ver = grupos.get((ver, None), []) if lang else []
+            comunes = grupos.get(("", None), []) if ver else []
+            completar(propios, comunes_ver, comunes)
+            key = " ".join(x for x in (ver, lang) if x)
+            res["variants"].append(_variante(key, propios, carpetas.get(ver, ed)))
     res["status"] = ST_FOUND
     return res

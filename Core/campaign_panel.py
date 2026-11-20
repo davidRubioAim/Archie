@@ -11,6 +11,12 @@ si no tiene ELEMENTS listos. El aviso de ELEMENTS solo sale al hacer clic en MIS
 y nunca hay más de uno abierto. Sin Mark as reviewed ni Export ready campaigns: los botones de abajo (Generate AE
 Import, Generate SYSTEM FILE, Render Preview) trabajan con la campaña que se está previsualizando y Batch Add to
 Queue manda a la cola de render todas las campañas READY (System File + JSON + vídeo 3D de cada una).
+
+v0.97: los ELEMENTS se buscan también en las subcarpetas de Output\\Elements (elements_variants). Si una campaña
+tiene versiones (C1, C2... por subcarpeta o nombre) o idiomas (_ANIM_SPANISH / _ANIM_INGLES), al añadirla se
+sustituye por una fila por variante: JETX-UEFA-260501_C1, JETX-UEFA-260501_C1_SPANISH... Cada variante tiene su
+estado, su arquitectura (<Estadio>_<variante>.json) y sus archivos de salida.
+ON THE NAS enseña por defecto solo las campañas con ELEMENTS ("Only with Elements"); al buscar salen todas.
 """
 import copy
 import re
@@ -26,7 +32,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 import campaign_batch as cb
 from campaign_loader import load_campaigns, normalizar_codigo, codigo_valido
-from nas_campaigns import NasIndex, mensaje, ST_READY
+from nas_campaigns import NasIndex, mensaje, ST_READY, REQUIRED
+from elements_variants import inspeccionar_variantes, ST_FOUND
 from auto_solver import config_campana, CONFIG_KEYS
 from log_utils import debug, log_error
 
@@ -105,6 +112,7 @@ class CampaignPanel:
         self._popup_code = None       # v0.94: campaña cuyo aviso se pidió con un clic (se enseña tras comprobarla)
         self._ready_tras_carga = None  # v0.94: campaña que pasa a READY en cuanto termine de cargarse
         self.local_dir = cb.leer_ajustes(config_dir).get("architecture_dir")
+        self._refresco_l = None        # v0.97: refresco pendiente de ON THE NAS mientras se revisan los ELEMENTS
 
         self.frame = ctk.CTkFrame(parent, fg_color="transparent")
         self._build()
@@ -172,8 +180,16 @@ class CampaignPanel:
         # --- izquierda: campañas en el NAS
         left = ctk.CTkFrame(mid, fg_color="transparent")
         left.grid(row=0, column=0, sticky="nsew")
-        self.lbl_left = ctk.CTkLabel(left, text="ON THE NAS", font=app.font_t2, text_color=app.c_text_dark)
-        self.lbl_left.pack(anchor="w")
+        head_l = ctk.CTkFrame(left, fg_color="transparent")
+        head_l.pack(fill="x")
+        self.lbl_left = ctk.CTkLabel(head_l, text="ON THE NAS", font=app.font_t2, text_color=app.c_text_dark)
+        self.lbl_left.pack(side="left")
+        # v0.97: por defecto solo las campañas que ya tienen ELEMENTS
+        self.solo_elements = ctk.BooleanVar(value=bool(cb.leer_ajustes(self.config_dir).get("only_with_elements", True)))
+        ctk.CTkCheckBox(head_l, text="Only with Elements", variable=self.solo_elements, command=self._toggle_solo,
+                        font=ctk.CTkFont(size=11), text_color=app.c_text_dark, fg_color=app.c_magenta,
+                        hover_color="#D1007A", checkbox_width=16, checkbox_height=16, border_width=2,
+                        width=20).pack(side="right")
         lw = tk.Frame(left, bg=app.c_white, highlightthickness=1, highlightbackground="#E0E0E0")
         lw.pack(fill="both", expand=True)
         self.tree_l = ttk.Treeview(lw, columns=("code", "name"), show="headings", height=TREE_ROWS,
@@ -187,6 +203,7 @@ class CampaignPanel:
         self.tree_l.pack(side="left", fill="both", expand=True)
         sl.pack(side="right", fill="y")
         self.tree_l.tag_configure("added", foreground="#B0B0B0")
+        self.tree_l.tag_configure("noelem", foreground="#C98A8A")
         self.lbl_left_hint = tk.Label(lw, text="", fg="#A0A0A0", bg=app.c_white, font=(fuente.actual("family"), 9),
                                       wraplength=220, justify="center")
 
@@ -234,6 +251,7 @@ class CampaignPanel:
         tl.bind("<ButtonRelease-1>", self._drag_release, add="+")
         tl.bind("<Double-1>", lambda e: self.agregar(self._sel(tl)))
         tl.bind("<Return>", lambda e: self.agregar(self._sel(tl)))
+        tl.bind("<Button-3>", self._menu_left)
         # v0.94: clic en la píldora = WIP <-> READY (o aviso si es MISSING); clic en el código = previsualizar
         tr.bind("<ButtonRelease-1>", self._click_right, add="+")
         tr.bind("<KeyRelease-Up>", lambda e: self._on_select_right())
@@ -276,18 +294,38 @@ class CampaignPanel:
     def _escanear_nas(self):
         # v0.60: se usa el índice en caché al momento y en cada arranque se reescanea Brands en segundo plano
         self.app.after(0, self._filtrar)
-        self.nas.escanear()
+        ok = self.nas.escanear()
         self.app.after(0, self._fin_escaneo)
+        if ok:
+            self._revisar_elements()
 
     def reescanear(self):
         self.btn_refresh.configure(state="disabled", text="…")
         self.lbl_left.configure(text="ON THE NAS (scanning…)")
 
         def worker():
-            self.nas.escanear()
+            ok = self.nas.escanear()
             self.app.after(0, self._fin_escaneo)
             self.app.after(0, self._recomprobar_todas)
+            if ok:
+                self._revisar_elements()
         threading.Thread(target=worker, daemon=True).start()
+
+    def _revisar_elements(self):
+        """v0.97: qué campañas del NAS tienen ELEMENTS (en el hilo del escaneo; la lista se refresca a ratos)."""
+        try:
+            self.nas.revisar_elements(progreso=lambda h, t: self.app.after(0, self._filtrar_pronto))
+        except Exception as e:
+            log_error(f"[Campañas] revisando ELEMENTS del NAS: {e}")
+        self.app.after(0, self._filtrar)
+
+    def _filtrar_pronto(self):
+        if self._refresco_l is None:
+            self._refresco_l = self.app.after(300, self._filtrar)
+
+    def _toggle_solo(self):
+        cb.guardar_ajuste(self.config_dir, "only_with_elements", bool(self.solo_elements.get()))
+        self._filtrar()
 
     def _fin_escaneo(self):
         self.btn_refresh.configure(state="normal", text="↺")
@@ -299,23 +337,45 @@ class CampaignPanel:
     def _filtrar(self):
         q = self._consulta()
         self.lbl_hint.place_forget() if self.search_var.get() else self.lbl_hint.place(x=10, rely=0.5, anchor="w")
+        self._refresco_l = None
         tl = self.tree_l
+        sel = set(tl.selection())
         tl.delete(*tl.get_children())
         disp = self.nas.disponibles()
-        aprobadas = set(self.approved)
+        aprobadas = {cb.base_codigo(c) for c in self.approved}
+        solo = bool(self.solo_elements.get()) and not q   # v0.97: al buscar se enseñan todas
         n = 0
         for code, titulo in disp:
             if q and not code.startswith(q):
                 continue
+            tiene = self.nas.tiene_elements(code)
+            if solo and not tiene:
+                continue
             nombre = titulo or self.by_code.get(code, {}).get("name", "")
-            tl.insert("", "end", iid=code, values=(code, nombre), tags=("added",) if code in aprobadas else ())
+            if tiene is False:
+                nombre = (nombre + "  · no Elements") if nombre else "no Elements"
+            tags = ("added",) if code in aprobadas else (("noelem",) if tiene is False else ())
+            tl.insert("", "end", iid=code, values=(code, nombre), tags=tags)
             n += 1
-        self.lbl_left.configure(text=f"ON THE NAS ({n})" if q else f"ON THE NAS ({len(disp)})")
+        keep = [c for c in sel if tl.exists(c)]
+        if keep:
+            tl.selection_set(keep)
+        rev = self.nas.revisando
+        extra = f" · checking Elements {rev[0]}/{rev[1]}…" if rev else ""
+        if q:
+            self.lbl_left.configure(text=f"ON THE NAS ({n})")
+        elif solo:
+            self.lbl_left.configure(text=f"ON THE NAS ({n} with Elements){extra}")
+        else:
+            self.lbl_left.configure(text=f"ON THE NAS ({len(disp)}){extra}")
         if not disp:
             txt = ("Scanning the NAS…" if self.nas.scanned_at is None else
                    "No campaign folders found on the NAS.\nPress ↺ to scan again.")
-        elif not n:
+        elif not n and q:
             txt = f"No campaign on the NAS starts with {q}."
+        elif not n:
+            txt = ("Checking which campaigns have Elements…" if rev or self.nas.elements == {} else
+                   "No campaign on the NAS has Elements yet.\nUntick 'Only with Elements' to see all of them.")
         else:
             txt = ""
         if txt:
@@ -331,36 +391,85 @@ class CampaignPanel:
             self.tree_l.selection_set(hijos[0])
             self.tree_l.focus(hijos[0])
 
+    def _infos(self, code, res):
+        """v0.97: resultado de inspeccionar_variantes -> {fila: info como nas.inspeccionar}."""
+        base = cb.base_codigo(code)
+        if res["status"] != ST_FOUND or not res["variants"]:
+            return {code: {"status": res["status"], "files": None, "missing": list(REQUIRED), "ambiguous": [],
+                           "path": res.get("path") or self.nas.ruta_esperada(base)}}
+        out = {}
+        for v in res["variants"]:
+            key = base + ("_" + re.sub(r"[^A-Za-z0-9]+", "_", v["key"]).strip("_").upper() if v["key"] else "")
+            out[key] = {"status": v["status"], "files": v["files"], "missing": v["missing"],
+                        "ambiguous": v["ambiguous"], "path": v["dir"]}
+        return out
+
     def _comprobar(self, code):
         stadium = self.stadium()
+        base = cb.base_codigo(code)
 
         def worker():
             try:
-                info = self.nas.inspeccionar(code)
+                res = inspeccionar_variantes(self.nas, base, idiomas=True)
             except Exception as e:
                 log_error(f"[Campañas] {code}: {e}")
-                info = {"status": "not_found", "files": None, "missing": [], "ambiguous": [],
-                        "path": self.nas.ruta_esperada(code)}
-            doc, path = (None, None)
-            try:
-                doc, path = cb.cargar(self.nas, code, stadium, self.local_dir)
-            except Exception as e:
-                log_error(f"[Campañas] leyendo arquitectura de {code}: {e}")
-            self.app.after(0, lambda: self._on_comprobada(code, stadium, info, doc, path))
+                res = {"status": "not_found", "path": self.nas.ruta_esperada(base), "variants": []}
+            infos = self._infos(code, res)
+            self.nas.marcar_elements(base, sum(1 for i in infos.values() if i.get("files")))
+            docs = {}
+            for key in infos:
+                try:
+                    docs[key] = cb.cargar(self.nas, key, stadium, self.local_dir)
+                except Exception as e:
+                    log_error(f"[Campañas] leyendo arquitectura de {key}: {e}")
+            self.app.after(0, lambda: self._on_comprobada(code, stadium, infos, docs))
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_comprobada(self, code, stadium, info, doc, path):
-        self.elements[code] = info
-        st = self._state(code, stadium)
-        if doc and st.config is None and not st.loaded_from_disk:
-            cb.aplicar_documento(st, doc, path, self.nas.root)
-            debug(f"[Campañas] {code} @ {stadium}: arquitectura guardada cargada de {path}")
-        if not st.files_manual and info.get("files"):
-            st.files = copy.deepcopy(info["files"])
-        self._pintar_fila(code)
-        if self.pending_activate == code and stadium == self.stadium():
+    def _on_comprobada(self, code, stadium, infos, docs):
+        if code not in self.approved:
+            return
+        keys = list(infos)
+        if code == cb.base_codigo(code) and keys != [code]:
+            # v0.97: la campaña tiene variantes: su fila se sustituye por una por variante
+            pos = self.approved.index(code)
+            if code == self.active:
+                self.active = None
+            self.approved.remove(code)
+            self.tree_r.delete(code)
+            for key in keys:
+                if key in self.approved:
+                    continue
+                self.approved.insert(pos, key)
+                self.tree_r.insert("", pos, iid=key, text="", values=(key,))
+                pos += 1
+            for attr in ("pending_activate", "_popup_code", "_ready_tras_carga"):
+                if getattr(self, attr) == code:
+                    setattr(self, attr, keys[0])
+            self._actualizar_cabeceras()
+        elif code not in infos:
+            # variante que ya no está en el NAS
+            infos = {code: {"status": "not_found", "files": None, "missing": list(REQUIRED), "ambiguous": [],
+                            "path": self.nas.elements_dir(cb.base_codigo(code)) or ""}}
+            keys = [code]
+        for key in keys:
+            if key not in self.approved:
+                continue
+            info = infos[key]
+            self.elements[key] = info
+            st = self._state(key, stadium)
+            doc, path = docs.get(key) or (None, None)
+            if doc and st.config is None and not st.loaded_from_disk:
+                cb.aplicar_documento(st, doc, path, self.nas.root)
+                debug(f"[Campañas] {key} @ {stadium}: arquitectura guardada cargada de {path}")
+            if not st.files_manual and info.get("files"):
+                st.files = copy.deepcopy(info["files"])
+            self._pintar_fila(key)
+        self._actualizar_cabeceras()
+        pend = self.pending_activate
+        if pend in keys and stadium == self.stadium():
             self.pending_activate = None
-            self.activar(code)
+            self.tree_r.selection_set(pend)
+            self.activar(pend)
 
     def _recomprobar(self, codes):
         for code in codes:
@@ -412,7 +521,7 @@ class CampaignPanel:
             self.lbl_info.configure(text="Click a campaign in CAMPAIGN CODES to preview it. Click WIP to mark it READY.",
                                     text_color=self.app.c_text_muted)
             return
-        name = self.by_code.get(code, {}).get("name", "")
+        name = self.by_code.get(cb.base_codigo(code), {}).get("name", "")
         estado = self.estado(code)
         pill = pill_de(estado)
         txt = f"Previewing {code}" + (f" · {name}" if name else "") + f" · {pill}"
@@ -439,7 +548,8 @@ class CampaignPanel:
                 return
         malos = [t for t in tokens if not codigo_valido(t)]
         buenos = [t for t in tokens if codigo_valido(t)]
-        ya = [t for t in buenos if t in self.approved]
+        en_lista = {cb.base_codigo(c): c for c in reversed(self.approved)}
+        ya = [en_lista[t] for t in buenos if t in en_lista]
         nuevos = self.agregar(buenos)
         if malos:
             self._actualizar_info((f"Invalid code format: {', '.join(malos)}. "
@@ -462,12 +572,15 @@ class CampaignPanel:
             self.entry_code.focus_set()
 
     def _marcar_izquierda(self, code, added):
+        code = cb.base_codigo(code)
         if self.tree_l.exists(code):
-            self.tree_l.item(code, tags=("added",) if added else ())
+            tiene = self.nas.tiene_elements(code)
+            self.tree_l.item(code, tags=("added",) if added else (("noelem",) if tiene is False else ()))
 
     def agregar(self, codes):
         nuevos = []
         for code in codes:
+            # v0.97: volver a añadir una campaña con variantes recupera las que se hubieran quitado
             if code in self.approved or code in nuevos:
                 continue
             nuevos.append(code)
@@ -475,8 +588,6 @@ class CampaignPanel:
             self.tree_r.insert("", "end", iid=code, text="", values=(code,))
             self._marcar_izquierda(code, True)
             self._pintar_fila(code)
-            if code in self.elements:
-                self._on_comprobada(code, self.stadium(), self.elements[code], None, None)
             self._comprobar(code)
         dups = [c for c in nuevos if self.by_code.get(c, {}).get("duplicate")]
         if dups:
@@ -502,8 +613,26 @@ class CampaignPanel:
                 self._actualizar_info()
             self.approved.remove(code)
             self.tree_r.delete(code)
-            self._marcar_izquierda(code, False)
+            base = cb.base_codigo(code)
+            if not any(cb.base_codigo(c) == base for c in self.approved):
+                self._marcar_izquierda(base, False)
         self._actualizar_cabeceras()
+
+    def _menu_left(self, e):
+        """v0.97: ruta de los ELEMENTS de cualquier campaña del NAS, para comprobarla a mano."""
+        item = self.tree_l.identify_row(e.y)
+        if not item:
+            return
+        if item not in self.tree_l.selection():
+            self.tree_l.selection_set(item)
+        path = self.nas.elements_dir(item) or self.nas.carpeta(item) or ""
+        m = tk.Menu(self.tree_l, tearoff=0)
+        m.add_command(label="Add to CAMPAIGN CODES", command=lambda: self.agregar(self._sel(self.tree_l)))
+        if path:
+            m.add_command(label="Copy Elements path", command=lambda: self._copiar(path))
+            m.add_command(label="Open Elements folder", command=lambda: self._abrir_carpeta(
+                path if os.path.isdir(path) else (self.nas.carpeta(item) or path)))
+        m.tk_popup(e.x_root, e.y_root)
 
     def _menu_right(self, e):
         item = self.tree_r.identify_row(e.y)
@@ -766,7 +895,7 @@ class CampaignPanel:
         datos = cb.construir_datos(self.app.stadium_data[stadium], st.files, st.config)
         if not datos:
             raise RuntimeError(f"{code}: layout could not be calculated")
-        return cb.documento(datos, st, self.by_code.get(code), stadium, self.app.current_version_str)
+        return cb.documento(datos, st, self.by_code.get(cb.base_codigo(code)), stadium, self.app.current_version_str)
 
     def _pedir_carpeta_local(self, motivo):
         messagebox.showinfo(
@@ -946,11 +1075,22 @@ class CampaignPanel:
         bar = ctk.CTkFrame(win, fg_color="transparent")
         bar.pack(fill="x", padx=24, pady=(16, 20))
         path = info.get("path") or ""
+        if path:
+            # v0.97: la ruta se puede seleccionar y copiar (Ctrl+C) además del botón
+            e_path = ctk.CTkEntry(win, height=30, font=ctk.CTkFont(size=12), fg_color=app.c_light_grey,
+                                  text_color=app.c_text_dark, border_width=0)
+            e_path.insert(0, path)
+            e_path.configure(state="readonly")
+            e_path.pack(fill="x", padx=24, pady=(12, 0), before=bar)
         ctk.CTkButton(bar, text="OK", width=90, fg_color=app.c_magenta, hover_color="#D1007A",
                       command=win.destroy).pack(side="right")
         if path:
-            ctk.CTkButton(bar, text="Copy path", width=100, fg_color="#E0E0E0", hover_color="#D0D0D0",
-                          text_color=app.c_text_dark, command=lambda: self._copiar(path)).pack(side="right", padx=8)
+            btn_copy = ctk.CTkButton(bar, text="Copy path", width=100, fg_color="#E0E0E0", hover_color="#D0D0D0",
+                                     text_color=app.c_text_dark)
+            btn_copy.configure(command=lambda: (self._copiar(path), btn_copy.configure(text="Copied ✓"),
+                                                win.after(1500, lambda: btn_copy.winfo_exists() and
+                                                          btn_copy.configure(text="Copy path"))))
+            btn_copy.pack(side="right", padx=8)
         if path and os.path.isdir(path):
             ctk.CTkButton(bar, text="Open folder", width=100, fg_color="#2b2b2b", hover_color="#404040",
                           command=lambda: self._abrir_carpeta(path)).pack(side="right")
@@ -964,6 +1104,7 @@ class CampaignPanel:
     def _copiar(self, text):
         self.app.clipboard_clear()
         self.app.clipboard_append(text)
+        self.app.update()   # v0.97: en Windows el portapapeles no se fija hasta que Tk procesa el evento
 
     @staticmethod
     def _abrir_carpeta(path):
