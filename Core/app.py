@@ -22,7 +22,7 @@ from edge_cases import edge_de, filas_system, restar_zonas, pintar_zonas_negras,
 from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios, AMPLIFY_ACTIVO  # v0.91
-from amplify import (caja, pintar_sin_led, rects_sin_led, filas_sistema, geo_de_perfil, geo_de_datos,  # v0.95
+from amplify import (caja, pintar_sin_led, bandas_fondo, mosaico, rects_sin_led, filas_sistema, geo_de_perfil, geo_de_datos,  # v0.95
                      etiqueta as etiqueta_2rows, modo_de, SINGLE)
 from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
@@ -2766,13 +2766,14 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         if bg_path and not solo_textos:
             bg_img = fetch(bg_path, t)
             if bg_img is not None:
-                new_bg_w = max(1, int(h_total * (bg_img.width / max(1, bg_img.height))))
-                if is_video(bg_path):
-                    tile = bg_img if bg_img.size == (new_bg_w, h_total) else bg_img.resize((new_bg_w, h_total), PREVIEW_RESAMPLE)
-                else:
-                    tile = resized(("bg", bg_path), bg_img, (new_bg_w, h_total))
-                for x in range(0, w_total, new_bg_w):
-                    master.paste(tile, (x, 0))
+                # v0.96: 2 rows -> cada tramo al alto de su fila (AMPLIFY: a 1st + 2nd solo en la zona amplificada)
+                for bx0, bx1, by, bh in bandas_fondo(datos, w_total, h_total):
+                    new_bg_w = max(1, int(bh * (bg_img.width / max(1, bg_img.height))))
+                    if is_video(bg_path):
+                        tile = bg_img if bg_img.size == (new_bg_w, bh) else bg_img.resize((new_bg_w, bh), PREVIEW_RESAMPLE)
+                    else:
+                        tile = resized(("bg", bg_path), bg_img, (new_bg_w, bh))
+                    mosaico(master, tile, bx0, bx1, by)
 
         # Zonas de animación
         pil_anims_frames = []
@@ -2913,9 +2914,11 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         bg_video = is_video(bg_path)
         if bg_video and video(bg_path):
             bw, bh = videos[bg_path]["size"]
-            tile_w = max(1, int(round(bw * h_total / float(max(1, bh)))))
-            for x in range(0, w_total, tile_w):
-                instancias.append({"src": bg_path, "x": x, "w": tile_w, "mask": True})
+            # v0.96: 2 rows -> cada tramo al alto de su fila (AMPLIFY: a 1st + 2nd solo en la zona amplificada)
+            for bx0, bx1, by, alto in bandas_fondo(datos, w_total, h_total):
+                tile_w = max(1, int(round(bw * alto / float(max(1, bh)))))
+                for x in range(bx0, bx1, tile_w):
+                    instancias.append({"src": bg_path, "x": x, "w": tile_w, "y": by, "h": alto, "mask": True})
             # v0.95: AMPLIFY, sin pantalla encima de las Goal Lines (negro sobre el fondo animado)
             for x0, y0, x1, y1 in rects_sin_led(datos):
                 instancias.append({"src": Image.new("RGBA", (1, 1), (0, 0, 0, 255)), "x": x0, "w": x1 - x0,

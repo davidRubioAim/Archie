@@ -8,7 +8,7 @@ from moviepy import VideoFileClip
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from log_utils import debug, log_error
 from stadium_loader import AMPLIFY_ACTIVO  # v0.91
-from amplify import geo_de_perfil  # v0.95
+from amplify import geo_de_perfil, caja, bandas_fondo, mosaico, pintar_sin_led  # v0.95 / v0.96
 from edge_cases import edge_de, pintar_zonas_negras
 from auto_solver import resolver as resolver_arquitectura, completar_goal  # v0.61 / v0.66
 
@@ -378,10 +378,11 @@ class BatchManager:
         tiempos = [0.0, dur_base * 0.25, dur_base * 0.50, dur_base * 0.75]
         
         pil_bg = self.app.obtener_frame_pil(self.app.archivos_cargados.get("background"), h_total)
-        new_bg_w = max(1, int(h_total * (pil_bg.width / max(1, pil_bg.height))))
-        pil_bg = pil_bg.resize((new_bg_w, h_total), RESAMPLE_METHOD)
         canvas_bg = Image.new("RGBA", (w_total, h_total))
-        for x in range(0, w_total, new_bg_w): canvas_bg.paste(pil_bg, (x, 0))
+        # v0.96: 2 rows -> cada tramo del fondo al alto de su fila
+        for bx0, bx1, by, bh in bandas_fondo(datos, w_total, h_total):
+            tile = pil_bg.resize((max(1, int(bh * (pil_bg.width / max(1, pil_bg.height)))), bh), RESAMPLE_METHOD)
+            mosaico(canvas_bg, tile, bx0, bx1, by)
 
         pil_logo_raw = self.app.obtener_frame_pil(self.app.archivos_cargados.get("static_logo"), h_total)
         logo_path = self.app.archivos_cargados.get("static_logo")
@@ -423,30 +424,33 @@ class BatchManager:
             master = canvas_bg.copy()
             for zona in datos["zonas"].values():
                 for e in zona["elementos"]:
+                    ey, eh = caja(e, h_total)   # v0.96: 2 rows (caja vertical de cada elemento)
                     if e["tipo"] == "center_board" and e["width"] > 0:
                         cb_path = self.app.archivos_cargados.get("center_board")
                         mostrar_cb = datos.get("config", {}).get("show_cb", True)
                         if cb_path and mostrar_cb:
                             pil_cb_raw = self.app.obtener_frame_pil(cb_path, h_target=h_total)
-                            cb_letterbox = self.aplicar_letterbox_pil(pil_cb_raw, e["width"], h_total, RESAMPLE_METHOD)
-                            master.paste(cb_letterbox, (e["x_absoluta"], 0), cb_letterbox)
+                            cb_letterbox = self.aplicar_letterbox_pil(pil_cb_raw, e["width"], eh, RESAMPLE_METHOD)
+                            master.paste(cb_letterbox, (e["x_absoluta"], ey), cb_letterbox)
                         else:
-                            master.paste(Image.new("RGBA", (e["width"], h_total), (0,0,0,255)), (e["x_absoluta"], 0))
+                            master.paste(Image.new("RGBA", (e["width"], eh), (0,0,0,255)), (e["x_absoluta"], ey))
                     elif e["tipo"] == "anim_zone":
                         a_idx = e.get("anim_idx", 0) % len(pil_anims_frames)
-                        anim_img = pil_anims_frames[a_idx].resize((e["width"], h_total), RESAMPLE_METHOD)
-                        master.paste(anim_img, (e["x_absoluta"], 0), anim_img)
+                        anim_img = pil_anims_frames[a_idx].resize((e["width"], eh), RESAMPLE_METHOD)
+                        master.paste(anim_img, (e["x_absoluta"], ey), anim_img)
                         
             for zona in datos["zonas"].values():
                 for e in zona["elementos"]:
                     if e["tipo"] == "static_logo":
+                        ey, eh = caja(e, h_total)
                         if e.get("logo_under_type") == "animated":
-                            logo_img = logo_anim_img.resize((e["width"], h_total), RESAMPLE_METHOD)
+                            logo_img = logo_anim_img.resize((e["width"], eh), RESAMPLE_METHOD)
                         else:
-                            logo_img = pil_logo_raw.resize((e["width"], h_total), RESAMPLE_METHOD)
-                        master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
+                            logo_img = pil_logo_raw.resize((e["width"], eh), RESAMPLE_METHOD)
+                        master.paste(logo_img, (e["x_absoluta"], ey), logo_img)
 
             pintar_zonas_negras(master, edge_de(datos).get("zonas_negras"))  # v0.52
+            pintar_sin_led(master, datos)   # v0.96: 2 rows, sin pantalla encima de las Goal Lines
             res = generar_imagen_arquitectura(master, datos, h_total, w_total, gl_offset_pct, bg_color=(235, 235, 235, 255))
             
             ref_filename = f"{base_filename}_{stadium_clean}_QC_Ref_{idx+1}.png"

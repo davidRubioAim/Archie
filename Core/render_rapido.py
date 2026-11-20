@@ -32,7 +32,7 @@ from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
 
 from log_utils import debug, log_error
 from edge_cases import edge_de, filas_system, logos_bajo_anims
-from amplify import caja, rects_sin_led, filas_sistema  # v0.95: AMPLIFY en el touchline
+from amplify import caja, rects_sin_led, filas_sistema, bandas_fondo, mosaico  # v0.95: AMPLIFY / v0.96: fondo por fila
 from alpha_utils import es_premultiplicado, despremultiplicar  # v0.87: rebaba negra en alfas premultiplicados
 
 RENDER_FPS = 25        # v0.57: solo para JSON antiguos sin "fps"; el fps sale del perfil del estadio (columna FPS de la hoja)
@@ -303,9 +303,17 @@ class _Escena:
         return u["widths"].index(w)
 
     def _fondo(self, bg):
-        h = self.h
         if not bg:
             return
+        # v0.96: 2 rows -> cada tramo del fondo al alto de su fila (AMPLIFY: a 1st + 2nd solo en la zona amplificada)
+        bandas = bandas_fondo(self.datos, self.w, self.h)
+        canvas = None
+        for x0, x1, y, h in bandas:
+            canvas = self._fondo_banda(bg, x0, x1, y, h, len(bandas) > 1, canvas)
+        if canvas is not None:
+            self.layers.append(("static", (canvas, None), (0, 0)))
+
+    def _fondo_banda(self, bg, x0, x1, y, h, por_alto, canvas):
         try:
             if es_video(bg):
                 dur, (sw, sh), _ = _info(bg)
@@ -320,21 +328,22 @@ class _Escena:
                               np.mean(np.abs(a0 - np.asarray(fe, dtype=np.float32))) > 1.0)
                 if moving:
                     debug(f"[Render rápido] Fondo animado ({os.path.basename(bg)}), tile {bw}px")
-                    slot = self._video_slot(("bg", bg), bg, False, bw)
-                    self.layers.append(("bg", (("bg", bg), slot, bw), (0, 0)))
-                    return
+                    key = ("bg", bg, h) if por_alto else ("bg", bg)
+                    slot = self._video_slot(key, bg, False, bw, h if por_alto else None)
+                    self.layers.append(("bg", (key, slot, bw, x0, x1), (0, y)))
+                    return canvas
                 debug(f"[Render rápido] Fondo sin movimiento ({os.path.basename(bg)}), congelado")
                 pil_bg = f0
             else:
                 pil_bg = Image.open(bg).convert("RGB")
                 bw = max(1, int(h * (pil_bg.width / max(1, pil_bg.height))))
                 pil_bg = pil_bg.resize((bw, h), Image.Resampling.LANCZOS)
-            canvas = Image.new("RGB", (self.w, h))
-            for x in range(0, self.w, pil_bg.width):
-                canvas.paste(pil_bg, (x, 0))
-            self.layers.append(("static", (canvas, None), (0, 0)))
+            if canvas is None:
+                canvas = Image.new("RGB", (self.w, self.h))
+            mosaico(canvas, pil_bg, x0, x1, y)
         except Exception as e:
             log_error(f"[Render rápido] Error generando fondo, aplicando negro: {e}")
+        return canvas
 
     def _center_board(self, cb, mostrar, x, w, letterbox, caja=None):
         y, h = caja or (0, self.h)
@@ -392,10 +401,10 @@ class _Escena:
                     im = imgs[key][slot]
                     strip.paste(im, pos, im if alpha else None)
                 else:  # fondo animado en mosaico
-                    key, slot, bw = payload
+                    key, slot, bw, x0, x1 = payload
                     im = imgs[key][slot]
-                    for bx in range(0, self.w, bw):
-                        strip.paste(im, (bx, 0))
+                    for bx in range(x0, x1, bw):
+                        strip.paste(im, (bx, pos[1]))
             for a, b in self.negras:
                 strip.paste((0, 0, 0), (a, 0, b, self.h))
             for x0, y0, x1, y1 in self.sin_led:

@@ -8,7 +8,7 @@ from moviepy import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, Vid
 from proglog import ProgressBarLogger
 from log_utils import debug, log_error
 from edge_cases import edge_de, filas_system, logos_bajo_anims
-from amplify import caja, rects_sin_led, filas_sistema  # v0.95: AMPLIFY en el touchline
+from amplify import caja, rects_sin_led, filas_sistema, bandas_fondo, mosaico  # v0.95: AMPLIFY / v0.96: fondo por fila
 from render_rapido import args_rec709, fps_de  # v0.55: color Rec.709 · v0.57: fps del perfil del estadio
 
 class UILogger(ProgressBarLogger):
@@ -175,8 +175,16 @@ def construir_mega_strip(datos):
         anim_clips_base.append(obtener_clip_fuente(path, h_total, duracion_video))
 
     # 1. Obtención del fondo mediante motor inteligente (animado o estático según detección)
-    fondo_base = obtener_clip_fondo_inteligente(bg_path, w_total, h_total, duracion_video)
-    lista_composicion = [fondo_base]
+    bandas = bandas_fondo(datos, w_total, h_total)
+    if len(bandas) > 1:
+        # v0.96: 2 rows -> cada tramo del fondo al alto de su fila (AMPLIFY: a 1st + 2nd solo en la zona amplificada)
+        fondo_base = ColorClip(size=(w_total, h_total), color=(0, 0, 0), duration=duracion_video)
+        lista_composicion = [fondo_base] + [
+            obtener_clip_fondo_inteligente(bg_path, x1 - x0, alto, duracion_video).with_position((x0, y))
+            for x0, x1, y, alto in bandas]
+    else:
+        fondo_base = obtener_clip_fondo_inteligente(bg_path, w_total, h_total, duracion_video)
+        lista_composicion = [fondo_base]
 
     clip_logo_base = obtener_clip_fuente(logo_path, h_total, duracion_video)
     # v0.61: en Logo Under los logos se pintan antes que las ANIM ZONES (quedan debajo)

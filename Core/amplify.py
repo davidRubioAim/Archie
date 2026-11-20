@@ -6,7 +6,8 @@ Dos modos (columna Amplify de la hoja; la hoja duplica el estadio con las dos va
   AMPLIFY      Las Goal Lines son de una fila y el touchline se trata como un strip de alto "1st + 2nd":
                lleva el mismo contenido que una arquitectura normal, pero amplificado.
   SINGLE ROW   Cada fila lleva su contenido completo a su alto: la 1st row es un estadio normal de una fila y la
-               2nd row se reparte aparte, como un strip propio (con su CB), con sus sliders (config "f2_*").
+               2nd row se reparte aparte, como un strip propio, con sus sliders (config "f2_*"). Sin CB en la
+               2nd row (fila "- 2nd" sin Centerboard Width): un logo en el centro y ANIM ZONES a los lados.
 
 Strip maestro (W x H, H = h1 + h2):
     y = 0 .. h2      2nd row (solo existe físicamente entre tl2_s y tl2_e)
@@ -59,8 +60,9 @@ def geo_de_perfil(perfil, nombre=""):
             if src in row2 and (_int(row2[src]) > 0 or dst in ("canvas_mask", "offset_x", "offset_y"))}
     modo = SINGLE if (str(perfil.get("Row Mode", "")).upper() == "SINGLE ROW"
                       or "SINGLE ROW" in str(nombre or "").upper()) else AMPLIFY
+    # cb2 = 0: la 2nd row no tiene CB (SINGLE ROW: logo en el centro). None (sin fila "- 2nd"): el de la 1st row
     return {"modo": modo, "h1": h1, "h2": h2, "tl2": tl2 or None,
-            "cb2": _int(row2.get("Center Board Width")) or None, "row2": sys2 or None}
+            "cb2": _int(row2.get("Center Board Width")) if row2 else None, "row2": sys2 or None}
 
 
 def modo_de(geo):
@@ -137,6 +139,36 @@ def pintar_sin_led(img, datos):
     return img
 
 
+def bandas_fondo(datos, w_total, h_total):
+    """Dónde va el fondo en mosaico: [(x0, x1, y, alto)], cada tramo al alto de su fila.
+      Sin 2 rows: el strip entero.
+      AMPLIFY:    1st row (alto h1) fuera de la zona amplificada y el tramo de la 2nd row a 1st + 2nd (alto H).
+      SINGLE ROW: la 1st row (h1) en todo el perímetro y la 2nd row (h2) en su tramo.
+    Orden de pintado: lo que un tramo se pase del suyo lo tapa el siguiente o el negro de rects_sin_led."""
+    geo = geo_de_datos(datos)
+    if not geo or geo["h2"] <= 0:
+        return [(0, int(w_total), 0, int(h_total))]
+    h1, h2, H = geo["h1"], geo["h2"], geo["H"]
+    a, b = geo["tl2_s"], geo["tl2_e"]
+    if geo["modo"] == SINGLE:
+        return [(0, int(w_total), h2, h1), (a, b, 0, h2)]
+    out = []
+    if a > 0:
+        out.append((0, a, h2, h1))
+    out.append((a, b, 0, H))
+    if b < w_total:
+        out.append((b, int(w_total), h2, h1))
+    return out
+
+
+def mosaico(dst, tile, x0, x1, y):
+    """Repite tile (PIL) en dst de x0 a x1 a la altura y (el último recortado)."""
+    tw = max(1, tile.width)
+    for x in range(int(x0), int(x1), tw):
+        pieza = tile if x + tw <= x1 else tile.crop((0, 0, int(x1) - x, tile.height))
+        dst.paste(pieza, (x, int(y)))
+
+
 def caja(e, h_total):
     """(y, h) de un elemento en el strip maestro (sin claves: alto completo, como siempre)."""
     return int(e.get("y", 0) or 0), int(e.get("h", h_total) or h_total)
@@ -180,8 +212,17 @@ def calcular_layout_amplify(calc, w_total, h_total, goal_line, cb_width, margin,
         conf2 = config_f2(base)
         m2 = conf2.get("margin_tl")
         m2 = margin if m2 is None or m2 < 0 else m2
-        z2, avisos2, reducido = _tl_virtual(calc, geo, h2, 1.0 * h2 / h1, goal_line, geo["cb2"], m2, m2, archivos,
+        cb2, logo_centro = geo["cb2"], False
+        if cb2 <= 0 and archivos.get("static_logo"):
+            # 2nd row sin CB: un logo en el centro (ocupa el hueco del CB) y ANIM ZONES a los lados
+            cb2, logo_centro = _logo_w(h2, archivos, conf2), True
+            conf2["qty_cb"] = 0
+        z2, avisos2, reducido = _tl_virtual(calc, geo, h2, 1.0 * h2 / h1, goal_line, cb2, m2, m2, archivos,
                                             conf2, ZONAS_F2, extra={"fila": 2})
+        if logo_centro:
+            for e in z2.get(ZONAS_F2[1], {}).get("elementos", []):
+                if e["tipo"] == "center_board":
+                    e["tipo"] = "static_logo"
         zonas.update(z2)
         avisos = list(d1.get("warnings", []))
         avisos += [("2nd_row_" + w) for w in avisos2 if "touchline" in w]
@@ -229,14 +270,32 @@ def _tl_virtual(calc, geo, alto, k, goal_line, cb, margin_v, m_tl_v, archivos, c
     mv = int(round(margin_v))
     d = calc(w_v, alto, gl_v, cb, mv, archivos, c)
     reducido = None
-    if "touchline_overlap" in d.get("warnings", []):
-        # si los logos fijos (qty_tl, qty_cb, corner) no caben, se quitan de uno en uno (siempre del que más
-        # tiene) hasta que quepan: la 1st row / las Goal Lines no cambian
+    hay_anims = bool([f for f in archivos.get("anim_zones") or [] if f] or archivos.get("anim_zone"))
+
+    def solapa(dd):
+        return "touchline_overlap" in dd.get("warnings", [])
+
+    def sin_anims(dd):
+        # al alto amplificado las ANIM ZONES son mucho más anchas: si entre los logos fijos no cabe ninguna,
+        # el TL se quedaría solo con logos
+        z = dd.get("zonas", {})
+        return hay_anims and "ZONA_FALLBACK" not in z and not any(
+            e["tipo"] == "anim_zone" for n in ("ZONA_2", "ZONA_4") for e in z.get(n, {}).get("elementos", []))
+
+    if solapa(d) or sin_anims(d):
+        # los logos fijos (qty_tl, qty_cb, corner) se quitan de uno en uno (siempre del que más tiene) hasta que
+        # quepan y entre al menos una ANIM ZONE por lado: la 1st row / las Goal Lines no cambian
+        sin_solape = None
         for q in _reducciones(c):
             prueba = calc(w_v, alto, gl_v, cb, mv, archivos, dict(c, **q))
-            if "touchline_overlap" not in prueba.get("warnings", []):
+            if not solapa(prueba) and not sin_anims(prueba):
                 d, reducido = prueba, q
                 break
+            if sin_solape is None and solapa(d) and not solapa(prueba):
+                sin_solape = (prueba, q)
+        else:
+            if sin_solape:
+                d, reducido = sin_solape
     dx = geo["tl2_s"] - gl_v
     extra = dict(extra or {}, y=0, h=int(alto))
     if "ZONA_FALLBACK" in d.get("zonas", {}):
@@ -263,6 +322,11 @@ def _reducciones(conf):
 def _anim_w(alto, archivos, config):
     from motor_distribucion import Distribuidor
     return Distribuidor(1000, alto, 0, 0, 0, archivos, dict(config, amplify=False)).anim_w
+
+
+def _logo_w(alto, archivos, config):
+    from motor_distribucion import Distribuidor
+    return Distribuidor(1000, alto, 0, 0, 0, archivos, dict(config, amplify=False)).logo_w
 
 
 def _rellenar(a, b, aw, m, extra, contador):
