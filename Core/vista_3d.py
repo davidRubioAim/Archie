@@ -44,6 +44,9 @@ ROT_SENS = 0.5                   # v0.49: suavidad de la rotación con clic dere
 # --------------------------------------------------------------------------
 # Geometría del estadio a partir del perfil
 # --------------------------------------------------------------------------
+SOLAPE_FILAS = 0.04   # v0.99: solape (fracción del alto de la 1st row) de la 2nd row sobre la 1st en 3D
+
+
 def geometria_estadio(w_total, goal_line, h_total, amplify=False, amp=None):
     """
     -> (L, W, bandas)
@@ -86,9 +89,12 @@ def geometria_estadio(w_total, goal_line, h_total, amplify=False, amp=None):
                            key=(1, "GLR"), src=(w_total - gl, w_total) + v_row1))
     if v_row2 is not None:
         # 2nd row: centrada en el touchline (along=None) y justo encima de la 1st row
-        bandas.append(dict(side="TL", along=None, length=float(tl2[1] - tl2[0]), y0=float(h_row),
+        # v0.99: baja SOLAPE_FILAS sobre la 1st row, con la textura que sigue en el strip (el arranque de la
+        # 1st row): sin costura ni línea negra entre las dos filas al rasterizar, y el contenido no se deforma
+        ov = min(h_row, max(1, int(round(h_row * SOLAPE_FILAS))))
+        bandas.append(dict(side="TL", along=None, length=float(tl2[1] - tl2[0]), y0=float(h_row - ov),
                            y1=float(h_row + (v_row2[1] - v_row2[0])),
-                           key=(2, "TL"), src=tl2 + v_row2))
+                           key=(2, "TL"), src=tl2 + (v_row2[0], v_row2[1] + ov)))
     return L, W, bandas
 
 
