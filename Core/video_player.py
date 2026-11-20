@@ -147,6 +147,7 @@ class Escena:
         # franja vertical del strip que se pinta en cada segmento (AMPLIFY: media altura en el System File)
         self.v_slice = v_slice or (0, h_total)
         # instancias en orden de pintado: dict(src=ruta_video | PIL.Image, x=, w=, mask=bool)
+        # v0.95: y=, h= opcionales (franja del strip que ocupa; AMPLIFY). Sin ellas, el alto completo.
         self.instancias = instancias
         self.videos = videos                    # {ruta: info} de los vídeos únicos animados
         self.duration = max([v["duration"] for v in videos.values()] + [1.0 / PLAYER_FPS])
@@ -195,21 +196,23 @@ class Vista:
         placements = []
         for inst in escena.instancias:
             x, w = inst["x"], inst["w"]
+            iy, ih = inst.get("y", 0), inst.get("h", h_total)
+            r0, r1 = max(iy, sy0), min(iy + ih, sy1)   # filas del strip que se ven de esta instancia
             subs = []
-            if w > 0:
+            if w > 0 and ih > 0 and r1 > r0:
                 for a, b, rx, ry in escena.segmentos:
                     lo, hi = max(x, a), min(x + w, b, a + (rw - rx))
                     if hi <= lo: continue
                     vx0, vx1 = px + (rx + lo - a) * kx, px + (rx + hi - a) * kx
-                    vy0, vy1 = py + ry * ky, py + (ry + hh) * ky
+                    vy0, vy1 = py + (ry + r0 - sy0) * ky, py + (ry + r1 - sy0) * ky
                     dx0, dx1 = max(lim_x0, int(round(vx0))), min(lim_x1, int(round(vx1)))
                     dy0, dy1 = max(lim_y0, int(round(vy0))), min(lim_y1, int(round(vy1)))
                     if dx1 - dx0 < 1 or dy1 - dy0 < 1: continue
                     # coordenadas fuente normalizadas (0..1 sobre el frame completo de la instancia)
                     u0 = ((dx0 - px) / kx - rx + a - x) / w
                     u1 = ((dx1 - px) / kx - rx + a - x) / w
-                    v0 = (sy0 + (dy0 - py) / ky - ry) / h_total
-                    v1 = (sy0 + (dy1 - py) / ky - ry) / h_total
+                    v0 = (sy0 + (dy0 - py) / ky - ry - iy) / ih
+                    v1 = (sy0 + (dy1 - py) / ky - ry - iy) / ih
                     subs.append((dx0, dy0, dx1 - dx0, dy1 - dy0,
                                  max(0.0, u0), max(0.0, v0), min(1.0, u1), min(1.0, v1)))
             placements.append(subs)

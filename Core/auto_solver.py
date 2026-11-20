@@ -13,13 +13,15 @@ from motor_distribucion import calcular_layout_data
 from frame_cache import FRAME_CACHE
 from log_utils import debug, log_error
 from stadium_loader import AMPLIFY_ACTIVO  # v0.91
+from amplify import geo_de_perfil  # v0.95
 
 # Claves de la config de calcular_layout_data que se guardan por campaña (más "margin")
 CONFIG_KEYS = ("stretch_limit", "squash_logos", "stretch_fit_per", "qty_goal", "qty_corner", "qty_cb", "qty_tl",
                "gl_offset", "corner_logo", "hide_extreme_edges", "logo_under", "qty_gl_under", "qty_tl_under",
                "show_cb", "amplify", "max_anim_gl", "max_anim_tl", "invert_order",
                "margin_tl", "under_hotspots",  # v0.61
-               "even_spacing")                  # v0.62
+               "even_spacing",                  # v0.62
+               "f2_custom", "f2_qty_corner", "f2_qty_cb", "f2_qty_tl", "f2_margin", "f2_max_anim")  # v0.95
 
 
 def solver_legacy():
@@ -63,8 +65,20 @@ def intentos_por_defecto(amplify, is_wide):
 
 def resolver(w_total, h_total, goal_line, cb_width, margin, archivos, base):
     """v0.61: por defecto, solver por hotspots (hotspot_solver.py). Amplify, sin logo o ARCHIE_SOLVER=legacy:
-    la lista fija de intentos de siempre."""
-    if not base.get("amplify") and archivos.get("static_logo") and not solver_legacy():
+    la lista fija de intentos de siempre.
+    v0.95: AMPLIFY en el touchline -> se resuelve el estadio como si fuera de una fila (alto de la 1st row), con
+    la misma lógica de siempre; el motor aplica esa config a las GL tal cual y al TL amplificado (ver amplify.py)."""
+    if base.get("amplify"):
+        from amplify import resolver_geo
+        geo = resolver_geo(w_total, h_total, goal_line, base.get("amplify_geo"))
+        base1 = {k: v for k, v in base.items() if k != "amplify_geo"}
+        base1["amplify"] = False
+        config, msg = resolver(w_total, geo["h1"], goal_line, cb_width, margin, archivos, base1)
+        config = dict(config or {})
+        config["amplify"] = True
+        config["amplify_geo"] = base.get("amplify_geo")
+        return config, msg
+    if archivos.get("static_logo") and not solver_legacy():
         try:
             from hotspot_solver import resolver as resolver_hotspots
             return resolver_hotspots(w_total, h_total, goal_line, cb_width, margin, archivos, base)
@@ -187,6 +201,7 @@ def config_campana(perfil, nombre_estadio, archivos, defaults):
         "max_anim_tl": int(defaults["max_anim_tl"]),
         "margin_tl": defaults.get("margin_tl"),            # v0.61
         "edge_case": perfil.get("Edge Case"),               # v0.61: el solver respeta las zonas negras
+        "amplify_geo": geo_de_perfil(perfil, nombre_estadio),  # v0.95: AMPLIFY en el touchline
     }
     if under and es_logo_under(logo):
         max_gl, max_tl = max_logos_under(w_total, h_total, goal_line, cb_width, margin, logo)

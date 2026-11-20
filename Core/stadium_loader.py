@@ -27,9 +27,9 @@ import urllib.request
 from edge_cases import cargar_overrides, aplicar_overrides
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-# v0.91: AMPLIFY (2nd row) desactivado de momento en toda la app (arquitectura, previews y system files):
-# aunque la hoja tenga una fila "- 2nd" o la columna Amplify, el estadio se trata como de una sola fila.
-AMPLIFY_ACTIVO = False
+# v0.91: AMPLIFY (2nd row) desactivado de momento en toda la app (arquitectura, previews y system files).
+# v0.95: AMPLIFY en el touchline: GL de una fila y TL de "1st + 2nd" de alto (ver amplify.py).
+AMPLIFY_ACTIVO = True
 FETCH_TIMEOUT = 6
 DEFAULT_SHEET_ID = "15hfgbbpTAd06OEmSR6Zpad3-xjgN_CiSuLtnS5-ExL0"  # AIM Sport - Atlas Venue Specs (Master Atlas)
 # v0.87: la hoja TESTS (1k-DcjAS_4barGv6X280Y6EyryiQVjhbhnae7hlBkkg4) ya no se usa
@@ -41,6 +41,7 @@ COLUMN_MAP = {
     "perimeter height": "Height",   # ya no está en la hoja nueva: se usa Cabinet Height
     "cabinet height": "Cabinet Height",
     "goal line width": "Goal Line Size",
+    "touchline width": "Touchline Width",   # v0.95: en la fila "- 2nd" es el largo de la 2nd row
     "centerboard width": "Center Board Width",
     "canvas width": "Canvas Width",
     "canvas height": "Canvas Height",
@@ -62,7 +63,7 @@ DEFAULTS = {
     "Width": 0, "Height": 0, "Goal Line Size": 0, "Center Board Width": 0,
     "Canvas Width": 0, "Canvas Height": 0, "Canvas Mask": 0,  # canvas obligatorio desde la hoja
     "Offset X": 0, "Offset Y": 0, "FPS": 60,
-    "Cabinet Height": 0, "Amplify": False, "Mapping": "",
+    "Cabinet Height": 0, "Amplify": False, "Mapping": "", "Touchline Width": 0,
 }
 REQUIRED = ("Width", "Height", "Canvas Width", "Canvas Height")
 # Columnas que tienen que existir en la cabecera (Height puede salir de Cabinet Height)
@@ -180,7 +181,11 @@ def parse_sheet_rows(rows):
                 second_rows.append((base, profile, line_no))
                 continue
             name = base                 # la '- 1st' da nombre y geometría al estadio
-            profile["Amplify"] = True   # una fila 1st/2nd siempre es Amplify
+            # v0.95: estadio de 2 rows. Modo según la columna Amplify (y = AMPLIFY, n = SINGLE ROW); un nombre con
+            # "Single Row" es SINGLE ROW aunque la columna diga y (la hoja duplica el estadio con las dos variantes)
+            single = (not profile.get("Amplify")) or "SINGLE ROW" in name.upper()
+            profile["Row Mode"] = "SINGLE ROW" if single else "AMPLIFY"
+            profile["Amplify"] = True   # una fila 1st/2nd siempre es de 2 rows
 
         if "Competition" not in col_for_key:
             profile["Competition"] = _infer_competition(name)
@@ -205,8 +210,19 @@ def parse_sheet_rows(rows):
         if base not in stadiums:
             warnings.append(f"{base} - 2nd: no hay fila '{base} - 1st' valida (fila {line_no})")
             continue
+        # v0.95: Canvas Mask / Offset X / Offset Y a 0 también cuentan (son los del System File de la 2nd row)
         stadiums[base]["Row 2"] = {k: v for k, v in row2.items()
-                                   if k not in ("Competition", "Amplify") and v not in (0, "")}
+                                   if k not in ("Competition", "Amplify")
+                                   and (v not in (0, "") or k in ("Canvas Mask", "Offset X", "Offset Y"))}
+
+    # v0.95: Amplify -> alto del strip = 1st row + 2nd row (Cabinet Height de cada una)
+    if not has_height_col:
+        for perfil in stadiums.values():
+            if perfil.get("Amplify"):
+                h1 = int(perfil.get("Cabinet Height") or 0)
+                h2 = int((perfil.get("Row 2") or {}).get("Cabinet Height") or 0) or h1
+                if h1 > 0:
+                    perfil["Height"] = h1 + h2
 
     return stadiums, warnings
 

@@ -44,7 +44,7 @@ ROT_SENS = 0.5                   # v0.49: suavidad de la rotación con clic dere
 # --------------------------------------------------------------------------
 # Geometría del estadio a partir del perfil
 # --------------------------------------------------------------------------
-def geometria_estadio(w_total, goal_line, h_total, amplify=False):
+def geometria_estadio(w_total, goal_line, h_total, amplify=False, amp=None):
     """
     -> (L, W, bandas)
     L = largo del touchline (Width - 2 x Goal Line Size), W = largo de cada fondo.
@@ -55,15 +55,20 @@ def geometria_estadio(w_total, goal_line, h_total, amplify=False):
             y0/y1 (altura en el mundo), key y src = (x0, x1, v0, v1) del strip (px del perfil).
     AMPLIFY: el strip lleva las dos filas (arriba la 2nd row, abajo la 1st row, como el System File).
              La 2nd row se pinta sobre el touchline, centrada y justo encima de la 1st row.
+    v0.95: amp = geometría de amplify.py (h1, h2, tl2_s, tl2_e): alto de cada fila y largo de la 2nd row.
+           Sin ella, dos filas iguales y la 2nd row tan larga como el touchline.
     """
     w_total, h_total = int(max(1, w_total)), int(max(1, h_total))
     gl = int(max(0, min(goal_line, w_total // 2)))
     L = float(max(1, w_total - 2 * gl))
     W = float(max(gl, L * PITCH_W_MIN)) if gl > 0 else L * PITCH_W_STD
 
+    tl2 = (gl, gl + int(L))
     if amplify:
-        h_row = h_total // 2
-        v_row1, v_row2 = (h_row, h_total), (0, h_row)
+        h_row = int((amp or {}).get("h1") or h_total // 2)
+        v_row1, v_row2 = (h_total - h_row, h_total), (0, h_total - h_row)
+        if amp and amp.get("tl2_e", 0) > amp.get("tl2_s", 0):
+            tl2 = (int(amp["tl2_s"]), int(amp["tl2_e"]))
     else:
         h_row = h_total
         v_row1, v_row2 = (0, h_total), None
@@ -81,9 +86,9 @@ def geometria_estadio(w_total, goal_line, h_total, amplify=False):
                            key=(1, "GLR"), src=(w_total - gl, w_total) + v_row1))
     if v_row2 is not None:
         # 2nd row: centrada en el touchline (along=None) y justo encima de la 1st row
-        bandas.append(dict(side="TL", along=None, length=L, y0=float(h_row),
+        bandas.append(dict(side="TL", along=None, length=float(tl2[1] - tl2[0]), y0=float(h_row),
                            y1=float(h_row + (v_row2[1] - v_row2[0])),
-                           key=(2, "TL"), src=(gl, gl + int(L)) + v_row2))
+                           key=(2, "TL"), src=tl2 + v_row2))
     return L, W, bandas
 
 

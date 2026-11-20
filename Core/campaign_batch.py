@@ -19,6 +19,7 @@ import time
 
 from motor_distribucion import calcular_layout_data
 from auto_solver import CONFIG_KEYS
+from amplify import geo_de_perfil  # v0.95
 from nas_campaigns import safe_name, raices, ST_READY, ST_REVIEW
 from log_utils import debug, log_error
 
@@ -91,6 +92,9 @@ def construir_datos(perfil, files, config):
     margin = int(config.get("margin", 20))
     conf = {k: config[k] for k in CONFIG_KEYS if k in config}
     conf["edge_case"] = perfil.get("Edge Case")
+    # v0.95: AMPLIFY es del estadio (hoja), no de la config guardada de la campaña
+    conf["amplify_geo"] = geo_de_perfil(perfil, perfil.get("_nombre", ""))
+    conf["amplify"] = conf["amplify_geo"] is not None
     datos = calcular_layout_data(int(perfil["Width"]), int(perfil["Height"]), int(perfil["Goal Line Size"]),
                                  int(perfil["Center Board Width"]), margin, files, conf)
     if not datos:

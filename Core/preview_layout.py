@@ -25,6 +25,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from vista_3d import Escena3D, geometria_estadio
+from amplify import geo_de_datos  # v0.95
 
 try:   # v0.82: fondo de estadio a partir de los plates de Assets/plates (sin plates, el fondo degradado de antes)
     import fondo_plates as _fp
@@ -128,9 +129,10 @@ class ComposicionPreview:
         # ----- geometría del estadio (la misma que la 3D Preview)
         zonas = datos.get("zonas") or {}
         gl = int((zonas.get("ZONA_1") or {}).get("width", 0) or 0)
-        amplify = bool(datos.get("config", {}).get("amplify", False))
+        geo_amp = geo_de_datos(datos)   # v0.95: AMPLIFY en el touchline
+        amplify = geo_amp is not None
         self.gl = max(0, min(gl, self.w_total // 2))
-        self.L, self.W, self.bandas = geometria_estadio(self.w_total, self.gl, self.h_total, amplify)
+        self.L, self.W, self.bandas = geometria_estadio(self.w_total, self.gl, self.h_total, amplify, geo_amp)
         self.top = max([b["y1"] for b in self.bandas] or [1.0])
         m = min(self.L, self.W) * 0.06                     # margen bandas-campo de vista_3d.render
         self.u = (self.L - 2 * m) / METROS_CAMPO            # 1 metro en unidades del strip

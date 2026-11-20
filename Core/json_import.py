@@ -304,6 +304,7 @@ class JsonImportMixin:
             cfg["logo_under"], cfg["qty_gl_under"], cfg["qty_tl_under"], cfg.get("show_cb", True),
             self.amplify_var.get(), cfg.get("invert_order", False), cfg.get("max_anim_gl", 0),
             cfg.get("max_anim_tl", 0), margin=cfg["margin"], margin_tl=cfg.get("margin_tl", cfg["margin"]))
+        self._f2_desde_config(cfg)   # v0.95: sliders de la 2nd row (SINGLE ROW)
 
     @staticmethod
     def _base_desde_nombre(nombre, estadio):

@@ -8,6 +8,7 @@ from moviepy import VideoFileClip
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura
 from log_utils import debug, log_error
 from stadium_loader import AMPLIFY_ACTIVO  # v0.91
+from amplify import geo_de_perfil  # v0.95
 from edge_cases import edge_de, pintar_zonas_negras
 from auto_solver import resolver as resolver_arquitectura, completar_goal  # v0.61 / v0.66
 
@@ -318,6 +319,8 @@ class BatchManager:
             "max_anim_gl": int(self.app.max_anim_gl_slider.get()),
             "max_anim_tl": int(self.app.max_anim_tl_slider.get()),
             "edge_case": stadium_info.get("Edge Case"),  # v0.52: stadium_overrides.json
+            "amplify_geo": geo_de_perfil(stadium_info, stadium_name),   # v0.95: AMPLIFY en el touchline
+            **self.app._config_f2(),                                    # v0.95: 2nd row (SINGLE ROW)
             "margin_tl": int(self.app.margin_tl_slider.get()),          # v0.61
             "under_hotspots": getattr(self.app, "current_under_hotspots", True),
             "even_spacing": getattr(self.app, "current_even_spacing", True),   # v0.62
@@ -343,7 +346,7 @@ class BatchManager:
         # 2) v0.61: si no cabe, el mismo auto-solver que Create Architecture (hotspots; amplify -> clásico)
         base = {k: ui_config[k] for k in ("gl_offset", "logo_under", "corner_logo", "qty_gl_under", "qty_tl_under",
                                           "show_cb", "amplify", "invert_order", "max_anim_gl", "max_anim_tl",
-                                          "margin_tl", "edge_case")}
+                                          "margin_tl", "edge_case", "amplify_geo")}
         best_config, msg = resolver_arquitectura(w_total, h_total, goal_line, cb_width, margin,
                                                  self.app.archivos_cargados, base)
         debug(f"Batch {stadium_name}: {msg}")

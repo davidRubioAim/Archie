@@ -32,6 +32,7 @@ from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
 
 from log_utils import debug, log_error
 from edge_cases import edge_de, filas_system, logos_bajo_anims
+from amplify import caja, rects_sin_led, filas_sistema  # v0.95: AMPLIFY en el touchline
 from alpha_utils import es_premultiplicado, despremultiplicar  # v0.87: rebaba negra en alfas premultiplicados
 
 RENDER_FPS = 25        # v0.57: solo para JSON antiguos sin "fps"; el fps sale del perfil del estadio (columna FPS de la hoja)
@@ -229,6 +230,7 @@ class _Escena:
         self.h = datos["dimensiones_globales"]["height"]
         # v0.52: zonas negras del edge case (brands reservados), se pintan encima de todo en cada frame
         self.negras = [(max(0, a), min(self.w, b)) for a, b in (edge_de(datos).get("zonas_negras") or []) if b > a]
+        self.sin_led = rects_sin_led(datos)   # v0.95: AMPLIFY, sin pantalla encima de las Goal Lines
         archivos = datos["archivos_fuente"]
         h = self.h
 
@@ -245,7 +247,7 @@ class _Escena:
         self.duracion = dur
         self.n_frames = int(dur * fps)
 
-        self.layers = []          # (tipo, payload, x) ; tipo 'static' -> (img, mask) ; 'video' -> (key, slot)
+        self.layers = []          # (tipo, payload, (x, y)) ; tipo 'static' -> (img, mask) ; 'video' -> (key, slot)
         self._uses = {}           # key -> {"path", "alpha", "widths": [..]}
 
         self._fondo(archivos.get("background"))
@@ -257,14 +259,15 @@ class _Escena:
             for zona in datos["zonas"].values():
                 for e in zona["elementos"]:
                     if e["tipo"] == "anim_zone" and anims:
-                        self._fuente(anims[e.get("anim_idx", 0) % len(anims)], e["x_absoluta"], max(1, e["width"]), frozen=False)
+                        self._fuente(anims[e.get("anim_idx", 0) % len(anims)], e["x_absoluta"], max(1, e["width"]), frozen=False,
+                                     caja=caja(e, h))
 
         for zona in datos["zonas"].values():
             for e in zona["elementos"]:
                 x, w = e["x_absoluta"], max(1, e["width"])
                 if e["tipo"] == "center_board":
                     self._center_board(archivos.get("center_board"), datos.get("config", {}).get("show_cb", True), x, w,
-                                       aplicar_letterbox_pil)
+                                       aplicar_letterbox_pil, caja=caja(e, h))
         if not logos_debajo:
             capas_anims()
         logo = archivos.get("static_logo")
@@ -272,7 +275,8 @@ class _Escena:
             for zona in datos["zonas"].values():
                 for e in zona["elementos"]:
                     if e["tipo"] == "static_logo":
-                        self._fuente(logo, e["x_absoluta"], max(1, e["width"]), frozen=e.get("logo_under_type") == "frozen")
+                        self._fuente(logo, e["x_absoluta"], max(1, e["width"]), frozen=e.get("logo_under_type") == "frozen",
+                                     caja=caja(e, h))
         if logos_debajo:
             capas_anims()
 
@@ -286,14 +290,14 @@ class _Escena:
 
         self.decoders = {}
         for key, u in self._uses.items():
-            self.decoders[key] = _Decoder(u["path"], u["widths"], h, self.n_frames, u["alpha"], fps)
+            self.decoders[key] = _Decoder(u["path"], u["widths"], u.get("h") or h, self.n_frames, u["alpha"], fps)
         n_vid = sum(1 for l in self.layers if l[0] == "video")
         debug(f"[Render rápido] {self.w}x{h}, {self.n_frames} frames, {len(self.decoders)} decodificadores, "
               f"{n_vid} instancias de vídeo, {len(self.layers) - n_vid} capas estáticas por frame")
 
     # ----- construcción
-    def _video_slot(self, key, path, alpha, w):
-        u = self._uses.setdefault(key, {"path": path, "alpha": alpha, "widths": []})
+    def _video_slot(self, key, path, alpha, w, h=None):
+        u = self._uses.setdefault(key, {"path": path, "alpha": alpha, "widths": [], "h": h})
         if w not in u["widths"]:
             u["widths"].append(w)
         return u["widths"].index(w)
@@ -317,7 +321,7 @@ class _Escena:
                 if moving:
                     debug(f"[Render rápido] Fondo animado ({os.path.basename(bg)}), tile {bw}px")
                     slot = self._video_slot(("bg", bg), bg, False, bw)
-                    self.layers.append(("bg", (("bg", bg), slot, bw), 0))
+                    self.layers.append(("bg", (("bg", bg), slot, bw), (0, 0)))
                     return
                 debug(f"[Render rápido] Fondo sin movimiento ({os.path.basename(bg)}), congelado")
                 pil_bg = f0
@@ -328,12 +332,12 @@ class _Escena:
             canvas = Image.new("RGB", (self.w, h))
             for x in range(0, self.w, pil_bg.width):
                 canvas.paste(pil_bg, (x, 0))
-            self.layers.append(("static", (canvas, None), 0))
+            self.layers.append(("static", (canvas, None), (0, 0)))
         except Exception as e:
             log_error(f"[Render rápido] Error generando fondo, aplicando negro: {e}")
 
-    def _center_board(self, cb, mostrar, x, w, letterbox):
-        h = self.h
+    def _center_board(self, cb, mostrar, x, w, letterbox, caja=None):
+        y, h = caja or (0, self.h)
         img = None
         if cb and mostrar:
             try:
@@ -347,31 +351,32 @@ class _Escena:
                 log_error(f"[Render rápido] Error en Center Board, aplicando negro: {e}")
         if img is None:
             img = Image.new("RGB", (w, h), (0, 0, 0))
-        self.layers.append(("static", (img, None), x))
+        self.layers.append(("static", (img, None), (x, y)))
 
-    def _fuente(self, path, x, w, frozen):
-        h = self.h
+    def _fuente(self, path, x, w, frozen, caja=None):
+        y, h = caja or (0, self.h)   # v0.95: alto y posición propios (AMPLIFY)
         try:
             if es_video(path):
                 _, (sw, sh), alpha = _info(path)
                 if frozen:
                     img = _frame(path, 0, w, h, alpha)
-                    self.layers.append(("static", (img, img if alpha else None), x))
+                    self.layers.append(("static", (img, img if alpha else None), (x, y)))
                 else:
-                    slot = self._video_slot(("v", path, alpha), path, alpha, w)
-                    self.layers.append(("video", (("v", path, alpha), slot, alpha), x))
+                    key = ("v", path, alpha) if h == self.h else ("v", path, alpha, h)
+                    slot = self._video_slot(key, path, alpha, w, h)
+                    self.layers.append(("video", (key, slot, alpha), (x, y)))
             else:
                 img = Image.open(path)
                 img = img.convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB").resize((w, h), Image.Resampling.LANCZOS)
-                self.layers.append(("static", (img, img if img.mode == "RGBA" else None), x))
+                self.layers.append(("static", (img, img if img.mode == "RGBA" else None), (x, y)))
         except Exception as e:
             log_error(f"[Render rápido] Error cargando {path}: {e}")
 
     # ----- composición
     @staticmethod
     def _paste(dst, layer):
-        _, (img, mask), x = layer
-        dst.paste(img, (x, 0), mask)
+        _, (img, mask), pos = layer
+        dst.paste(img, pos, mask)
 
     def frames(self):
         """Generador de frames del Mega Strip como PIL RGB (se reutiliza el mismo objeto)."""
@@ -379,13 +384,13 @@ class _Escena:
         for _ in range(self.n_frames):
             imgs = {k: d.next_frame() for k, d in self.decoders.items()}
             strip.paste(self.base)
-            for tipo, payload, x in self.layers:
+            for tipo, payload, pos in self.layers:
                 if tipo == "static":
-                    strip.paste(payload[0], (x, 0), payload[1])
+                    strip.paste(payload[0], pos, payload[1])
                 elif tipo == "video":
                     key, slot, alpha = payload
                     im = imgs[key][slot]
-                    strip.paste(im, (x, 0), im if alpha else None)
+                    strip.paste(im, pos, im if alpha else None)
                 else:  # fondo animado en mosaico
                     key, slot, bw = payload
                     im = imgs[key][slot]
@@ -393,6 +398,8 @@ class _Escena:
                         strip.paste(im, (bx, 0))
             for a, b in self.negras:
                 strip.paste((0, 0, 0), (a, 0, b, self.h))
+            for x0, y0, x1, y1 in self.sin_led:
+                strip.paste((0, 0, 0), (x0, y0, x1, y1))
             yield strip
 
     def close(self):
@@ -571,24 +578,18 @@ def renderizar_system_file(json_path, output_filename, progress_callback=None, c
     try:
         w_total, h_total = escena.w, escena.h
         sys_data = datos.get("system_setup", {})
-        sys_w = sys_data.get("canvas_width", 3840)
-        sys_h = sys_data.get("canvas_height", 2160)
-        sys_mask = sys_data.get("canvas_mask", 96)
-        sys_off_x = sys_data.get("offset_x", 0)
-        sys_off_y = sys_data.get("offset_y", 0)
-
-        if datos.get("config", {}).get("amplify", False) and row_target in ["1ST_ROW", "2ND_ROW"]:
-            h_slice = h_total // 2
-            src_y_start, src_y_end = (h_slice, h_total) if row_target == "1ST_ROW" else (0, h_slice)
-        else:
-            h_slice = h_total
-            src_y_start, src_y_end = 0, h_total
+        sys_in = {"canvas_width": sys_data.get("canvas_width", 3840), "canvas_height": sys_data.get("canvas_height", 2160),
+                  "canvas_mask": sys_data.get("canvas_mask", 96), "offset_x": sys_data.get("offset_x", 0),
+                  "offset_y": sys_data.get("offset_y", 0)}
+        # v0.95: AMPLIFY -> 1st row (abajo, todo el perímetro) / 2nd row (arriba, solo el TL, canvas de la fila "- 2nd")
+        filas, (src_y_start, src_y_end), sys_fila = filas_sistema(datos, row_target, w_total, h_total, sys_in)
+        sys_w, sys_h = sys_fila["canvas_width"], sys_fila["canvas_height"]
+        h_slice = src_y_end - src_y_start
 
         # Recortes precalculados (misma geometría que el motor MoviePy)
         # v0.52: filas estándar o tramos explícitos del edge case (edge_cases.filas_system)
         cortes = []
-        for crop_x1, crop_x2, x_canvas, y1 in filas_system(w_total, h_slice, sys_w, sys_mask, sys_off_x, sys_off_y,
-                                                           edge_de(datos)):
+        for crop_x1, crop_x2, x_canvas, y1 in filas:
             crop_x2 = min(crop_x2, crop_x1 + max(0, sys_w - x_canvas))  # nada fuera del lienzo por la derecha
             if crop_x1 >= crop_x2:
                 continue

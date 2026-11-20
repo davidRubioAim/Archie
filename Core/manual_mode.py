@@ -46,7 +46,9 @@ AYUDA_MANUAL = (
     "Keys: Space: play / pause · Del: Remove · Ctrl+D: Duplicate · Esc: deselect. Undo / Redo work too.\n"
     "Click on an empty area: play / pause. Drag on an empty area or with the middle mouse button: pan.\n\n"
     "The queue, direct render and AE JSON use the manual layout as it is when you add the job. "
-    "The 3D Preview shows the changes but can't be edited. Not available in AMPLIFY mode yet."
+    "The 3D Preview shows the changes but can't be edited.\n"
+    "• 2 ROWS: AMPLIFY edits the Goal Lines and the amplified Touchline. SINGLE ROW: the 2nd row is one more "
+    "section (click on the upper row to pick its elements)."
 )
 
 def icono_iman(color=(255, 9, 154), puntas=(235, 235, 235), lado=64):
@@ -234,6 +236,9 @@ class ManualModeMixin:
         ws = [self.margin_slider, self.margin_tl_slider, self.offset_slider, self.stretch_slider,
               self.qty_goal_slider, self.qty_corner_slider, self.qty_cb_slider, self.qty_tl_slider,
               self.max_anim_gl_slider, self.max_anim_tl_slider, self.qty_gl_under_slider, self.qty_tl_under_slider]
+        ws += [sl for sl, _, _ in getattr(self, "f2_sliders", {}).values()]   # v0.95: 2nd row (SINGLE ROW)
+        if hasattr(self, "chk_f2_custom"):
+            ws.append(self.chk_f2_custom)
         for child in self.col_left.winfo_children():
             if isinstance(child, ctk.CTkCheckBox) and child not in (self.chk_logo_under, self.chk_show_cb):
                 ws.append(child)
@@ -321,7 +326,7 @@ class ManualModeMixin:
         txt = f"{nombre} · {int(round(e['w']))} px"
         nat = self._mv_nat(self._disp_datos).get(e["tipo"]) if self._disp_datos else None
         if e["tipo"] == "anim_zone" and m.nat:
-            nat = m.nat
+            nat = m._nat(m._par(e)) if hasattr(m, "_nat") else m.nat
         if nat:
             pct = (1.0 - e["w"] / float(nat)) * 100.0
             if pct > 0.05:
@@ -480,16 +485,26 @@ class ManualModeMixin:
         except Exception:
             return None, 0
 
-    def _mv_rects(self, x, w, v, segs, h):
-        """Rectángulos en pantalla (puede haber 2 si cruza filas) de un tramo [x, x+w) del strip."""
+    def _mv_rects(self, x, w, v, segs, h, y0=0.0, y1=None):
+        """Rectángulos en pantalla (puede haber 2 si cruza filas) de un tramo [x, x+w) del strip.
+        v0.95: y0 / y1 = franja vertical del elemento en el strip (2 rows); por defecto el alto completo."""
+        y1 = h if y1 is None else y1
         out = []
         for x1m, x2m, xr, yr in segs:
             a, b = max(x, x1m), min(x + w, x2m)
             if b <= a:
                 continue
-            out.append((v["px"] + (xr + a - x1m) * v["sx"], v["py"] + yr * v["sy"],
-                        v["px"] + (xr + b - x1m) * v["sx"], v["py"] + (yr + h) * v["sy"]))
+            out.append((v["px"] + (xr + a - x1m) * v["sx"], v["py"] + (yr + y0) * v["sy"],
+                        v["px"] + (xr + b - x1m) * v["sx"], v["py"] + (yr + y1) * v["sy"]))
         return out
+
+    @staticmethod
+    def _mv_caja(m, e):
+        """(y0, y1) de un elemento del modelo (2 rows)."""
+        try:
+            return m._caja(e)
+        except Exception:
+            return 0.0, None
 
     def _mv_evento_x(self, event):
         v = self._mv_vista()
@@ -501,8 +516,10 @@ class ManualModeMixin:
         rx = (ex - v["px"]) / v["sx"]
         ry = (ey - v["py"]) / v["sy"]
         tol = 6.0 / max(1e-6, v["sy"])
+        self._mv_ultimo_y = None
         for x1m, x2m, xr, yr in segs:
             if yr - tol <= ry < yr + h + tol and xr <= rx < xr + (x2m - x1m):
+                self._mv_ultimo_y = min(max(ry - yr, 0.0), h - 1.0)   # v0.95: fila del clic (2 rows)
                 return x1m + (rx - xr)
         return None
 
@@ -544,7 +561,7 @@ class ManualModeMixin:
                 e = m.el(uid) if uid is not None else None
                 if e is None:
                     continue
-                for r in self._mv_rects(e["x"], e["w"], v, segs, h):
+                for r in self._mv_rects(e["x"], e["w"], v, segs, h, *self._mv_caja(m, e)):
                     dr.rectangle((r[0] - 1, r[1] - 1, r[2] + 1, r[3] + 1), outline=color, width=ancho)
             return Image.alpha_composite(out, capa)
         except Exception:
@@ -570,11 +587,13 @@ class ManualModeMixin:
         img = base.convert("RGBA").copy()
         viejo = {e["uid"]: (e["x"], e["w"]) for e in antes.els}
         nuevo = {e["uid"]: (e["x"], e["w"], e["src"]) for e in despues.els}
+        cajas = {e["uid"]: self._mv_caja(antes, e) for e in antes.els}          # v0.95: 2 rows
+        cajas.update({e["uid"]: self._mv_caja(despues, e) for e in despues.els})
         cambia_v = [u for u in viejo if u not in nuevo or nuevo[u][:2] != viejo[u]]
         cambia_n = [u for u in nuevo if u not in viejo or nuevo[u][:2] != viejo[u]]
         sombra = (0, 0, 0, 165)
         for u in cambia_v:
-            for r in self._mv_rects(viejo[u][0], viejo[u][1], v, segs, h):
+            for r in self._mv_rects(viejo[u][0], viejo[u][1], v, segs, h, *cajas[u]):
                 box = tuple(int(round(c)) for c in r)
                 if box[2] <= box[0] or box[3] <= box[1]:
                     continue
@@ -590,8 +609,8 @@ class ManualModeMixin:
                                and e["uid"] in viejo and e["w"] == plantilla["w"]), None)
             if fuente is None:
                 continue
-            r_src = self._mv_rects(viejo[fuente][0], viejo[fuente][1], v, segs, h)
-            r_dst = self._mv_rects(x, w, v, segs, h)
+            r_src = self._mv_rects(viejo[fuente][0], viejo[fuente][1], v, segs, h, *cajas[fuente])
+            r_dst = self._mv_rects(x, w, v, segs, h, *cajas[u])
             if not r_src or not r_dst:
                 continue
             s = tuple(int(round(c)) for c in r_src[0])
@@ -613,9 +632,9 @@ class ManualModeMixin:
             esp = despues.pareja(sel)
             if esp is not None:
                 eo = despues.el(esp)
-                for r in self._mv_rects(eo["x"], eo["w"], v, segs, h):
+                for r in self._mv_rects(eo["x"], eo["w"], v, segs, h, *self._mv_caja(despues, eo)):
                     dr.rectangle((r[0] - 1, r[1] - 1, r[2] + 1, r[3] + 1), outline=C_ESPEJO, width=1)
-            rs = self._mv_rects(e["x"], e["w"], v, segs, h)
+            rs = self._mv_rects(e["x"], e["w"], v, segs, h, *self._mv_caja(despues, e))
             for r in rs:
                 dr.rectangle((r[0] - 1, r[1] - 1, r[2] + 1, r[3] + 1), outline=C_SEL, width=2)
             if rs:
@@ -647,7 +666,7 @@ class ManualModeMixin:
         self._mv_tip(None)
         m = self._mv_modelo(avisar=False)
         x = self._mv_evento_x(event) if m is not None else None
-        uid = m.hit(x) if x is not None else None
+        uid = m.hit(x, getattr(self, "_mv_ultimo_y", None)) if x is not None else None
         if uid is None:
             if self.manual_sel is not None:
                 self.manual_sel = None
@@ -722,7 +741,7 @@ class ManualModeMixin:
             return
         m = self._mv_modelo(avisar=False)
         x = self._mv_evento_x(event) if m is not None else None
-        uid = m.hit(x) if x is not None else None
+        uid = m.hit(x, getattr(self, "_mv_ultimo_y", None)) if x is not None else None
         self._mv_tip(event, self._mv_info(m, uid) if uid is not None else "")
         if uid is not None and m.puede_mover(uid)[0]:
             self._mv_cursor("sb_h_double_arrow")
@@ -749,7 +768,7 @@ class ManualModeMixin:
     def _mv_menu(self, event):
         m = self._mv_modelo()
         x = self._mv_evento_x(event) if m is not None else None
-        uid = m.hit(x) if x is not None else None
+        uid = m.hit(x, getattr(self, "_mv_ultimo_y", None)) if x is not None else None
         if uid is None:
             return
         self.manual_sel = uid

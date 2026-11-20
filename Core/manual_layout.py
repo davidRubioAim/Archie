@@ -13,6 +13,10 @@ Reglas:
   - LOGO UNDER: los logos forman una rejilla equidistante por tramo y no se mueven. Duplicate / Remove suma o
     resta un logo al tramo y la rejilla se rehace. Las ANIM ZONES se mueven por celdas enteras de la rejilla.
 
+v0.95: estadios de 2 rows. AMPLIFY: GL y TL como siempre, pero el TL amplificado (anchos naturales y margen
+a escala del alto 1st + 2nd). SINGLE ROW: la 2nd row es un tramo más ("F2", entre los extremos de la 2nd row y
+el CB), con su propio margen; cada elemento sabe su fila por su caja vertical (extra y / h / fila).
+
 Todo se hace en "espacio izquierdo": las coordenadas de la mitad maestra pasadas a la mitad izquierda
 (x' = W - x - w si el maestro es la derecha). Así toda la lógica es la de una sola mitad.
 """
@@ -20,6 +24,7 @@ import copy
 import math
 
 from edge_cases import reservas_laterales
+from amplify import geo_de_datos, SINGLE  # v0.95: estadios de 2 rows (AMPLIFY / SINGLE ROW)
 
 INF = float("inf")
 
@@ -133,9 +138,6 @@ class ManualLayout:
         """-> (True, "") o (False, motivo en inglés)."""
         if not datos or not datos.get("zonas"):
             return False, "Create the architecture first."
-        cfg = datos.get("config") or {}
-        if cfg.get("amplify"):
-            return False, "Manual mode is not available in AMPLIFY mode yet."
         if "ZONA_FALLBACK" in datos["zonas"]:
             return False, "Manual mode needs a static logo (fallback layout)."
         return True, ""
@@ -156,8 +158,26 @@ class ManualLayout:
         self.lat = float(max(ri, rd))
         self.m = {"GL": max(0.0, float(m_gl)), "TL": max(0.0, float(m_tl if m_tl is not None and m_tl >= 0 else m_gl))}
         self.s = max(0.0, min(0.9, float(stretch_pct or 0) / 100.0))
-        self.nat = max(1.0, float(anim_nat_w or 1))
+        self.nat = max(1.0, float(anim_nat_w or 1))   # ancho natural de la ANIM ZONE al alto del strip (H)
         self.master = {"GL": "L", "TL": "L"}
+        # v0.95: 2 rows
+        geo = geo_de_datos(datos)
+        self.tl_lo = float(self.gl)          # inicio del tramo TL (AMPLIFY: el de la 2nd row)
+        self.f2_lo = None                    # SINGLE ROW: inicio de la 2nd row
+        self.nat_par = {}
+        if geo:
+            r1 = geo["h1"] / float(self.H)
+            if geo.get("modo") == SINGLE:
+                r2 = geo["h2"] / float(self.H)
+                self.f2_lo = float(geo["tl2_s"])
+                self.nat_par = {"GL": self.nat * r1, "TL": self.nat * r1, "F2": self.nat * r2}
+                m2 = cfg.get("f2_margin") if cfg.get("f2_custom") else None
+                self.m["F2"] = max(0.0, float(m2 if m2 is not None and m2 >= 0 else self.m["TL"]))
+                self.master["F2"] = "L"
+            else:
+                self.tl_lo = float(geo["tl2_s"])
+                self.nat_par = {"GL": self.nat * r1, "TL": self.nat}
+                self.m["TL"] *= self.H / float(geo["h1"])
         self._next = 1
         self.els = []
         for zona in z.values():
@@ -187,6 +207,19 @@ class ManualLayout:
         self._next += 1
         return u
 
+    def _nat(self, par):
+        """Ancho natural de la ANIM ZONE en ese tramo (2 rows: cada fila a su alto)."""
+        return (getattr(self, "nat_par", None) or {}).get(par, self.nat)
+
+    def _fila(self, e):
+        return 2 if (e.get("extra") or {}).get("fila") == 2 else 1
+
+    def _caja(self, e):
+        """(y0, y1) del elemento en el strip."""
+        ex = e.get("extra") or {}
+        y = float(ex.get("y", 0) or 0)
+        return y, y + float(ex.get("h", self.H) or self.H)
+
     # ------------------------------------------------------------------ clasificación
     def el(self, uid):
         return next((e for e in self.els if e["uid"] == uid), None)
@@ -195,24 +228,28 @@ class ManualLayout:
         """Center Board y logos partidos en el corner (a caballo entre GL y TL): no se mueven."""
         if e["tipo"] == "center_board":
             return True
+        if self._fila(e) == 2:
+            return False
         for b in (self.gl, self.W - self.gl):
             if e["x"] < b - 3 and e["x"] + e["w"] > b + 3:   # 3 px de tolerancia (redondeos de la rejilla)
                 return True
         return False
 
     def _par(self, e):
+        if self._fila(e) == 2:
+            return "F2"
         c = e["x"] + e["w"] / 2.0
         return "GL" if (c < self.gl or c >= self.W - self.gl) else "TL"
 
     def _lado(self, e):
         c = e["x"] + e["w"] / 2.0
-        if self._par(e) == "TL" and abs(c - self.W / 2.0) <= 1.0:
+        if self._par(e) in ("TL", "F2") and abs(c - self.W / 2.0) <= 1.0:
             return "C"
         return "L" if c < self.W / 2.0 else "R"
 
     def _compartida(self, par):
         """TL sin Center Board en LOGO UNDER: una sola rejilla para todo el TL."""
-        return par == "TL" and self.cb <= 0
+        return par in ("TL", "F2") and self.cb <= 0
 
     def _lx(self, e, s):
         return float(e["x"]) if s == "L" else float(self.W - e["x"] - e["w"])
@@ -220,7 +257,8 @@ class ManualLayout:
     def _region(self, par):
         if par == "GL":
             return self.lat, float(self.gl)
-        return float(self.gl), (self.cb_start if self.cb > 0 else self.W / 2.0)
+        lo = self.f2_lo if par == "F2" else getattr(self, "tl_lo", float(self.gl))
+        return float(lo), (self.cb_start if self.cb > 0 else self.W / 2.0)
 
     # ------------------------------------------------------------------ LOGO UNDER: rejilla
     def _logos_lu(self, par, s):
@@ -245,7 +283,7 @@ class ManualLayout:
         if N >= 2:
             p = (xs[-1] - xs[0]) / float(N - 1)
         else:
-            lo, hi = self._region(par) if not self._compartida(par) else (float(self.gl), float(self.W - self.gl))
+            lo, hi = self._region(par) if not self._compartida(par) else self._extremos(par)
             c = xs[0] + lw / 2.0
             p = 2.0 * max(lw / 2.0, min(c - lo, hi - c))
         if p < lw * 0.5:
@@ -253,7 +291,12 @@ class ManualLayout:
         L0 = xs[0] - (p - lw) / 2.0
         # "util": la rejilla es más fina que una ANIM ZONE (la de v0.70). Con pocos logos (celdas más anchas que
         # una ANIM ZONE) las ANIM ZONES no se encajan en celdas: se mueven libres como en el modo normal.
-        return {"L0": L0, "p": p, "N": N, "lw": lw, "compartida": self._compartida(par), "util": p <= self.nat + 0.5}
+        return {"L0": L0, "p": p, "N": N, "lw": lw, "compartida": self._compartida(par), "util": p <= self._nat(par) + 0.5}
+
+    def _extremos(self, par):
+        """Tramo entero (las dos mitades) de un TL sin CB."""
+        lo = self._region(par)[0]
+        return float(lo), float(self.W - lo)
 
     @staticmethod
     def _R_celdas(grid):
@@ -274,7 +317,7 @@ class ManualLayout:
     def _minw_px(self, e, w):
         if e["tipo"] != "anim_zone":
             return w
-        return min(w, max(1.0, self.nat * (1.0 - self.s)))
+        return min(w, max(1.0, self._nat(self._par(e)) * (1.0 - self.s)))
 
     def _cadenas(self, par, s):
         """Cadenas de elementos movibles de la mitad s (espacio izquierdo) entre paredes.
@@ -301,7 +344,7 @@ class ManualLayout:
                     continue
                 c0 = int(round((self._lx(e, s) - L0) / p))
                 m = max(1, int(round(e["w"] / p)))
-                mmin = min(m, max(1, int(math.ceil(self.nat * (1.0 - self.s) / p - 1e-6))))
+                mmin = min(m, max(1, int(math.ceil(self._nat(par) * (1.0 - self.s) / p - 1e-6))))
                 items.append({"uid": e["uid"], "e": e, "x": c0, "w": m, "minw": mmin,
                               "bw": max(m, int(round(e["base_w"] / p)))})
             cadenas += self._agrupar(items, muros, 1, True, grid)
@@ -309,9 +352,12 @@ class ManualLayout:
 
         # --- resto: píxeles
         lo, hi = self._region(par)
-        eje = par == "TL" and self.cb <= 0
+        eje = par in ("TL", "F2") and self.cb <= 0
+        fila = 2 if par == "F2" else 1
         muros = [(-INF, lo, g / 2.0, 1.0), (hi, INF, g / 2.0, 0.5 if eje else 1.0)]
         for e in self.els:
+            if self._fila(e) != fila:   # v0.95: la otra fila no estorba
+                continue
             if self._fijo(e) and not (self.lu and e["tipo"] == "static_logo"):   # en LOGO UNDER los logos van debajo
                 for a in (float(e["x"]), float(self.W - e["x"] - e["w"])):
                     if a < hi and a + e["w"] > lo:
@@ -416,8 +462,13 @@ class ManualLayout:
         """[(uid, tipo, x, w, src, editable)] para pintar."""
         return [(e["uid"], e["tipo"], e["x"], e["w"], e["src"], self.puede_mover(e["uid"])[0]) for e in self.els]
 
-    def hit(self, x):
+    def hit(self, x, y=None):
+        """y (px del strip, opcional): en 2 rows elige la fila."""
         cands = [e for e in self.els if e["x"] <= x < e["x"] + e["w"]]
+        if y is not None:
+            en_y = [e for e in cands if self._caja(e)[0] - 1 <= y < self._caja(e)[1] + 1]
+            if en_y:
+                cands = en_y
         if not cands:
             return None
         cands.sort(key=lambda e: {"anim_zone": 0, "static_logo": 1}.get(e["tipo"], 2) if self.lu
@@ -431,7 +482,7 @@ class ManualLayout:
         xm = self.W - e["x"] - e["w"]
         best = None
         for o in self.els:
-            if o is e or o["tipo"] != e["tipo"]:
+            if o is e or o["tipo"] != e["tipo"] or self._fila(o) != self._fila(e):
                 continue
             d = abs(o["x"] - xm) + abs(o["w"] - e["w"])
             if d <= 3 and (best is None or d < best[0]):
@@ -556,7 +607,8 @@ class ManualLayout:
 
     def _duplicar_eje(self, e):
         """Elemento centrado en el eje del TL (sin CB): se parte en dos, simétricos respecto al centro."""
-        par, s = "TL", self.master["TL"]
+        par = self._par(e)
+        s = self.master.get(par, "L")
         estado = self.estado()
         self.els = [o for o in self.els if o["uid"] != e["uid"]]
         cads = self._cadenas(par, s)
@@ -571,11 +623,11 @@ class ManualLayout:
             m = max(1, int(round(e["w"] / grid["p"])))
             Rc = self._R_celdas(grid)
             it = {"uid": nuevo_e["uid"], "e": nuevo_e, "x": Rc - m, "w": m, "bw": m,
-                  "minw": min(m, max(1, int(math.ceil(self.nat * (1.0 - self.s) / grid["p"] - 1e-6))))}
+                  "minw": min(m, max(1, int(math.ceil(self._nat(par) * (1.0 - self.s) / grid["p"] - 1e-6))))}
             celdas = True
         else:
             w = float(e["w"])
-            it = {"uid": nuevo_e["uid"], "e": nuevo_e, "x": self.W / 2.0 - self.m["TL"] / 2.0 - w, "w": w,
+            it = {"uid": nuevo_e["uid"], "e": nuevo_e, "x": self.W / 2.0 - self.m[par] / 2.0 - w, "w": w,
                   "minw": self._minw_px(e, w), "bw": max(float(e["base_w"]), self._minw_px(e, w))}
             celdas = False
         cand = [c for c in cads if c["celdas"] == celdas]
@@ -586,7 +638,7 @@ class ManualLayout:
                 cand = [{"items": [], "L": 0, "R": self._R_celdas(grid), "Lraw": 0, "Rraw": self._R_celdas(grid),
                          "wl": 1.0, "wr": 0.5, "g": 1, "celdas": True, "grid": grid}]
             else:
-                g = self.m["TL"]
+                g = self.m[par]
                 cand = [{"items": [], "L": lo + g / 2.0, "R": hi - g / 2.0, "Lraw": lo, "Rraw": hi, "wl": 1.0,
                          "wr": 0.5, "g": g, "celdas": False, "grid": None}]
             cads += cand
@@ -636,7 +688,7 @@ class ManualLayout:
         L0, p0 = grid["L0"], grid["p"]
         L1 = L0 + grid["N"] * p0
         # la rejilla nueva no sale del tramo (con pocos logos la deducida puede pasar del corner)
-        lo, hi = self._region(par) if not grid["compartida"] else (float(self.gl), float(self.W - self.gl))
+        lo, hi = self._region(par) if not grid["compartida"] else self._extremos(par)
         L0, L1 = max(L0, lo), min(L1, hi)
         p = (L1 - L0) / float(N1)
         if p < grid["lw"]:
@@ -662,13 +714,14 @@ class ManualLayout:
             n["x"] = x if s == "L" else self.W - x - n["w"]
             self.els.append(n)
         # 3. re-encajar ANIM ZONES en la rejilla nueva (si es más gruesa que una ANIM ZONE, se quedan donde están)
-        g2 = {"L0": L0, "p": p, "N": N1, "lw": lw, "compartida": grid["compartida"], "util": p <= self.nat + 0.5}
+        g2 = {"L0": L0, "p": p, "N": N1, "lw": lw, "compartida": grid["compartida"], "util": p <= self._nat(par) + 0.5}
         if not g2["util"]:
             self._escribir(par, s, self._cadenas(par, s))
             return True, "", None
         Rc = self._R_celdas(g2)
-        mmin_c = max(1, int(math.ceil(self.nat * (1.0 - self.s) / p - 1e-6)))
-        mmax_c = max(1, int(math.floor((self.nat + 0.5) / p)))
+        nat = self._nat(par)
+        mmin_c = max(1, int(math.ceil(nat * (1.0 - self.s) / p - 1e-6)))
+        mmax_c = max(1, int(math.floor((nat + 0.5) / p)))
 
         def celdas_de(o, centrado=False):
             tw = float(o["base_w"])
@@ -676,7 +729,7 @@ class ManualLayout:
             if mmin_c <= mmax_c:
                 m = max(mmin_c, min(m, mmax_c))
             else:   # ningún número de celdas entra en el Squash Limit: el que menos se aleja
-                lim_lo, lim_hi = self.nat * (1.0 - self.s), self.nat
+                lim_lo, lim_hi = nat * (1.0 - self.s), nat
                 m = min((mmax_c, mmin_c), key=lambda k: max(lim_lo - k * p, k * p - lim_hi, 0.0))
             m = max(1, m)
             if centrado and (N1 - m) % 2:
@@ -708,7 +761,7 @@ class ManualLayout:
 
     def magnet(self):
         """Iguala los huecos de cada tramo (mismo orden y cantidad) y copia el último lado editado al otro."""
-        for par in ("GL", "TL"):
+        for par in tuple(self.master):
             s = self.master[par]
             cads = self._cadenas(par, s)
             for cad in cads:
@@ -756,10 +809,12 @@ class ManualLayout:
         for zn, z in base["zonas"].items():
             zonas[zn] = {k: v for k, v in z.items() if k != "elementos"}
             zonas[zn]["elementos"] = []
-        anims = [(e["x"], e["x"] + e["w"]) for e in self.els if e["tipo"] == "anim_zone"]
+        anims = [(e["x"], e["x"] + e["w"], self._fila(e)) for e in self.els if e["tipo"] == "anim_zone"]
         for e in sorted(self.els, key=lambda e: e["x"]):
             c = e["x"] + e["w"] / 2.0
-            if c < self.gl:
+            if self._fila(e) == 2:   # v0.95: SINGLE ROW, 2nd row
+                zn = "FILA2_3" if e["tipo"] == "center_board" else ("FILA2_2" if c < self.W / 2.0 else "FILA2_4")
+            elif c < self.gl:
                 zn = "ZONA_1"
             elif c >= self.W - self.gl:
                 zn = "ZONA_5"
@@ -770,11 +825,11 @@ class ManualLayout:
             else:
                 zn = "ZONA_2" if c <= self.W / 2.0 else "ZONA_4"
             if zn not in zonas:
-                zn = "ZONA_2"
+                zn = "FILA2_2" if zn.startswith("FILA2") and "FILA2_2" in zonas else "ZONA_2"
             out = dict(e["extra"])
             out.update({"tipo": e["tipo"], "width": int(e["w"]), "x_absoluta": int(e["x"])})
             if e["tipo"] == "static_logo" and self.lu:
-                tapado = any(e["x"] < b and e["x"] + e["w"] > a for a, b in anims)
+                tapado = any(e["x"] < b and e["x"] + e["w"] > a for a, b, f in anims if f == self._fila(e))
                 out["logo_under_type"] = "animated" if tapado else "frozen"
                 out["freeze_on_frame_1"] = not tapado
             zonas[zn]["elementos"].append(out)

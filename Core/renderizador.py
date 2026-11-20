@@ -8,6 +8,7 @@ from moviepy import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, Vid
 from proglog import ProgressBarLogger
 from log_utils import debug, log_error
 from edge_cases import edge_de, filas_system, logos_bajo_anims
+from amplify import caja, rects_sin_led, filas_sistema  # v0.95: AMPLIFY en el touchline
 from render_rapido import args_rec709, fps_de  # v0.55: color Rec.709 · v0.57: fps del perfil del estadio
 
 class UILogger(ProgressBarLogger):
@@ -187,6 +188,7 @@ def construir_mega_strip(datos):
             tipo = elemento["tipo"]
             pos_x = elemento["x_absoluta"]
             w_elem = max(1, elemento["width"])
+            pos_y, h_elem = caja(elemento, h_total)   # v0.95: AMPLIFY (GL a 1 fila, TL a 1st + 2nd)
 
             if tipo == "center_board" and w_elem > 0:
                 cb_path = archivos.get("center_board")
@@ -200,20 +202,20 @@ def construir_mega_strip(datos):
                         else:
                             pil_cb = Image.open(cb_path).convert("RGBA")
                         
-                        cb_encuadrado = aplicar_letterbox_pil(pil_cb, w_elem, h_total, Image.Resampling.LANCZOS)
-                        clip_cb = ImageClip(np.array(cb_encuadrado)).with_duration(duracion_video).with_position((pos_x, 0))
+                        cb_encuadrado = aplicar_letterbox_pil(pil_cb, w_elem, h_elem, Image.Resampling.LANCZOS)
+                        clip_cb = ImageClip(np.array(cb_encuadrado)).with_duration(duracion_video).with_position((pos_x, pos_y))
                         lista_composicion.append(clip_cb)
                     except Exception as e:
                         log_error(f"Error procesando Center Board en render, aplicando negro: {e}")
-                        clip = ColorClip(size=(w_elem, h_total), color=(0, 0, 0), duration=duracion_video).with_position((pos_x, 0))
+                        clip = ColorClip(size=(w_elem, h_elem), color=(0, 0, 0), duration=duracion_video).with_position((pos_x, pos_y))
                         lista_composicion.append(clip)
                 else:
-                    clip = ColorClip(size=(w_elem, h_total), color=(0, 0, 0), duration=duracion_video).with_position((pos_x, 0))
+                    clip = ColorClip(size=(w_elem, h_elem), color=(0, 0, 0), duration=duracion_video).with_position((pos_x, pos_y))
                     lista_composicion.append(clip)
             elif tipo == "anim_zone" and anim_clips_base:
                 a_idx = elemento.get("anim_idx", 0) % len(anim_clips_base)
                 if anim_clips_base[a_idx]:
-                    clip = anim_clips_base[a_idx].resized((w_elem, h_total)).with_position((pos_x, 0))
+                    clip = anim_clips_base[a_idx].resized((w_elem, h_elem)).with_position((pos_x, pos_y))
                     (capas_anim if logos_debajo else lista_composicion).append(clip)
                 
     for nombre_zona, datos_zona in datos["zonas"].items():
@@ -221,17 +223,18 @@ def construir_mega_strip(datos):
             tipo = elemento["tipo"]
             pos_x = elemento["x_absoluta"]
             w_elem = max(1, elemento["width"])
+            pos_y, h_elem = caja(elemento, h_total)
 
             if tipo == "static_logo" and clip_logo_base:
                 if elemento.get("logo_under_type") == "frozen":
                     frame_0 = clip_logo_base.get_frame(0)
-                    clip = ImageClip(frame_0).with_duration(duracion_video).resized((w_elem, h_total)).with_position((pos_x, 0))
+                    clip = ImageClip(frame_0).with_duration(duracion_video).resized((w_elem, h_elem)).with_position((pos_x, pos_y))
                     if getattr(clip_logo_base, 'mask', None):
                         mask_frame_0 = clip_logo_base.mask.get_frame(0)
                         mask_clip = ImageClip(mask_frame_0, is_mask=True).with_duration(duracion_video)
                         clip = clip.with_mask(mask_clip)
                 else:
-                    clip = clip_logo_base.resized((w_elem, h_total)).with_position((pos_x, 0))
+                    clip = clip_logo_base.resized((w_elem, h_elem)).with_position((pos_x, pos_y))
 
                 lista_composicion.append(clip)
 
@@ -242,6 +245,8 @@ def construir_mega_strip(datos):
         a, b = max(0, a), min(w_total, b)
         if b > a:
             lista_composicion.append(ColorClip(size=(b - a, h_total), color=(0, 0, 0), duration=duracion_video).with_position((a, 0)))
+    for x0, y0, x1, y1 in rects_sin_led(datos):   # v0.95: AMPLIFY, sin pantalla encima de las Goal Lines
+        lista_composicion.append(ColorClip(size=(x1 - x0, y1 - y0), color=(0, 0, 0), duration=duracion_video).with_position((x0, y0)))
 
     mega_strip_clip = CompositeVideoClip(lista_composicion, size=(w_total, h_total))
     debug("Composición base de Mega Strip finalizada.")
@@ -264,25 +269,14 @@ def renderizar_system_file_moviepy(json_path, output_filename="resultado_system.
     mega_strip_clip, w_total, h_total, duracion = construir_mega_strip(datos)
     
     sys_data = datos.get("system_setup", {})
-    sys_w = sys_data.get("canvas_width", 3840)
-    sys_h = sys_data.get("canvas_height", 2160)
-    sys_mask = sys_data.get("canvas_mask", 96)
-    sys_off_x = sys_data.get("offset_x", 0)
-    sys_off_y = sys_data.get("offset_y", 0)
-    
-    is_amplify = datos.get("config", {}).get("amplify", False)
-    if is_amplify and row_target in ["1ST_ROW", "2ND_ROW"]:
-        h_slice = h_total // 2
-        if row_target == "1ST_ROW":
-            src_y_start, src_y_end = h_slice, h_total
-        else:
-            src_y_start, src_y_end = 0, h_slice
-    else:
-        h_slice = h_total
-        src_y_start, src_y_end = 0, h_total
-
+    sys_in = {"canvas_width": sys_data.get("canvas_width", 3840), "canvas_height": sys_data.get("canvas_height", 2160),
+              "canvas_mask": sys_data.get("canvas_mask", 96), "offset_x": sys_data.get("offset_x", 0),
+              "offset_y": sys_data.get("offset_y", 0)}
     # v0.52: filas estándar o tramos explícitos del edge case
-    filas = filas_system(w_total, h_slice, sys_w, sys_mask, sys_off_x, sys_off_y, edge_de(datos))
+    # v0.95: AMPLIFY -> 1st row / 2nd row (ver amplify.filas_sistema)
+    filas, (src_y_start, src_y_end), sys_fila = filas_sistema(datos, row_target, w_total, h_total, sys_in)
+    sys_w, sys_h = sys_fila["canvas_width"], sys_fila["canvas_height"]
+    h_slice = src_y_end - src_y_start
     
     def make_system_frame(t):
         mega_frame = mega_strip_clip.get_frame(t)

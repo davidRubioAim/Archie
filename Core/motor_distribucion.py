@@ -1490,7 +1490,13 @@ def generar_imagen_arquitectura(
   draw_label("CORNER", x_c1 + c1.width, text_y1, anchor="rb")
   draw_dashed_vertical(x_c1 + c1.width - max(1, int(h_total * 0.02)), text_y1)
 
-  draw_label("TOUCHLINE", x_c2 + (c2.width / 2), text_y2)
+  geo_amp = datos.get("amplify_geo")   # v0.95: estadios de 2 rows
+  if geo_amp:
+    from amplify import etiqueta
+    texto_tl = "TOUCHLINE · " + etiqueta(geo_amp)
+  else:
+    texto_tl = "TOUCHLINE"
+  draw_label(texto_tl, x_c2 + (c2.width / 2), text_y2)
 
   draw_bracket(cx_g5, text_y3)
   draw_label("CORNER", x_c5, text_y3, anchor="lb")
@@ -1517,6 +1523,11 @@ def generar_imagen_arquitectura(
 def calcular_layout_data(
     w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config
 ):
+  # v0.95: AMPLIFY en el touchline -> dos pasadas del motor de siempre (GL a 1 fila, TL a 1st + 2nd), ver amplify.py
+  if config.get("amplify"):
+    from amplify import calcular_layout_amplify
+    return calcular_layout_amplify(calcular_layout_data, w_total, h_total, goal_line, cb_width, margin,
+                                   archivos_cargados, config)
   dist = Distribuidor(w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config)
   datos = dist.procesar()
   # v0.67: si las Goal Lines ya se han repartido con hueco uniforme, el logo GL del corner ya queda separado

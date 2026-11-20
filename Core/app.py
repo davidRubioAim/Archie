@@ -22,6 +22,8 @@ from edge_cases import edge_de, filas_system, restar_zonas, pintar_zonas_negras,
 from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios, AMPLIFY_ACTIVO  # v0.91
+from amplify import (caja, pintar_sin_led, rects_sin_led, filas_sistema, geo_de_perfil, geo_de_datos,  # v0.95
+                     etiqueta as etiqueta_2rows, modo_de, SINGLE)
 from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
@@ -848,7 +850,8 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
                 "max_anim_gl": self.max_anim_gl_slider.get(),
                 "max_anim_tl": self.max_anim_tl_slider.get(),
                 "qty_gl_under": self.qty_gl_under_slider.get(),
-                "qty_tl_under": self.qty_tl_under_slider.get()
+                "qty_tl_under": self.qty_tl_under_slider.get(),
+                **{k: sl.get() for k, (sl, _, _) in getattr(self, "f2_sliders", {}).items()},   # v0.95: 2nd row
             },
             "vars": {
                 "squash_logos": self.squash_logos_var.get(),
@@ -857,7 +860,8 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
                 "show_cb": getattr(self, "show_cb_var", ctk.BooleanVar(value=True)).get(),
                 "logo_under": self.logo_under_var.get(),
                 "amplify": self.amplify_var.get(),
-                "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get()
+                "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
+                "f2_custom": self.f2_custom_var.get() if hasattr(self, "f2_custom_var") else False,
             },
             "manual": self._mv_estado(),   # v0.71: arquitectura del MODO MANUAL (None = automático)
         }
@@ -895,6 +899,10 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         self.update_qty_under_labels(sl["qty_gl_under"], "gl_under")
         self.qty_tl_under_slider.set(sl["qty_tl_under"])
         self.update_qty_under_labels(sl["qty_tl_under"], "tl_under")
+        for k, (f2s, _, _) in self.f2_sliders.items():   # v0.95
+            if k in sl:
+                f2s.set(sl[k])
+                self._f2_label(k, sl[k], actualizar=False)
 
         # 3. Aplicar Variables (Checkboxes)
         vr = state["vars"]
@@ -905,6 +913,8 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         self.logo_under_var.set(vr["logo_under"])
         self.amplify_var.set(vr["amplify"])
         if hasattr(self, "invert_order_var"): self.invert_order_var.set(vr["invert_order"])
+        self.f2_custom_var.set(bool(vr.get("f2_custom", False)))   # v0.95
+        self._f2_estado()
 
         # 4. Disparar lógica de UI anidada
         self.toggle_logo_under_mode()
@@ -1096,6 +1106,31 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         )
         self.max_anim_tl_label.configure(text="Auto")
 
+        # --- v0.95: 2ND ROW (SINGLE ROW): solo se enseña en estadios de 2 rows en modo SINGLE ROW ---
+        self.f2_frame = ctk.CTkFrame(self.col_left, fg_color="transparent")
+        ctk.CTkLabel(self.f2_frame, text="2ND ROW DISTRIBUTION (SINGLE ROW)", font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color="#A9A9A9").pack(anchor="w", padx=20, pady=(10, 2))
+        self.f2_custom_var = ctk.BooleanVar(value=False)
+        self.chk_f2_custom = ctk.CTkCheckBox(
+            self.f2_frame, text="Own distribution for the 2nd row (off: same as the 1st row Touchline)",
+            font=ctk.CTkFont(size=11), variable=self.f2_custom_var, fg_color=self.c_magenta,
+            command=lambda: [self._f2_estado(), self.trigger_update(), self.save_history_state()])
+        self.chk_f2_custom.pack(padx=20, pady=(0, 3), fill="x")
+        self.f2_sliders = {}
+        for clave, titulo, desc, hasta, unidad in (
+                ("f2_qty_corner", "2nd Row End Logos Qty", "Logos at both ends of the 2nd row.", 20, "Logos"),
+                ("f2_qty_cb", "2nd Row Centerboard Logos Qty", "Logos flanking the Center Board in the 2nd row.", 20, "Logos"),
+                ("f2_qty_tl", "2nd Row Logos Qty", "Logo spacers between 2nd row videos.", 20, "Logos"),
+                ("f2_margin", "2nd Row Margin (px)", "Spacing in px between adjacent elements on the 2nd row.", 600, "px"),
+                ("f2_max_anim", "Max Anim Zones 2nd Row", "Max 2nd row videos; rest filled with logos.", 10, "Zones")):
+            sl, _, lbl = self._create_labeled_slider(
+                self.f2_frame, titulo, desc, 0, hasta, hasta, 20 if clave == "f2_margin" else 0,
+                lambda v, c=clave: self._f2_label(c, v))
+            self.f2_sliders[clave] = (sl, lbl, unidad)
+            self._f2_label(clave, sl.get(), actualizar=False)
+            sl.bind("<ButtonRelease-1>", self.save_history_state)
+        self._f2_estado()
+
         # --- SECTION 4: LOGO UNDER DISTRIBUTION ---
         ctk.CTkLabel(self.col_left, text="LOGO UNDER DISTRIBUTION", font=ctk.CTkFont(size=12, weight="bold"), text_color="#A9A9A9").pack(anchor="w", padx=20, pady=(10, 2))
 
@@ -1144,7 +1179,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         self.amplify_var = ctk.BooleanVar(value=False)
         self.amplify_check = ctk.CTkCheckBox(
             self.col_right, 
-            text="⚡ AMPLIFY Mode (Flexbox layout for 2-row strips)", 
+            text="⚡ AMPLIFY Mode (Touchline = 1st + 2nd row)", 
             font=ctk.CTkFont(size=11, weight="bold"), 
             variable=self.amplify_var, 
             command=self.on_amplify_toggle, 
@@ -1237,9 +1272,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         2. LOGOS AS SPACERS: To add Anim Zones, you MUST REDUCE static logo quantities (`qty_goal`, `qty_tl`, etc.) to free up physical pixels. To create visual separators between Anim Zones, you MUST INCREASE logo quantities. For example, to get "2 logos between animations in touchline", set `qty_tl`: 2.
         3. SPACING & MARGINS: To add more empty/black space or distance between elements, INCREASE `margin` (e.g., from 20 to 40 or 60 px). To compact elements, DECREASE `margin`. `margin` is the Goal Line spacing and `margin_tl` the Touchline spacing: change only the one the user refers to (both if unspecified).
         4. STRETCH FIT vs. GAPS: If the user explicitly asks to eliminate gaps, remove black spaces, or "stretch fit", set `stretch_fit_per`: true and MANDATORILY set `stretch_limit`: 0.
-        5. AMPLIFY MODE (Symmetry & Alternation): When `amplify`: true, traditional zone rules are disabled. The engine uses a Flexbox-like alternating distribution.
-           - To change the visual sequence or flip sides symmetrically, toggle or set `invert_order`: true.
-           - NEVER activate `logo_under` or modify `qty_tl_under`/`qty_gl_under` while in AMPLIFY mode.
+        5. AMPLIFY MODE (Touchline 1st + 2nd row): `amplify` comes from the stadium profile; NEVER change it. Goal Lines are single row; the Touchline has a 2nd row on top and shows the SAME distribution rules, amplified (elements are as tall as both rows, so they are wider). All the usual keys apply to both; Touchline quantities (`qty_tl`, `qty_cb`, corners) take more space there.
         6. LOGO UNDER MODE (Equidistant Grid Override): Only use when the user wants static logos frozen or animated *underneath* the main video feed. 
            - CRITICAL: When `logo_under`: true is active, standard static logo distributions are completely wiped and replaced by an equidistant grid across the Full Strip.
            - PER-ZONE QUANTITIES: `qty_gl_under` controls logos EXACTLY for Zone 1 (and identically for Zone 5). `qty_tl_under` controls logos EXACTLY for Zone 2 (and identically for Zone 4). Do NOT treat them as total sums.
@@ -1336,6 +1369,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
             "max_anim_tl": int(self.max_anim_tl_slider.get()),
             "margin_tl": int(self.margin_tl_slider.get()),               # v0.61
             "edge_case": getattr(self, "edge_case_actual", None),        # v0.61: respeta las zonas negras
+            "amplify_geo": getattr(self, "amplify_geo_actual", None),    # v0.95: AMPLIFY en el touchline
         }
         best_config, msg = resolver_arquitectura(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, base)
 
@@ -1375,6 +1409,8 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
             "under_hotspots": getattr(self, "current_under_hotspots", True),
             "even_spacing": getattr(self, "current_even_spacing", True),   # v0.62: el chat también reparte el espacio
             "edge_case": getattr(self, "edge_case_actual", None),
+            "amplify_geo": getattr(self, "amplify_geo_actual", None),    # v0.95
+            **self._config_f2(),
         }
         
         w_total = int(self.inputs["Width"].get() or 0)
@@ -1719,14 +1755,78 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
             self.update_stretch_label(0)
         self.trigger_update()
 
+    # ---------------------------------------------------------------- v0.95: 2nd row (SINGLE ROW)
+    def _f2_label(self, clave, v, actualizar=True):
+        sl, lbl, unidad = self.f2_sliders[clave]
+        val = int(v)
+        if unidad == "px":
+            txt = f"{val} px"
+        else:
+            txt = f"{val} {unidad}" if val > 0 else ("Auto" if unidad == "Zones" else "0")
+        lbl.configure(text=txt)
+        if actualizar:
+            self.trigger_update()
+
+    def _f2_estado(self):
+        """Los sliders de la 2nd row solo se usan con 'Own distribution'."""
+        on = self.f2_custom_var.get()
+        for sl, lbl, _ in self.f2_sliders.values():
+            sl.configure(state="normal" if on else "disabled")
+            lbl.configure(text_color=self.c_text_dark if on else "gray")
+
+    def _f2_visible(self):
+        geo = getattr(self, "amplify_geo_actual", None)
+        return bool(self.amplify_var.get()) and modo_de(geo) == SINGLE
+
+    def _config_f2(self):
+        """Claves f2_* de la config (sliders de la 2nd row en SINGLE ROW)."""
+        if not hasattr(self, "f2_sliders"):
+            return {}
+        cfg = {"f2_custom": bool(self.f2_custom_var.get())}
+        for clave, (sl, _, _) in self.f2_sliders.items():
+            cfg[clave] = int(sl.get())
+        return cfg
+
+    def _f2_desde_config(self, cfg):
+        """Pone los sliders de la 2nd row con lo que traiga una config (JSON, campaña); sin claves, no toca nada."""
+        if not cfg or "f2_custom" not in cfg:
+            return
+        self.f2_custom_var.set(bool(cfg.get("f2_custom")))
+        for clave, (sl, _, _) in self.f2_sliders.items():
+            if cfg.get(clave) is not None:
+                sl.set(cfg[clave])
+                self._f2_label(clave, cfg[clave], actualizar=False)
+        self._f2_estado()
+
     def on_amplify_toggle(self):
         if not AMPLIFY_ACTIVO and self.amplify_var.get():   # v0.91: ni el perfil, ni el chat, ni un estado guardado
             self.amplify_var.set(False)
+        # v0.95: fuera de Custom, AMPLIFY lo decide el estadio (ni el chat ni un estado guardado lo cambian)
+        try:
+            es_custom = self.stadium_selector_global.get() == "Custom"
+        except Exception:
+            es_custom = True
+        if AMPLIFY_ACTIVO and not es_custom:
+            self.amplify_var.set(getattr(self, "amplify_geo_actual", None) is not None)
         if self.amplify_var.get():
             self.btn_toggle_row.pack(side="right", padx=5)
         else:
             self.btn_toggle_row.pack_forget()
             self.preview_row_idx = 1
+        # v0.95: modo de los 2 rows en la casilla y sliders de la 2nd row solo en SINGLE ROW
+        geo = getattr(self, "amplify_geo_actual", None)
+        if self.amplify_var.get():
+            self.amplify_check.configure(text=f"⚡ 2 ROWS: {etiqueta_2rows(geo)}"
+                                         + (" (Touchline = 1st + 2nd row)" if modo_de(geo) != SINGLE
+                                            else " (each row on its own)"))
+        else:
+            self.amplify_check.configure(text="⚡ AMPLIFY Mode (Touchline = 1st + 2nd row)")
+        if hasattr(self, "f2_frame"):
+            if self._f2_visible():
+                if not self.f2_frame.winfo_ismapped():
+                    self.f2_frame.pack(after=self.max_anim_tl_slider, fill="x")
+            else:
+                self.f2_frame.pack_forget()
         self.trigger_update()
 
     def toggle_preview_row(self):
@@ -1994,6 +2094,9 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         
         # v0.51: la hoja trae columna Amplify (y/n); el nombre con "AMPLIFY" se mantiene por compatibilidad
         self.amplify_var.set(AMPLIFY_ACTIVO and (bool(data.get("Amplify")) or "AMPLIFY" in choice.upper()))
+        # v0.95: AMPLIFY es del estadio (columna Amplify = y y fila "- 2nd" de la hoja); solo Custom lo cambia a mano
+        self.amplify_geo_actual = None if is_custom else geo_de_perfil(data, choice)
+        self.amplify_check.configure(state="normal" if is_custom else "disabled")
         self.on_amplify_toggle()
         
         for key, entry in self.inputs.items():
@@ -2094,6 +2197,8 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
             "max_anim_tl": int(self.max_anim_tl_slider.get()),
             "invert_order": getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
             "edge_case": getattr(self, "edge_case_actual", None),
+            "amplify_geo": getattr(self, "amplify_geo_actual", None),             # v0.95: AMPLIFY en el touchline
+            **self._config_f2(),                                                   # v0.95: 2nd row (SINGLE ROW)
             "margin_tl": int(self.margin_tl_slider.get()),                        # v0.61
             "under_hotspots": getattr(self, "current_under_hotspots", True),      # v0.61
             "even_spacing": getattr(self, "current_even_spacing", True),          # v0.62
@@ -2192,6 +2297,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
             self.amplify_var.get(), cfg.get("invert_order", False), cfg.get("max_anim_gl", 0),
             cfg.get("max_anim_tl", 0), margin=cfg.get("margin", 20),
             margin_tl=cfg.get("margin_tl", cfg.get("margin", 20)))
+        self._f2_desde_config(cfg)   # v0.95: sliders de la 2nd row (SINGLE ROW)
         self._init_history_state()
         self.start_preview_render()
 
@@ -2691,51 +2797,55 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         for zona in ([] if solo_textos else datos["zonas"].values()):
             for e in zona["elementos"]:
                 if e["tipo"] == "center_board" and e["width"] > 0:
+                    ey, eh = caja(e, h_total)   # v0.95: AMPLIFY (GL a 1 fila, TL a 1st + 2nd)
                     if cb_path and p["show_cb"]:
-                        k = ("cb", cb_path, e["width"], h_total)
+                        k = ("cb", cb_path, e["width"], eh)
                         if k not in memo:
                             pil_cb_raw = fetch(cb_path, 0)
-                            if pil_cb_raw is None: pil_cb_raw = Image.new("RGBA", (100, h_total), (255, 0, 0, 255))
-                            memo[k] = aplicar_letterbox_pil(pil_cb_raw, e["width"], h_total, PREVIEW_RESAMPLE)
+                            if pil_cb_raw is None: pil_cb_raw = Image.new("RGBA", (100, eh), (255, 0, 0, 255))
+                            memo[k] = aplicar_letterbox_pil(pil_cb_raw, e["width"], eh, PREVIEW_RESAMPLE)
                         cb_letterbox = memo[k]
-                        master.paste(cb_letterbox, (e["x_absoluta"], 0), cb_letterbox)
+                        master.paste(cb_letterbox, (e["x_absoluta"], ey), cb_letterbox)
                     else:
-                        master.paste(Image.new("RGBA", (e["width"], h_total), (0,0,0,255)), (e["x_absoluta"], 0))
+                        master.paste(Image.new("RGBA", (e["width"], eh), (0,0,0,255)), (e["x_absoluta"], ey))
                 elif e["tipo"] == "anim_zone":
                     a_idx = e.get("anim_idx", 0) % len(pil_anims_frames)
                     if capa_estatica and is_video(anim_paths[a_idx % len(anim_paths)]): continue
-                    k = (a_idx, e["width"])
+                    ey, eh = caja(e, h_total)
+                    k = (a_idx, e["width"], eh)
                     if k not in frame_memo:
-                        frame_memo[k] = pil_anims_frames[a_idx].resize((e["width"], h_total), PREVIEW_RESAMPLE)
+                        frame_memo[k] = pil_anims_frames[a_idx].resize((e["width"], eh), PREVIEW_RESAMPLE)
                     anim_img = frame_memo[k]
                     if logos_debajo:
-                        anims_diferidas.append((anim_img, e["x_absoluta"]))
+                        anims_diferidas.append((anim_img, (e["x_absoluta"], ey)))
                     else:
-                        master.paste(anim_img, (e["x_absoluta"], 0), anim_img)
+                        master.paste(anim_img, (e["x_absoluta"], ey), anim_img)
 
         for zona in ([] if solo_textos else datos["zonas"].values()):
             for e in zona["elementos"]:
                 if e["tipo"] == "static_logo":
                     if capa_estatica and e.get("logo_under_type") == "animated" and is_video(logo_path): continue
+                    ey, eh = caja(e, h_total)
                     if e.get("logo_under_type") == "animated" and logo_anim_img is not pil_logo_raw:
-                        k = ("logo_anim", e["width"])
+                        k = ("logo_anim", e["width"], eh)
                         if k not in frame_memo:
-                            frame_memo[k] = logo_anim_img.resize((e["width"], h_total), PREVIEW_RESAMPLE)
+                            frame_memo[k] = logo_anim_img.resize((e["width"], eh), PREVIEW_RESAMPLE)
                         logo_img = frame_memo[k]
                     else:
-                        logo_img = resized(("logo", logo_path), pil_logo_raw, (e["width"], h_total))
-                    master.paste(logo_img, (e["x_absoluta"], 0), logo_img)
+                        logo_img = resized(("logo", logo_path), pil_logo_raw, (e["width"], eh))
+                    master.paste(logo_img, (e["x_absoluta"], ey), logo_img)
 
-        for anim_img, ax in anims_diferidas:
-            master.paste(anim_img, (ax, 0), anim_img)
+        for anim_img, apos in anims_diferidas:
+            master.paste(anim_img, apos, anim_img)
 
         pintar_zonas_negras(master, edge_de(datos).get("zonas_negras"))  # v0.52: brands reservados
+        pintar_sin_led(master, datos)   # v0.95: AMPLIFY, sin pantalla encima de las Goal Lines
 
         if strip_out is not None:
             strip_out["master"] = master  # v0.46: el strip tal cual, para 3D PREVIEW
         res = generar_imagen_arquitectura(master, datos, h_total, w_total, p["gl_offset_pct"], bg_color=(0, 0, 0, 0), resample=PREVIEW_RESAMPLE, max_png_width=None)
 
-        filas, (src_y_start, src_y_end) = self._filas_system(p)
+        filas, (src_y_start, src_y_end), (sys_w, sys_h, sys_mask) = self._filas_system(p)
         h_slice = src_y_end - src_y_start
         master_slice = self.safe_crop(master, 0, src_y_start, w_total, src_y_end)
         sys_canvas = Image.new("RGBA", (sys_w, sys_h), (0,0,0,255))
@@ -2757,20 +2867,18 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
 
     @staticmethod
     def _filas_system(p):
-        """Cómo se reparte el strip en el System File: ([(x_ini, x_fin, x_lienzo, y_lienzo)], (y0, y1) del strip)."""
+        """Cómo se reparte el strip en el System File:
+        ([(x_ini, x_fin, x_lienzo, y_lienzo)], (y0, y1) del strip, (sys_w, sys_h, sys_mask) del lienzo)."""
         datos, w_total, h_total = p["datos"], p["w_total"], p["h_total"]
-        sys_mask, sys_off_x, sys_off_y = p["sys_mask"], p["sys_off_x"], p["sys_off_y"]
-        is_amplify = datos.get("config", {}).get("amplify", False)
-        if is_amplify and p["row_idx"] is not None:
-            h_slice = h_total // 2
-            v_slice = (h_slice, h_total) if p["row_idx"] == 1 else (0, h_slice)
-        else:
-            h_slice = h_total
-            v_slice = (0, h_total)
-
-        # v0.52: el reparto vive en edge_cases.filas_system (estándar o tramos explícitos del edge case)
-        filas = filas_system(w_total, h_slice, p["sys_w"], sys_mask, sys_off_x, sys_off_y, edge_de(datos))
-        return filas, v_slice
+        sys_in = {"canvas_width": p["sys_w"], "canvas_height": p["sys_h"], "canvas_mask": p["sys_mask"],
+                  "offset_x": p["sys_off_x"], "offset_y": p["sys_off_y"]}
+        fila = None
+        if geo_de_datos(datos) and p["row_idx"] is not None:
+            fila = "1ST_ROW" if p["row_idx"] == 1 else "2ND_ROW"
+        # v0.52: reparto estándar o tramos explícitos del edge case (edge_cases.filas_system)
+        # v0.95: AMPLIFY -> 1st row (abajo, todo el perímetro) / 2nd row (arriba, solo el TL, canvas de la fila "- 2nd")
+        filas, v_slice, s = filas_sistema(datos, fila, w_total, h_total, sys_in)
+        return filas, v_slice, (s["canvas_width"], s["canvas_height"], s["canvas_mask"])
 
     # ==========================================
     # REPRODUCTOR (v0.35): cada ELEMENT se decodifica una vez y se pinta en todas sus instancias
@@ -2808,6 +2916,10 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
             tile_w = max(1, int(round(bw * h_total / float(max(1, bh)))))
             for x in range(0, w_total, tile_w):
                 instancias.append({"src": bg_path, "x": x, "w": tile_w, "mask": True})
+            # v0.95: AMPLIFY, sin pantalla encima de las Goal Lines (negro sobre el fondo animado)
+            for x0, y0, x1, y1 in rects_sin_led(datos):
+                instancias.append({"src": Image.new("RGBA", (1, 1), (0, 0, 0, 255)), "x": x0, "w": x1 - x0,
+                                   "y": y0, "h": y1 - y0, "mask": False})
 
         anims = files["anims"]
         cb_path = files["center_board"]
@@ -2816,37 +2928,39 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         for zona in datos["zonas"].values():
             for e in zona["elementos"]:
                 if e["width"] <= 0: continue
+                ey, eh = caja(e, h_total)   # v0.95: AMPLIFY
                 if e["tipo"] == "center_board" and bg_video:
                     if cb_path and p["show_cb"]:
-                        k = ("cb", cb_path, e["width"], h_total)
+                        k = ("cb", cb_path, e["width"], eh)
                         if k not in memo:
-                            raw = still(cb_path) or Image.new("RGBA", (100, h_total), (255, 0, 0, 255))
-                            memo[k] = aplicar_letterbox_pil(raw, e["width"], h_total, PREVIEW_RESAMPLE)
-                        instancias.append({"src": memo[k], "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                            raw = still(cb_path) or Image.new("RGBA", (100, eh), (255, 0, 0, 255))
+                            memo[k] = aplicar_letterbox_pil(raw, e["width"], eh, PREVIEW_RESAMPLE)
+                        instancias.append({"src": memo[k], "x": e["x_absoluta"], "w": e["width"], "y": ey, "h": eh, "mask": True})
                     else:
-                        instancias.append({"src": Image.new("RGBA", (1, 1), (0, 0, 0, 255)), "x": e["x_absoluta"], "w": e["width"], "mask": False})
+                        instancias.append({"src": Image.new("RGBA", (1, 1), (0, 0, 0, 255)), "x": e["x_absoluta"], "w": e["width"], "y": ey, "h": eh, "mask": False})
                 elif e["tipo"] == "anim_zone" and anims:
                     path = anims[e.get("anim_idx", 0) % len(anims)]
                     if is_video(path):
                         if path in videos or video(path):
-                            inst_anims.append({"src": path, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                            inst_anims.append({"src": path, "x": e["x_absoluta"], "w": e["width"], "y": ey, "h": eh, "mask": True})
                     elif bg_video:
                         img = still(path)
                         if img is not None:
-                            inst_anims.append({"src": img, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                            inst_anims.append({"src": img, "x": e["x_absoluta"], "w": e["width"], "y": ey, "h": eh, "mask": True})
 
         logo_path = files["static_logo"]
         logo_still = None
         for zona in datos["zonas"].values():
             for e in zona["elementos"]:
                 if e["tipo"] != "static_logo" or e["width"] <= 0 or not logo_path: continue
+                ey, eh = caja(e, h_total)   # v0.95: AMPLIFY
                 if e.get("logo_under_type") == "animated" and is_video(logo_path):
                     if logo_path in videos or video(logo_path):
-                        instancias.append({"src": logo_path, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                        instancias.append({"src": logo_path, "x": e["x_absoluta"], "w": e["width"], "y": ey, "h": eh, "mask": True})
                 elif bg_video:
                     if logo_still is None: logo_still = still(logo_path)
                     if logo_still is not None:
-                        instancias.append({"src": logo_still, "x": e["x_absoluta"], "w": e["width"], "mask": True})
+                        instancias.append({"src": logo_still, "x": e["x_absoluta"], "w": e["width"], "y": ey, "h": eh, "mask": True})
         if logos_debajo:
             instancias.extend(inst_anims)
 
@@ -2854,7 +2968,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         negras = edge_de(datos).get("zonas_negras")
         escena = Escena(static_res, restar_zonas(segmentos, negras), h_total, instancias, videos)
         # v0.39: mismas instancias, colocadas en las filas del System File
-        filas, v_slice = self._filas_system(p)
+        filas, v_slice, _ = self._filas_system(p)
         escena_sys = Escena(static_sys, restar_zonas(filas, negras), h_total, instancias, videos, v_slice=v_slice)
         # v0.46: mismas instancias sobre el strip entero (un solo tramo), textura de 3D PREVIEW
         escena_3d = Escena(out["master"], restar_zonas([(0, w_total, 0, 0)], negras), h_total, instancias, videos)
@@ -2936,8 +3050,9 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         datos = p["datos"]
         w_total, h_total = p["w_total"], p["h_total"]
         goal_line = datos["zonas"]["ZONA_1"]["width"]
-        amplify = bool(datos.get("config", {}).get("amplify", False))
-        L, W, bandas = geometria_estadio(w_total, goal_line, h_total, amplify)
+        geo_amp = geo_de_datos(datos)   # v0.95: AMPLIFY en el touchline
+        amplify = geo_amp is not None
+        L, W, bandas = geometria_estadio(w_total, goal_line, h_total, amplify, geo_amp)
         self._geo3d = (w_total, h_total, L, W)
         self.visor_3d.set_scene(L, W, bandas)
         gap = W - goal_line
@@ -2945,7 +3060,8 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         if gap > 0.5:
             txt += f" · {int(round(gap))} px gap (pitch 110x64 min.)"
         if amplify:
-            txt += " · 2 rows"
+            txt += (f" · 2 ROWS {etiqueta_2rows(geo_amp)} ({geo_amp['h1']}+{geo_amp['h2']} px, "
+                    f"2nd row {geo_amp['tl2_e'] - geo_amp['tl2_s']} px)")
         self.lbl_v3d_info.configure(text=txt)
 
     def _refrescar_3d(self):
