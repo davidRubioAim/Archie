@@ -161,6 +161,18 @@ def bandas_fondo(datos, w_total, h_total):
     return out
 
 
+def franjas_arquitectura(datos, h_total):
+    """v0.98: franja vertical (v0, v1) del strip que se ve en cada fila de la arquitectura (GL izq, TL, GL der).
+    En los estadios de 2 rows las Goal Lines solo tienen la 1st row: se muestran a su alto real, sin la franja
+    de arriba (no hay pantalla)."""
+    geo = geo_de_datos(datos)
+    h_total = int(h_total)
+    if not geo or geo["h2"] <= 0:
+        return [(0, h_total)] * 3
+    gl = (geo["h2"], geo["H"])
+    return [gl, (0, h_total), gl]
+
+
 def mosaico(dst, tile, x0, x1, y):
     """Repite tile (PIL) en dst de x0 a x1 a la altura y (el último recortado)."""
     tw = max(1, tile.width)

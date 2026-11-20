@@ -22,7 +22,7 @@ from edge_cases import edge_de, filas_system, restar_zonas, pintar_zonas_negras,
 from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios, AMPLIFY_ACTIVO  # v0.91
-from amplify import (caja, pintar_sin_led, bandas_fondo, mosaico, rects_sin_led, filas_sistema, geo_de_perfil, geo_de_datos,  # v0.95
+from amplify import (caja, pintar_sin_led, bandas_fondo, mosaico, franjas_arquitectura, rects_sin_led, filas_sistema, geo_de_perfil, geo_de_datos,  # v0.95
                      etiqueta as etiqueta_2rows, modo_de, SINGLE)
 from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
@@ -2969,6 +2969,8 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
 
         # v0.52: el reproductor no pinta vídeo sobre las zonas negras (edge cases)
         negras = edge_de(datos).get("zonas_negras")
+        # v0.98: 2 rows -> en la arquitectura las Goal Lines solo muestran la 1st row
+        segmentos = [s + (v,) for s, v in zip(segmentos, franjas_arquitectura(datos, h_total))]
         escena = Escena(static_res, restar_zonas(segmentos, negras), h_total, instancias, videos)
         # v0.39: mismas instancias, colocadas en las filas del System File
         filas, v_slice, _ = self._filas_system(p)

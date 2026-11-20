@@ -334,7 +334,8 @@ class ComposicionPreview:
             s_min = bw / (2.0 * (cx - limite) * (1.0 - DETAIL_MARGEN))
             s = min(max(s, s_min), DETAIL_LED_MAX * bh / float(self.h_total))
         self.det_scale = s
-        self.det_led_h = max(2, int(round(led_h)))
+        # v0.98: el alto sale de la escala final (si se amplía para sacar el CB, X e Y igual: sin deformar)
+        self.det_led_h = max(2, int(round(self.h_total * s)))
         cw = bw / s
         self.det_src = (cx - cw / 2.0, cx + cw / 2.0)
         self.det_y = y0 + int(round(bh * 0.55 - self.det_led_h / 2.0))
@@ -368,7 +369,6 @@ class ComposicionPreview:
         util = (x1 - x0) - 2 * ARCH_MARGIN
         s = util / float(max(L, gl, 1))
         self.arch_scale = s
-        row_h = max(2, int(round(self.h_total * s)))
         tl_v = (min(b["src"][2] for b in self.bandas if b["side"] == "TL"),
                 max(b["src"][3] for b in self.bandas if b["side"] == "TL"))
         gl_v = next((b["src"][2:] for b in self.bandas if b["side"] == "GLL"), (0, self.h_total))
@@ -390,7 +390,8 @@ class ComposicionPreview:
                               izq="CORNER", der="GOALLINE RIGHT", tick_izq=True,
                               goal=("GOAL RIGHT", g) if 0 <= g <= gl else None))
         for f in filas:
-            f.setdefault("h", row_h)
+            # v0.98: cada fila a su alto real (2 rows: las Goal Lines solo con la 1st row, sin estirar)
+            f.setdefault("h", max(2, int(round((f["src"][3] - f["src"][2]) * s))))
 
         # reparto vertical: rótulo + aire + fila, centrado en el área
         asc = self.f_arch.getbbox("GOALLINE")[3]

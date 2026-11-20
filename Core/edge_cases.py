@@ -165,7 +165,9 @@ def restar_zonas(segmentos, zonas):
     if not zonas:
         return list(segmentos)
     out = []
-    for a, b, rx, ry in segmentos:
+    for seg in segmentos:
+        a, b, rx, ry = seg[:4]
+        extra = tuple(seg[4:])   # v0.98: franja vertical (v0, v1) del segmento, si la hay
         piezas = [(a, b)]
         for z1, z2 in zonas:
             nuevas = []
@@ -178,7 +180,7 @@ def restar_zonas(segmentos, zonas):
                 if z2 < p2:
                     nuevas.append((z2, p2))
             piezas = nuevas
-        out.extend((p1, p2, rx + (p1 - a), ry) for p1, p2 in piezas)
+        out.extend((p1, p2, rx + (p1 - a), ry) + extra for p1, p2 in piezas)
     return out
 
 

@@ -142,7 +142,8 @@ class Escena:
     def __init__(self, static_res, segmentos, h_total, instancias, videos, v_slice=None):
         self.static_res = static_res            # PIL RGBA con lo que no se mueve
         self.res_size = static_res.size
-        self.segmentos = segmentos              # [(x_ini, x_fin, x_res, y_res)] (motor_distribucion)
+        self.segmentos = segmentos              # [(x_ini, x_fin, x_res, y_res[, (v0, v1)])] (motor_distribucion)
+                                                # v0.98: (v0, v1) opcional = filas del strip que se ven en ese tramo
         self.h_total = h_total
         # franja vertical del strip que se pinta en cada segmento (AMPLIFY: media altura en el System File)
         self.v_slice = v_slice or (0, h_total)
@@ -200,11 +201,16 @@ class Vista:
             r0, r1 = max(iy, sy0), min(iy + ih, sy1)   # filas del strip que se ven de esta instancia
             subs = []
             if w > 0 and ih > 0 and r1 > r0:
-                for a, b, rx, ry in escena.segmentos:
+                for seg in escena.segmentos:
+                    a, b, rx, ry = seg[:4]
                     lo, hi = max(x, a), min(x + w, b, a + (rw - rx))
                     if hi <= lo: continue
+                    q0, q1 = r0, r1
+                    if len(seg) > 4 and seg[4]:   # v0.98: Goal Lines de un estadio de 2 rows (solo la 1st row)
+                        q0, q1 = max(q0, seg[4][0]), min(q1, seg[4][1])
+                        if q1 <= q0: continue
                     vx0, vx1 = px + (rx + lo - a) * kx, px + (rx + hi - a) * kx
-                    vy0, vy1 = py + (ry + r0 - sy0) * ky, py + (ry + r1 - sy0) * ky
+                    vy0, vy1 = py + (ry + q0 - sy0) * ky, py + (ry + q1 - sy0) * ky
                     dx0, dx1 = max(lim_x0, int(round(vx0))), min(lim_x1, int(round(vx1)))
                     dy0, dy1 = max(lim_y0, int(round(vy0))), min(lim_y1, int(round(vy1)))
                     if dx1 - dx0 < 1 or dy1 - dy0 < 1: continue

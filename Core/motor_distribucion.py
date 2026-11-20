@@ -1419,15 +1419,18 @@ def generar_imagen_arquitectura(
       (seg[0], seg[2], seg[3]) for seg in segs
   )
 
-  c1 = safe_crop(master, s1, 0, segs[0][1], h_total)
-  c2 = safe_crop(master, s2, 0, segs[1][1], h_total)
-  c5 = safe_crop(master, s5, 0, segs[2][1], h_total)
+  # v0.98: 2 rows -> las Goal Lines a su alto real (sin la franja de arriba, que no tiene pantalla)
+  from amplify import franjas_arquitectura
+  (v1a, v1b), (v2a, v2b), (v5a, v5b) = franjas_arquitectura(datos, h_total)
+  c1 = safe_crop(master, s1, v1a, segs[0][1], v1b)
+  c2 = safe_crop(master, s2, v2a, segs[1][1], v2b)
+  c5 = safe_crop(master, s5, v5a, segs[2][1], v5b)
 
   res = Image.new("RGBA", (z234_w, res_h), bg_color)
 
-  res.paste(c1, (x_c1, y1), c1 if c1.mode == "RGBA" else None)
-  res.paste(c2, (x_c2, y2), c2 if c2.mode == "RGBA" else None)
-  res.paste(c5, (x_c5, y3), c5 if c5.mode == "RGBA" else None)
+  res.paste(c1, (x_c1, y1 + v1a), c1 if c1.mode == "RGBA" else None)
+  res.paste(c2, (x_c2, y2 + v2a), c2 if c2.mode == "RGBA" else None)
+  res.paste(c5, (x_c5, y3 + v5a), c5 if c5.mode == "RGBA" else None)
 
   font_size = max(40, int(h_total * 0.7))
   try:
