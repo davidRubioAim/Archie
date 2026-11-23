@@ -44,6 +44,7 @@ ROT_SENS = 0.5                   # v0.49: suavidad de la rotación con clic dere
 # --------------------------------------------------------------------------
 # Geometría del estadio a partir del perfil
 # --------------------------------------------------------------------------
+_BORDE_CLAMP = 2      # v1.00: texels de borde repetido alrededor de cada trozo de banda
 SOLAPE_FILAS = 0.04   # v0.99: solape (fracción del alto de la 1st row) de la 2nd row sobre la 1st en 3D
 
 
@@ -458,8 +459,13 @@ class Escena3D:
         x0, x1 = tw * k / K, tw * (k + 1) / K
         cx0, cx1 = max(0, int(math.floor(x0)) - 1), min(tw, int(math.ceil(x1)) + 1)  # 1 texel de más: sin rendijas
         crop = tex.crop((cx0, 0, cx1, th))  # RGB opaca
+        # v1.00: borde repetido (clamp) alrededor del trozo: el bilineal del borde no mezcla con el negro de
+        # fuera. Sin esto, el canto de cada banda sale como una línea oscura que parpadea (la unión entre la
+        # 1st y la 2nd row en los estadios de 2 rows)
+        P = _BORDE_CLAMP
+        crop = Image.fromarray(np.pad(np.asarray(crop), ((P, P), (P, P), (0, 0)), mode="edge"))
         local = [(px - bx0, py - by0) for px, py in dst]
-        src = [(x0 - cx0, 0), (x1 - cx0, 0), (x1 - cx0, th), (x0 - cx0, th)]
+        src = [(x0 - cx0 + P, P), (x1 - cx0 + P, P), (x1 - cx0 + P, th + P), (x0 - cx0 + P, th + P)]
         try:
             coeffs = _coeficientes(local, src)
         except np.linalg.LinAlgError:
