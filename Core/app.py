@@ -31,6 +31,8 @@ from auto_import import buscar_elements_hermanos
 from auto_solver import resolver as resolver_arquitectura, completar_goal, CONFIG_KEYS
 import hotspot_solver  # v0.61: auto-solver por hotspots + referencias JSON aprobadas
 from campaign_panel import CampaignPanel  # v0.58: pestaña CAMPAIGNS (batch de campañas por estadio)
+import campaign_batch as cb_ajustes  # v1.02: altura guardada del divisor de MEDIA ASSETS
+import ai_panel  # v1.02: pestaña AI ASSISTANT con el estilo del Design System AIM
 from video_player import PreviewPlayer, PhotoTarget, Escena, Vista, PLAYER_FPS
 from vista_3d import Visor3D, geometria_estadio, escala_textura
 from manual_mode import ManualModeMixin  # v0.71: MODO MANUAL en la Architecture Preview
@@ -345,7 +347,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         self.archivos_cargados = {"background": None, "center_board": None, "static_logo": None, "anim_zone": None, "anim_zones": []}
         
         self.media_body = ctk.CTkFrame(self.col_media, fg_color="transparent")
-        self.media_body.pack(fill="x", expand=False)
+        self.media_body.pack(fill="both", expand=True)   # v1.02: crece con el divisor arrastrable
         self.drop_zones_frame = ctk.CTkFrame(self.media_body, fg_color="transparent")
         self.drop_zones_frame.pack(fill="x", expand=False, padx=10, pady=(0, 5))
         self.drop_zones_frame.grid_columnconfigure(0, weight=1)
@@ -382,10 +384,13 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
 
         # v0.58: pestaña CAMPAIGNS (se muestra en lugar de las zonas de drop)
         self.campaign_panel = CampaignPanel(self, self.media_body, CONFIG_DIR)
+        self._build_media_splitter()   # v1.02: divisor arrastrable MEDIA ASSETS / MANUAL EDIT - AI ASSISTANT
 
         # --- NUEVO BLOQUE DE ACCIONES (CREATE + RESET + UNDO/REDO) ---
         self.actions_arch_frame = ctk.CTkFrame(self.col_media, fg_color="transparent")
-        self.actions_arch_frame.pack(fill="x", padx=20, pady=(10, 15))
+        # v1.02: abajo y antes que media_body en el orden de pack: al encoger con el divisor se recorta
+        # el contenido de MEDIA ASSETS, nunca los botones CREATE / RESET / UNDO / REDO / ★
+        self.actions_arch_frame.pack(side="bottom", fill="x", padx=20, pady=(10, 15), before=self.media_body)
         
         self.actions_arch_frame.grid_columnconfigure(0, weight=3)
         self.actions_arch_frame.grid_columnconfigure(1, weight=1)
@@ -534,7 +539,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         v3d_header = ctk.CTkFrame(self.v3d_frame, fg_color="transparent")
         v3d_header.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
         ctk.CTkLabel(v3d_header, text="3D PREVIEW", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.c_magenta).pack(side="left")
-        ctk.CTkLabel(v3d_header, text="Drag: move · Right drag: rotate · Wheel: zoom",
+        ctk.CTkLabel(v3d_header, text="Drag: Move | Wheel: Zoom",
                      font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=12)
         # v0.74: cámaras predefinidas (Global View = la vista inicial; el resto mira desde ahí hacia cada zona)
         for txt, w, nombre in (("CB", 36, "cb"), ("Goal", 46, "goal_r"), ("Corner", 56, "corner_r"),
@@ -1223,30 +1228,8 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         ).pack(padx=20, pady=(0, 5), anchor="w", fill="x")
 
     def setup_ai_assistant_tab(self):
-        tab_ai = self.tabs_container.tab("AI ASSISTANT")
-        tab_ai.grid_columnconfigure(0, weight=1)
-        tab_ai.grid_rowconfigure(0, weight=1)
-
-        self.chat_history = ctk.CTkTextbox(
-            tab_ai, 
-            wrap="word", 
-            fg_color="#dbdbdb", 
-            text_color=self.c_text_dark, 
-            corner_radius=10
-        )
-        self.chat_history.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="nsew")
-        self.chat_history.configure(state="disabled")
-
-        input_frame = ctk.CTkFrame(tab_ai, fg_color="transparent")
-        input_frame.grid(row=1, column=0, padx=10, pady=(5, 10), sticky="ew")
-        input_frame.grid_columnconfigure(0, weight=1)
-
-        self.chat_input = ctk.CTkEntry(input_frame, placeholder_text="Ask the AI for a layout...", height=40)
-        self.chat_input.grid(row=0, column=0, padx=(0, 10), sticky="ew")
-        self.chat_input.bind("<Return>", lambda e: self.send_ai_message())
-
-        self.btn_send_ai = ctk.CTkButton(input_frame, text="Send", width=70, height=40, fg_color=self.c_magenta, hover_color="#D1007A", font=ctk.CTkFont(weight="bold"), command=self.send_ai_message)
-        self.btn_send_ai.grid(row=0, column=1)
+        # v1.02: pestaña rediseñada (gradiente AIM, cabecera de Archie, chat y caja de pregunta) en ai_panel.py
+        self.panel_ai = ai_panel.construir(self, self.tabs_container.tab("AI ASSISTANT"))
 
     def init_ai_session(self):
         if not api_key:
@@ -1287,7 +1270,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
                 system_instruction=system_instruction,
                 response_mime_type="application/json" 
             )
-            self.append_chat("Archie", "Hi! I'm Archie. How can I help you?")
+            self.append_chat("Archie", "Describe the layout you want, e.g. \"2 logos between animations in the touchline\".")
         except Exception as e:
             self.append_chat("System Error", f"⚠️ Failed to initialize AI: {str(e)}")
 
@@ -2243,10 +2226,116 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         else:
             self.batch_manager.open_modal()
 
+    # ----- v1.02: divisor arrastrable entre MEDIA ASSETS y MANUAL EDIT / AI ASSISTANT -----
+    def _build_media_splitter(self):
+        """Franja fina bajo MEDIA ASSETS: arrastrar arriba/abajo reparte la altura con las pestañas de abajo.
+        Doble clic = altura automática. La altura elegida se guarda en los ajustes de CAMPAIGNS."""
+        sp = ctk.CTkFrame(self.top_left_container, fg_color="transparent", height=10, cursor="sb_v_double_arrow")
+        sp.pack(fill="x", pady=(2, 0))
+        grip = ctk.CTkFrame(sp, fg_color="#D9D9D9", width=48, height=4, corner_radius=2, cursor="sb_v_double_arrow")
+        grip.place(relx=0.5, rely=0.5, anchor="center")
+        self._media_splitter, self._media_grip = sp, grip
+        self._split_drag = None
+        for w in (sp, grip):
+            w.bind("<Enter>", lambda e: self._media_grip.configure(fg_color=self.c_magenta))
+            w.bind("<Leave>", lambda e: self._split_drag is None and self._media_grip.configure(fg_color="#D9D9D9"))
+            w.bind("<ButtonPress-1>", self._split_press)
+            w.bind("<B1-Motion>", self._split_motion)
+            w.bind("<ButtonRelease-1>", self._split_release)
+            w.bind("<Double-Button-1>", lambda e: self._split_auto())
+        guardada = cb_ajustes.leer_ajustes(CONFIG_DIR).get("media_assets_height")
+        if guardada:
+            self.after(800, lambda: self._split_set(int(guardada)))
+
+    def _split_scaling(self):
+        try:
+            return ctk.ScalingTracker.get_widget_scaling(self.col_media)
+        except Exception:
+            return 1.0
+
+    def _split_limites(self):
+        """(mín, máx) de la altura de MEDIA ASSETS en px reales.
+        Mín: cabecera + las drop zones completas de FILES + botones CREATE / RESET... (en cualquier modo).
+        Máx: deja en la pestaña de abajo la cabecera de Archie, ~6 líneas de chat y la caja de pregunta con Send."""
+        self.update_idletasks()
+        s = self._split_scaling()
+        if self.col_media.winfo_height() > 1:
+            fijo = self.col_media.winfo_height() - self.media_body.winfo_height()   # cabecera + botones + márgenes
+            self._split_fijo = max(getattr(self, "_split_fijo", 0), fijo)
+        files_h = self.drop_zones_frame.winfo_reqheight() + int(5 * s)          # drop zones de FILES + su margen
+        self._split_files = max(getattr(self, "_split_files", 0), files_h)
+        h_min = getattr(self, "_split_fijo", int(110 * s)) + self._split_files
+        h_max = None
+        h_tabs = self.tabs_container.winfo_height()
+        tab_vis = self.tabs_container.tab(self.tabs_container.get())   # la pestaña visible (la otra mide 1 px)
+        if h_tabs > 1 and tab_vis.winfo_height() > 1:   # sin dibujar todavía (arranque) no se limita por arriba
+            extra_tabs = h_tabs - tab_vis.winfo_height()   # botones de las pestañas y márgenes del tabview
+            tabs_min = extra_tabs + self.panel_ai.altura_minima()
+            h_max = max(h_min, self.col_media.winfo_height() + max(0, h_tabs - tabs_min))
+        return h_min, h_max
+
+    @staticmethod
+    def _split_clamp(h, lim):
+        h_min, h_max = lim
+        if h_max is not None:
+            h = min(h, h_max)
+        return int(max(h_min, h))
+
+    def _split_set(self, h_px):
+        """Fija la altura de MEDIA ASSETS (px reales) dentro de sus límites. Un solo relayout."""
+        h_px = self._split_clamp(h_px, self._split_limites())
+        self.col_media.pack_propagate(False)
+        self.col_media.configure(height=h_px / self._split_scaling())
+        return h_px
+
+    # v1.02: mientras se arrastra solo se mueve una guía magenta (sin relayout de toda la ventana, que daba
+    # saltos de bloques blancos y elementos cortados); al soltar se aplica la altura de una vez.
+    def _split_press(self, e):
+        self._split_lim = self._split_limites()
+        self._split_drag = (e.y_root, self.col_media.winfo_height())
+        self._media_grip.configure(fg_color=self.c_magenta)
+        if getattr(self, "_split_guia", None) is None:
+            self._split_guia = tk.Frame(self, bg=self.c_magenta, height=3, bd=0, highlightthickness=0,
+                                        cursor="sb_v_double_arrow")
+        self._split_mover_guia(self._split_drag[1])
+
+    def _split_mover_guia(self, h):
+        c = self.top_left_container
+        x = c.winfo_rootx() - self.winfo_rootx()
+        y = self.col_media.winfo_rooty() - self.winfo_rooty() + h + int(4 * self._split_scaling())
+        self._split_guia.place(x=x, y=y, width=c.winfo_width(), height=3)
+        self._split_guia.lift()
+
+    def _split_motion(self, e):
+        if self._split_drag is None:
+            return
+        y0, h0 = self._split_drag
+        self._split_mover_guia(self._split_clamp(h0 + (e.y_root - y0), self._split_lim))
+
+    def _split_release(self, e):
+        if self._split_drag is None:
+            return
+        y0, h0 = self._split_drag
+        self._split_drag = None
+        if getattr(self, "_split_guia", None) is not None:
+            self._split_guia.place_forget()
+        self._media_grip.configure(fg_color="#D9D9D9")
+        if abs(e.y_root - y0) < 2:
+            return   # clic sin arrastrar
+        h = self._split_set(h0 + (e.y_root - y0))
+        cb_ajustes.guardar_ajuste(CONFIG_DIR, "media_assets_height", int(h))
+
+    def _split_auto(self):
+        self._split_drag = None
+        if getattr(self, "_split_guia", None) is not None:
+            self._split_guia.place_forget()
+        self.col_media.pack_propagate(True)
+        cb_ajustes.guardar_ajuste(CONFIG_DIR, "media_assets_height", None)
+
     def on_media_mode(self, mode):
         if mode == "CAMPAIGNS":
             self.drop_zones_frame.pack_forget()
-            self.campaign_panel.frame.pack(fill="x", expand=False, padx=10, pady=(0, 5))
+            self.campaign_panel.frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))   # v1.02: crece con el divisor
         else:
             self.campaign_panel.frame.pack_forget()
             self.drop_zones_frame.pack(fill="x", expand=False, padx=10, pady=(0, 5))

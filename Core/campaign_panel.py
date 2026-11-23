@@ -84,6 +84,18 @@ def _imagen_pill(texto, color, w, h, ss=4):
 
 
 TREE_ROWS = 7
+
+# v1.02: scrollbars de las listas con los colores del Design System AIM 2026 (escala Magenta / Grey)
+SCROLL_TRACK = "#F5F6FB"        # fondo de la barra (gris claro de la app)
+SCROLL_THUMB = "#FFB3DF"        # Magenta-300 aprox.
+SCROLL_THUMB_HOVER = "#FF099A"  # magenta corporativo
+
+
+def _scrollbar_aim(parent, app, command):
+    """Scrollbar fina y redondeada en magenta, en lugar de la ttk gris de sistema."""
+    return ctk.CTkScrollbar(parent, orientation="vertical", command=command, width=12, corner_radius=6,
+                            fg_color=SCROLL_TRACK, button_color=SCROLL_THUMB,
+                            button_hover_color=SCROLL_THUMB_HOVER, bg_color=app.c_white)
 CAPTURE_DELAY_MS = 500
 LOAD_SETTLE_MS = 900
 
@@ -173,7 +185,8 @@ class CampaignPanel:
         self.lbl_hint.bind("<Button-1>", lambda e: self.entry_code.focus_set())
 
         mid = ctk.CTkFrame(f, fg_color="transparent")
-        mid.pack(fill="x", padx=5)
+        mid.pack(fill="both", expand=True, padx=5)   # v1.02: las listas crecen con el divisor de MEDIA ASSETS
+        mid.grid_rowconfigure(0, weight=1)
         mid.grid_columnconfigure(0, weight=1)
         mid.grid_columnconfigure(2, weight=1)
 
@@ -198,7 +211,7 @@ class CampaignPanel:
         self.tree_l.heading("name", text="Folder")
         self.tree_l.column("code", width=w_code, minwidth=w_code, stretch=False)
         self.tree_l.column("name", width=90, minwidth=40, stretch=True)
-        sl = ttk.Scrollbar(lw, orient="vertical", command=self.tree_l.yview)
+        sl = _scrollbar_aim(lw, app, self.tree_l.yview)   # v1.02: scrollbar corporativa (Design System AIM)
         self.tree_l.configure(yscrollcommand=sl.set)
         self.tree_l.pack(side="left", fill="both", expand=True)
         sl.pack(side="right", fill="y")
@@ -230,7 +243,7 @@ class CampaignPanel:
         self.tree_r.heading("code", text="Code")
         self.tree_r.column("#0", width=w_status, minwidth=w_status, stretch=False, anchor="center")
         self.tree_r.column("code", width=w_code, minwidth=w_code, stretch=True)
-        sr = ttk.Scrollbar(rw, orient="vertical", command=self.tree_r.yview)
+        sr = _scrollbar_aim(rw, app, self.tree_r.yview)   # v1.02: scrollbar corporativa (Design System AIM)
         self.tree_r.configure(yscrollcommand=sr.set)
         self.tree_r.pack(side="left", fill="both", expand=True)
         sr.pack(side="right", fill="y")
