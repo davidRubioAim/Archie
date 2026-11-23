@@ -275,14 +275,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
         else:
             ctk.CTkLabel(archie_box, text="Archie", font=self.font_t1, text_color=self.c_magenta).pack(anchor="w")
 
-        # Etiqueta magenta en letra fina debajo del logo (siempre visible, haya logo o no)
-        self.lbl_version_tag = ctk.CTkLabel(
-            archie_box,
-            text=f"Beta {self.current_version_str}",
-            font=ctk.CTkFont(family="Open Sans", size=10, weight="normal"),
-            text_color=self.c_magenta
-        )
-        self.lbl_version_tag.pack(anchor="w", pady=(0, 0))
+        # v1.01: sin etiqueta "Beta vX.XX" bajo el logo (la versión ya sale en el título de la ventana)
             
         self.stadium_frame = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.stadium_frame.pack(side="right", padx=10)

@@ -9,12 +9,11 @@ igual que Checker lo hace con QTransform.quadToQuad.
 Unidades: píxeles del perfil del estadio (Width, Goal Line Size, Height). La altura de las bandas es la
 real (Height en la misma escala que los anchos): para verla más grande, zoom.
 
-Ratón (v0.47):
-  botón izquierdo (o rueda pulsada) y arrastrar = mover la cámara en paralelo al suelo (v0.50)
-  botón derecho y arrastrar                     = rotar la cámara sobre su propio centro (v0.48)
+Ratón (v1.01: cámara fija, como la cámara principal de un partido):
+  arrastrar (cualquier botón)                   = rotar la cámara sobre su propio centro (v0.48)
   rueda                                         = zoom de la cámara (cambia el FOV, la cámara no se mueve)
   doble clic                                    = vista inicial
-La cámara nunca baja del suelo.
+La posición de la cámara no se puede mover: solo rotación y zoom.
 """
 import math
 import tkinter as tk
@@ -547,7 +546,7 @@ class Escena3D:
 
     def zoom(self, notches, px, py):
         """Zoom de cámara: cambia el FOV. notches en unidades de la rueda de Windows (120 = un paso).
-        La cámara mantiene su altura; en horizontal el punto bajo el puntero se queda bajo el puntero."""
+        v1.01: la cámara no se mueve; en horizontal el punto bajo el puntero se queda bajo el puntero."""
         t_old = math.tan(math.radians(self.fov) / 2)
         t_new = t_old * 0.9985 ** notches
         t_new = max(math.tan(math.radians(FOV_MIN) / 2), min(math.tan(math.radians(FOV_MAX) / 2), t_new))
@@ -556,11 +555,18 @@ class Escena3D:
         # el rayo del puntero no cambia si el desplazamiento respecto al centro se escala igual que tan(FOV/2)
         cx, cy = self.size[0] / 2, self.size[1] / 2
         ox, oy = px - cx, py - cy
+        # v1.01: la cámara no se mueve (solo rotación y zoom): el punto bajo el puntero se mantiene en
+        # horizontal girándola. Se toma su dirección antes del zoom y se corrige el yaw (3 pasadas).
+        eye, r, u, f, focal = self._camera()
+        d = tuple(f[i] * focal + r[i] * ox - u[i] * oy for i in range(3))
         self.fov = math.degrees(2 * math.atan(t_new))
-        k = t_old / t_new
-        # tras el zoom el punto que estaba en ox aparece en ox*k: se corrige solo en horizontal,
-        # moviendo la cámara de lado (v0.50: la altura y la inclinación no cambian)
-        self.pan(ox - ox * k, 0.0)
+        q = tuple(eye[i] + d[i] for i in range(3))
+        for _ in range(3):
+            cam = self._camera()
+            c = self._to_cam(cam, q)
+            if c[2] <= 1e-9:
+                break
+            self.rotar_camara(math.atan2(ox, cam[4]) - math.atan2(c[0], c[2]), 0.0)
 
 
 # --------------------------------------------------------------------------
@@ -681,7 +687,7 @@ class Visor3D:
     def _press(self, e, n):
         self._drag = (n, e.x, e.y)
         self.interacting = True
-        self.label.configure(cursor="exchange" if n == 3 else "fleur")
+        self.label.configure(cursor="exchange")
 
     def _motion(self, e):
         if not self._drag:
@@ -689,13 +695,11 @@ class Visor3D:
         n, lx, ly = self._drag
         dx, dy = e.x - lx, e.y - ly
         self._drag = (n, e.x, e.y)
-        if n == 3:   # botón derecho: la cámara gira sobre su propio centro
-            # v0.49: sensibilidad proporcional al FOV. Con ROT_SENS = 1 la imagen seguiría al ratón 1:1;
-            # por debajo va más suave. Al hacer zoom (FOV menor) gira menos por píxel.
-            k = math.radians(self.escena.fov) / max(1, self.label.winfo_height()) * ROT_SENS
-            self.escena.rotar_camara(dx * k, -dy * k)
-        else:        # izquierdo o rueda pulsada: mover
-            self.escena.pan(dx, dy)
+        # v1.01: cualquier botón rota la cámara sobre su propio centro (la posición está bloqueada).
+        # v0.49: sensibilidad proporcional al FOV. Con ROT_SENS = 1 la imagen seguiría al ratón 1:1;
+        # por debajo va más suave. Al hacer zoom (FOV menor) gira menos por píxel.
+        k = math.radians(self.escena.fov) / max(1, self.label.winfo_height()) * ROT_SENS
+        self.escena.rotar_camara(dx * k, -dy * k)
         self.request_render()
 
     def _release(self, _e):
