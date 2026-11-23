@@ -1,0 +1,294 @@
+{
+    "proyecto": "AE_EXPORT",
+    "dimensiones_globales": {
+        "width": 39424,
+        "height": 288
+    },
+    "archivos_fuente": {
+        "background": "\\\\192.168.110.242\\Motion Team\\Brands\\AIRBNB\\ABNB-LIGA-251201 - AD 2 - Airbnb x LaLiga\\Output\\Elements\\ABNB-LIGA-251201_BG.mov",
+        "center_board": null,
+        "static_logo": "\\\\192.168.110.242\\Motion Team\\Brands\\AIRBNB\\ABNB-LIGA-251201 - AD 2 - Airbnb x LaLiga\\Output\\Elements\\ABNB-LIGA-251201_LOGO.mov",
+        "anim_zone": "\\\\192.168.110.242\\Motion Team\\Brands\\AIRBNB\\ABNB-LIGA-251201 - AD 2 - Airbnb x LaLiga\\Output\\Elements\\ABNB-LIGA-251201_ANIM.mov",
+        "anim_zones": [
+            "\\\\192.168.110.242\\Motion Team\\Brands\\AIRBNB\\ABNB-LIGA-251201 - AD 2 - Airbnb x LaLiga\\Output\\Elements\\ABNB-LIGA-251201_ANIM.mov"
+        ]
+    },
+    "zonas": {
+        "ZONA_1": {
+            "x_inicio": 0,
+            "width": 11008,
+            "elementos": [
+                {
+                    "is_fill": true,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 500
+                },
+                {
+                    "anim_idx": 1,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "anim_zone",
+                    "width": 1904,
+                    "x_absoluta": 1640
+                },
+                {
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 4044
+                },
+                {
+                    "is_fill": true,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 5184
+                },
+                {
+                    "is_fill": true,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 6324
+                },
+                {
+                    "anim_idx": 3,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "anim_zone",
+                    "width": 1904,
+                    "x_absoluta": 7464
+                },
+                {
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 9868
+                }
+            ]
+        },
+        "ZONA_5": {
+            "x_inicio": 28416,
+            "width": 11008,
+            "elementos": [
+                {
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 28916
+                },
+                {
+                    "anim_idx": 10,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "anim_zone",
+                    "width": 1904,
+                    "x_absoluta": 30056
+                },
+                {
+                    "is_fill": true,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 32460
+                },
+                {
+                    "is_fill": true,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 33600
+                },
+                {
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 34740
+                },
+                {
+                    "anim_idx": 11,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "anim_zone",
+                    "width": 1904,
+                    "x_absoluta": 35880
+                },
+                {
+                    "is_fill": true,
+                    "y": 144,
+                    "h": 144,
+                    "tipo": "static_logo",
+                    "width": 640,
+                    "x_absoluta": 38284
+                }
+            ]
+        },
+        "ZONA_2": {
+            "x_inicio": 11008,
+            "width": 7744,
+            "elementos": [
+                {
+                    "y": 0,
+                    "h": 288,
+                    "tipo": "static_logo",
+                    "width": 1280,
+                    "x_absoluta": 11184
+                },
+                {
+                    "anim_idx": 4,
+                    "y": 0,
+                    "h": 288,
+                    "tipo": "anim_zone",
+                    "width": 4480,
+                    "x_absoluta": 12640
+                },
+                {
+                    "y": 0,
+                    "h": 288,
+                    "tipo": "static_logo",
+                    "width": 1280,
+                    "x_absoluta": 17296
+                }
+            ]
+        },
+        "ZONA_3": {
+            "x_inicio": 18752,
+            "width": 1920,
+            "elementos": [
+                {
+                    "y": 0,
+                    "h": 288,
+                    "tipo": "center_board",
+                    "width": 1920,
+                    "x_absoluta": 18752
+                }
+            ]
+        },
+        "ZONA_4": {
+            "x_inicio": 20672,
+            "width": 7744,
+            "elementos": [
+                {
+                    "y": 0,
+                    "h": 288,
+                    "tipo": "static_logo",
+                    "width": 1280,
+                    "x_absoluta": 20848
+                },
+                {
+                    "anim_idx": 5,
+                    "y": 0,
+                    "h": 288,
+                    "tipo": "anim_zone",
+                    "width": 4480,
+                    "x_absoluta": 22304
+                },
+                {
+                    "y": 0,
+                    "h": 288,
+                    "tipo": "static_logo",
+                    "width": 1280,
+                    "x_absoluta": 26960
+                }
+            ]
+        }
+    },
+    "warnings": [],
+    "amplify_geo": {
+        "modo": "amplify",
+        "h1": 144,
+        "h2": 144,
+        "H": 288,
+        "tl_s": 11008,
+        "tl_e": 28416,
+        "tl2_s": 11008,
+        "tl2_e": 28416,
+        "cb2": 1920,
+        "row2": {
+            "canvas_width": 3840,
+            "canvas_height": 2160,
+            "canvas_mask": 0,
+            "offset_x": 1024,
+            "offset_y": 1440
+        },
+        "tl_reducido": null
+    },
+    "manual": true,
+    "config": {
+        "stretch_limit": 15.0,
+        "squash_logos": false,
+        "stretch_fit_per": false,
+        "qty_goal": 1,
+        "qty_corner": 1,
+        "qty_cb": 1,
+        "qty_tl": 1,
+        "gl_offset": 0.0,
+        "corner_logo": false,
+        "hide_extreme_edges": false,
+        "logo_under": false,
+        "qty_gl_under": 1,
+        "qty_tl_under": 1,
+        "show_cb": true,
+        "amplify": true,
+        "max_anim_gl": 0,
+        "max_anim_tl": 0,
+        "invert_order": false,
+        "edge_case": null,
+        "amplify_geo": {
+            "modo": "amplify",
+            "h1": 144,
+            "h2": 144,
+            "tl2": 17408,
+            "cb2": 1920,
+            "row2": {
+                "canvas_width": 3840,
+                "canvas_height": 2160,
+                "canvas_mask": 0,
+                "offset_x": 1024,
+                "offset_y": 1440
+            }
+        },
+        "f2_custom": false,
+        "f2_qty_corner": 0,
+        "f2_qty_cb": 0,
+        "f2_qty_tl": 0,
+        "f2_margin": 20,
+        "f2_max_anim": 0,
+        "margin_tl": 20,
+        "under_hotspots": false,
+        "even_spacing": true
+    },
+    "archie": {
+        "version": "v1.02",
+        "stadium": "PSG - Parc des Prince (Amplify)",
+        "config": {
+            "margin": 20
+        }
+    },
+    "fps": 60,
+    "system_file": {
+        "width": 3840,
+        "height": 2160,
+        "offset": {
+            "x": 0,
+            "y": 0
+        },
+        "mask": {
+            "x": 3840,
+            "y": 0,
+            "width": 0,
+            "height": 2160
+        }
+    }
+}

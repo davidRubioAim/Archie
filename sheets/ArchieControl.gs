@@ -13,8 +13,11 @@
  * Estructura de la pestaña de campañas (gid SHEET_ID, ahora "Render Campaigns"):
  *   Fila 1  (B..AH): texto de progreso por estadio      A2: estado del worker
  *   Fila 2  (B..AH): barra de progreso por estadio
- *   Fila 3  (B..AH): estadio (dropdown de venues del Master Atlas)
- *   Fila 4+ (B..AH): códigos de campaña de ese estadio
+ *   Fila 3  (B..AH): estadio (dropdown que mantiene el worker con los perfiles de Archie: los estadios de 2 rows
+ *                    salen una sola vez, como en la app; la lista vive en la pestaña oculta "Archie Stadiums")
+ *   Fila 4+ (B..AH): códigos de campaña de ese estadio. Con varias versiones (Elements\NATIONAL, \REGIONAL...)
+ *                    se renderizan todas; "CÓDIGO VERSIÓN" (p.ej. AUDI-MLSX-261001 NATIONAL) deja solo esa, y
+ *                    Archie ▸ Choose versions to render… lanza las que se marquen de la celda seleccionada.
  *
  * Instalación: ver sheets/LEEME_WORKER.md
  */
@@ -36,6 +39,8 @@ var P_SECRET = 'ARCHIE_SECRET';
 var P_LAUNCH = 'ARCHIE_LAUNCH';
 var P_RECHECK = 'ARCHIE_RECHECK';
 var P_RESET = 'ARCHIE_RESET';
+var P_DELETE = 'ARCHIE_DELETE';
+var STADIUMS_TAB = 'Archie Stadiums';
 
 
 // ====================================================================== menú
@@ -43,7 +48,9 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Archie')
     .addItem('▶ Render new campaigns', 'menuRenderNew')
     .addItem('↻ Re-render selected cells', 'menuRerenderSelection')
+    .addItem('🎯 Choose versions to render…', 'menuChooseVersions')
     .addItem('🔍 Check Elements now', 'menuRecheck')
+    .addItem('🗑 Delete files of selected cells', 'menuDeleteSelection')
     .addItem('🧹 Reset campaign codes', 'menuReset')
     .addSeparator()
     .addItem('⚙ Show worker key (setup)', 'menuSetup')
@@ -110,9 +117,100 @@ function menuRerenderSelection() {
   SpreadsheetApp.getActive().toast(cells.length + ' campaign(s) will be rendered again.', 'Archie', 8);
 }
 
+// ---------------------------------------------------------------- versiones (NATIONAL / REGIONAL, C1 / C2...)
+function versionsOfNote_(note) {
+  var m = /·\s*\d+ versions \(([^)]*)\)/.exec(String(note || ''));
+  return m ? m[1].split(',').map(function (v) { return v.trim(); }).filter(String) : [];
+}
+
+function menuChooseVersions() {
+  var ui = SpreadsheetApp.getUi();
+  var sh = SpreadsheetApp.getActiveSheet();
+  var rg = sh.getActiveRange();
+  var cells = (rg && sh.getSheetId() === SHEET_ID) ? codeCells_(sh, rg) : [];
+  if (cells.length !== 1) {
+    ui.alert('Select ONE campaign cell (with its code) in the ' + grid_().getName() + ' tab.');
+    return;
+  }
+  var c = cells[0];
+  var versions = versionsOfNote_(sh.getRange(c.row, c.col).getNote());
+  if (!versions.length) {
+    ui.alert(c.code + ' has a single version (or Archie has not checked its Elements yet).\n\n' +
+             'Use ▶ Render new campaigns or ↻ Re-render selected cells.');
+    return;
+  }
+  var t = HtmlService.createTemplate(
+    '<div style="font:13px Arial,sans-serif">' +
+    '<p><b><?= code ?></b> · <?= stadium ?></p>' +
+    '<? for (var i = 0; i < versions.length; i++) { ?>' +
+    '<label style="display:block;margin:6px 0"><input type="checkbox" name="v" value="<?= versions[i] ?>"> ' +
+    '<?= versions[i] ?></label><? } ?>' +
+    '<p style="color:#666">The marked versions are rendered (again if they were already delivered).</p>' +
+    '<button id="go" onclick="go()">Render</button> <button onclick="google.script.host.close()">Cancel</button>' +
+    '<script>function go(){var v=[].slice.call(document.querySelectorAll("input:checked")).map(function(e){return e.value});' +
+    'if(!v.length){alert("Mark at least one version.");return;}document.getElementById("go").disabled=true;' +
+    'google.script.run.withSuccessHandler(function(){google.script.host.close()})' +
+    '.launchVersions(<?= row ?>,<?= col ?>,v);}</script></div>');
+  t.code = c.code; t.stadium = c.stadium; t.versions = versions; t.row = c.row; t.col = c.col;
+  ui.showModalDialog(t.evaluate().setWidth(320).setHeight(140 + 30 * versions.length), 'Choose versions to render');
+}
+
+function launchVersions(row, col, versions) {
+  var sh = grid_();
+  var c = codeCells_(sh, sh.getRange(row, col))[0];
+  if (!c || !versions || !versions.length) return;
+  c.variants = versions.map(function (v) { return v === 'main' ? '' : v; });
+  var launch = {id: String(Date.now()), by: user_(), at: new Date().toISOString(), force: true, cells: [c]};
+  PropertiesService.getScriptProperties().setProperty(P_LAUNCH, JSON.stringify(launch));
+  SpreadsheetApp.getActive().toast(c.code + ': ' + versions.join(', ') + ' will be rendered.', 'Archie', 8);
+}
+
 function menuRecheck() {
   PropertiesService.getScriptProperties().setProperty(P_RECHECK, String(Date.now()));
   SpreadsheetApp.getActive().toast('Archie will check the Elements on the NAS in a few seconds.', 'Archie', 6);
+}
+
+function menuDeleteSelection() {
+  var ui = SpreadsheetApp.getUi();
+  var sh = SpreadsheetApp.getActiveSheet();
+  var sel = sh.getActiveRange();
+  if (!sel || sh.getSheetId() !== SHEET_ID) {
+    ui.alert('Select the campaign cells whose files you want to delete in the ' + grid_().getName() + ' tab.');
+    return;
+  }
+  var cells = codeCells_(sh, sel).filter(function (c) { return c.stadium; });
+  if (!cells.length) {
+    ui.alert('The selection has no campaign codes with a stadium.');
+    return;
+  }
+  var working = cells.filter(function (c) {
+    return String(sh.getRange(c.row, c.col).getBackground()).toLowerCase() === '#ffe599';
+  });
+  var lista = cells.slice(0, 15).map(function (c) { return '• ' + c.code + ' · ' + c.stadium; }).join('\n');
+  if (cells.length > 15) lista += '\n… and ' + (cells.length - 15) + ' more';
+  var msg = 'The System Files, 3D Previews and JSON of these ' + cells.length + ' campaign(s) will be deleted:\n\n' +
+    lista + '\n\n' +
+    '• NAS: the files are deleted from BCSA\\<Stadium> (this cannot be undone).\n' +
+    '• Google Drive: the stadium folder is moved to the trash.\n\n' +
+    'The codes stay in the sheet. Once Archie has deleted the files, the cells turn blue (ready to render again ' +
+    'with ▶ Render new campaigns) or red if the Elements are not complete.';
+  if (working.length) msg += '\n\n⚠ ' + working.length + ' of them are rendering right now (yellow) and will be skipped.';
+  if (ui.alert('Delete the files of these campaigns?', msg, ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var prev = props.getProperty(P_DELETE);     // si había un borrado pendiente se suma a este
+    var todas = (prev ? JSON.parse(prev).cells : []).concat(cells);
+    props.setProperty(P_DELETE, JSON.stringify({id: String(Date.now()), by: user_(), at: new Date().toISOString(),
+                                                cells: todas}));
+  } finally {
+    lock.releaseLock();
+  }
+  cells.forEach(function (c) { sh.getRange(c.row, c.col).clearNote(); });   // fuera el link antiguo
+  SpreadsheetApp.getActive().toast('Archie will delete the files of ' + cells.length +
+    ' campaign(s) in a few seconds.', 'Archie', 8);
 }
 
 function menuReset() {
@@ -199,7 +297,10 @@ function doPost(e) {
     switch (req.action) {
       case 'poll': return json_(poll_());
       case 'ack_launch': return json_(ackLaunch_(req.id));
+      case 'ack_delete': return json_(ackDelete_(req.id));
+      case 'drive_delete': return json_(driveDelete_(req.code, req.stadium));
       case 'paint': return json_(paint_(req));
+      case 'stadium_list': return json_(stadiumList_(req.names || []));
       case 'drive_folder': return json_(driveFolder_(req.code, req.stadium, req.replace || [], req.sub || ''));
       case 'token': return json_({ok: true, token: ScriptApp.getOAuthToken()});
       default: return json_({ok: false, error: 'unknown action'});
@@ -249,7 +350,8 @@ function poll_() {
     }),
     launch: launch ? JSON.parse(launch) : null,
     recheck: props.getProperty(P_RECHECK) || '',
-    reset: props.getProperty(P_RESET) || ''
+    reset: props.getProperty(P_RESET) || '',
+    'delete': props.getProperty(P_DELETE) ? JSON.parse(props.getProperty(P_DELETE)) : null
   };
 }
 
@@ -265,6 +367,33 @@ function ackLaunch_(id) {
     lock.releaseLock();
   }
   return {ok: true};
+}
+
+function ackDelete_(id) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var pend = props.getProperty(P_DELETE);
+    if (pend && JSON.parse(pend).id === String(id)) props.deleteProperty(P_DELETE);
+  } finally {
+    lock.releaseLock();
+  }
+  return {ok: true};
+}
+
+/**
+ * Manda a la papelera la carpeta <raíz>/<CÓDIGO>/<Estadio> (con sus versiones). Si la carpeta del código
+ * se queda vacía, también. No crea nada: si no existe, devuelve trashed 0.
+ */
+function driveDelete_(code, stadium) {
+  var root = DriveApp.getFolderById(DRIVE_ROOT_ID);
+  var fCode = live_(root.getFoldersByName(code));
+  if (!fCode) return {ok: true, trashed: 0};
+  var n = 0, f;
+  while ((f = live_(fCode.getFoldersByName(stadium)))) { f.setTrashed(true); n++; }
+  if (!live_(fCode.getFolders()) && !live_(fCode.getFiles())) fCode.setTrashed(true);
+  return {ok: true, trashed: n};
 }
 
 /**
@@ -312,7 +441,42 @@ function driveFolder_(code, stadium, replace, sub) {
   return {ok: true, id: target.getId(), url: fStadium.getUrl()};
 }
 
+/**
+ * Dropdown de la fila 3 = perfiles de Archie (los de 2 rows una sola vez, como en la app). La lista se guarda
+ * en la pestaña oculta STADIUMS_TAB. Las celdas con 'X - 1st' / 'X - 2nd' pasan a 'X' (el worker ya las trataba
+ * como el mismo estadio, así que sus entregas no cambian).
+ */
+function stadiumList_(names) {
+  if (!names.length) return {ok: true, fixed: 0};
+  var ss = SpreadsheetApp.getActive();
+  var tab = ss.getSheetByName(STADIUMS_TAB) || ss.insertSheet(STADIUMS_TAB);
+  tab.clearContents();
+  tab.getRange(1, 1, names.length, 1).setValues(names.map(function (n) { return [n]; }));
+  if (!tab.isSheetHidden()) tab.hideSheet();
+  var sh = grid_();
+  var nCols = LAST_COL - FIRST_COL + 1;
+  var row = sh.getRange(STADIUM_ROW, FIRST_COL, 1, nCols);
+  var rule = SpreadsheetApp.newDataValidation()
+    .requireValueInRange(tab.getRange(1, 1, names.length, 1), true).setAllowInvalid(true).build();
+  row.setDataValidation(rule);
+  var set = {};
+  names.forEach(function (n) { set[n] = true; });
+  var vals = row.getValues(), fixed = 0;
+  vals[0] = vals[0].map(function (v) {
+    var base = String(v || '').replace(/\s*-\s*(1st|2nd)\s*$/i, '').trim();
+    if (base !== String(v || '').trim() && set[base]) { fixed++; return base; }
+    return v;
+  });
+  if (fixed) row.setValues(vals);
+  return {ok: true, fixed: fixed};
+}
+
 function child_(parent, name) {
-  var it = parent.getFoldersByName(name);
-  return it.hasNext() ? it.next() : parent.createFolder(name);
+  var f = live_(parent.getFoldersByName(name));
+  return f || parent.createFolder(name);
+}
+
+function live_(it) {        // primera carpeta que no esté en la papelera
+  while (it.hasNext()) { var f = it.next(); if (!f.isTrashed()) return f; }
+  return null;
 }

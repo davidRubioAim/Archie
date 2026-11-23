@@ -1,0 +1,204 @@
+{
+    "proyecto": "AE_EXPORT",
+    "dimensiones_globales": {
+        "width": 24640,
+        "height": 90
+    },
+    "archivos_fuente": {
+        "background": "\\\\192.168.110.242\\Motion Team\\Brands\\MASTERCARD\\MAST-UEFA-260501 - ZOOM PRICELESS\\Output\\Elements\\SO_Mastercard_C2_ZoomPriceless\\MAST-UEFA-260501_C2_ZoomPriceless_BACKGROUND.mov",
+        "center_board": null,
+        "static_logo": "\\\\192.168.110.242\\Motion Team\\Brands\\MASTERCARD\\MAST-UEFA-260501 - ZOOM PRICELESS\\Output\\Elements\\SO_Mastercard_C2_ZoomPriceless\\MAST-UEFA-260501_C2_ZoomPriceless_LOGO_FIXED.mov",
+        "anim_zone": "\\\\192.168.110.242\\Motion Team\\Brands\\MASTERCARD\\MAST-UEFA-260501 - ZOOM PRICELESS\\Output\\Elements\\SO_Mastercard_C2_ZoomPriceless\\MAST-UEFA-260501_C2_ZoomPriceless_ANIM_ZONE.mov",
+        "anim_zones": [
+            "\\\\192.168.110.242\\Motion Team\\Brands\\MASTERCARD\\MAST-UEFA-260501 - ZOOM PRICELESS\\Output\\Elements\\SO_Mastercard_C2_ZoomPriceless\\MAST-UEFA-260501_C2_ZoomPriceless_ANIM_ZONE.mov"
+        ]
+    },
+    "zonas": {
+        "ZONA_1": {
+            "x_inicio": 0,
+            "width": 7300,
+            "elementos": [
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 227
+                },
+                {
+                    "anim_idx": 0,
+                    "tipo": "anim_zone",
+                    "width": 983,
+                    "x_absoluta": 1390
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 2600
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 3763
+                },
+                {
+                    "anim_idx": 1,
+                    "tipo": "anim_zone",
+                    "width": 983,
+                    "x_absoluta": 4927
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 6136
+                }
+            ]
+        },
+        "ZONA_2": {
+            "x_inicio": 7300,
+            "width": 4385,
+            "elementos": [
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 7639
+                },
+                {
+                    "anim_idx": 2,
+                    "tipo": "anim_zone",
+                    "width": 1156,
+                    "x_absoluta": 8914
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 10409
+                }
+            ]
+        },
+        "ZONA_3": {
+            "x_inicio": 11685,
+            "width": 1270,
+            "elementos": [
+                {
+                    "tipo": "center_board",
+                    "width": 1270,
+                    "x_absoluta": 11685
+                }
+            ]
+        },
+        "ZONA_4": {
+            "x_inicio": 12955,
+            "width": 4385,
+            "elementos": [
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 13294
+                },
+                {
+                    "anim_idx": 3,
+                    "tipo": "anim_zone",
+                    "width": 1156,
+                    "x_absoluta": 14570
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 16064
+                }
+            ]
+        },
+        "ZONA_5": {
+            "x_inicio": 17340,
+            "width": 7300,
+            "elementos": [
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 17567
+                },
+                {
+                    "anim_idx": 4,
+                    "tipo": "anim_zone",
+                    "width": 983,
+                    "x_absoluta": 18730
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 19940
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 21103
+                },
+                {
+                    "anim_idx": 5,
+                    "tipo": "anim_zone",
+                    "width": 983,
+                    "x_absoluta": 22267
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 937,
+                    "x_absoluta": 23476
+                }
+            ]
+        }
+    },
+    "warnings": [],
+    "manual": true,
+    "config": {
+        "stretch_limit": 15.0,
+        "squash_logos": false,
+        "stretch_fit_per": false,
+        "qty_goal": 3,
+        "qty_corner": 1,
+        "qty_cb": 1,
+        "qty_tl": 1,
+        "gl_offset": 0.0,
+        "corner_logo": false,
+        "hide_extreme_edges": false,
+        "logo_under": false,
+        "qty_gl_under": 1,
+        "qty_tl_under": 1,
+        "show_cb": true,
+        "amplify": false,
+        "max_anim_gl": 0,
+        "max_anim_tl": 0,
+        "invert_order": false,
+        "edge_case": null,
+        "amplify_geo": null,
+        "f2_custom": false,
+        "f2_qty_corner": 0,
+        "f2_qty_cb": 0,
+        "f2_qty_tl": 0,
+        "f2_margin": 20,
+        "f2_max_anim": 0,
+        "margin_tl": 20,
+        "under_hotspots": false,
+        "even_spacing": true
+    },
+    "archie": {
+        "version": "v1.02",
+        "stadium": "Galatasaray - RAMS Park (UEFA)",
+        "config": {
+            "margin": 20
+        }
+    },
+    "fps": 60,
+    "system_file": {
+        "width": 1920,
+        "height": 1170,
+        "offset": {
+            "x": 0,
+            "y": 0
+        },
+        "mask": {
+            "x": 1920,
+            "y": 0,
+            "width": 0,
+            "height": 1170
+        }
+    }
+}

@@ -1,0 +1,230 @@
+{
+    "proyecto": "AE_EXPORT",
+    "dimensiones_globales": {
+        "width": 39456,
+        "height": 144
+    },
+    "archivos_fuente": {
+        "background": "\\\\192.168.110.242\\Motion Team\\Brands\\JUST_EAT\\JETX-UEFA-260501 - HOUSE\\Output\\Elements\\SO_Just_Eat_C1\\JETX-UEFA-260501_C1_BACKGROUND.mov",
+        "center_board": null,
+        "static_logo": "\\\\192.168.110.242\\Motion Team\\Brands\\JUST_EAT\\JETX-UEFA-260501 - HOUSE\\Output\\Elements\\SO_Just_Eat_C1\\JETX-UEFA-260501_C1_LOGO_FIXED.mov",
+        "anim_zone": "\\\\192.168.110.242\\Motion Team\\Brands\\JUST_EAT\\JETX-UEFA-260501 - HOUSE\\Output\\Elements\\SO_Just_Eat_C1\\JETX-UEFA-260501_C1_ANIM_ZONE.mov",
+        "anim_zones": [
+            "\\\\192.168.110.242\\Motion Team\\Brands\\JUST_EAT\\JETX-UEFA-260501 - HOUSE\\Output\\Elements\\SO_Just_Eat_C1\\JETX-UEFA-260501_C1_ANIM_ZONE.mov"
+        ]
+    },
+    "zonas": {
+        "ZONA_1": {
+            "x_inicio": 0,
+            "width": 10944,
+            "elementos": [
+                {
+                    "is_fill": true,
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 423
+                },
+                {
+                    "anim_idx": 1,
+                    "tipo": "anim_zone",
+                    "width": 1590,
+                    "x_absoluta": 2047
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 4060
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 5684
+                },
+                {
+                    "anim_idx": 2,
+                    "tipo": "anim_zone",
+                    "width": 1590,
+                    "x_absoluta": 7307
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 9321
+                }
+            ]
+        },
+        "ZONA_2": {
+            "x_inicio": 10944,
+            "width": 7824,
+            "elementos": [
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 11118
+                },
+                {
+                    "anim_idx": 3,
+                    "tipo": "anim_zone",
+                    "width": 1590,
+                    "x_absoluta": 12492
+                },
+                {
+                    "is_fill": true,
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 14256
+                },
+                {
+                    "anim_idx": 4,
+                    "tipo": "anim_zone",
+                    "width": 1590,
+                    "x_absoluta": 15630
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 17394
+                }
+            ]
+        },
+        "ZONA_3": {
+            "x_inicio": 18768,
+            "width": 1920,
+            "elementos": [
+                {
+                    "tipo": "center_board",
+                    "width": 1920,
+                    "x_absoluta": 18768
+                }
+            ]
+        },
+        "ZONA_4": {
+            "x_inicio": 20688,
+            "width": 7824,
+            "elementos": [
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 20862
+                },
+                {
+                    "anim_idx": 5,
+                    "tipo": "anim_zone",
+                    "width": 1590,
+                    "x_absoluta": 22236
+                },
+                {
+                    "is_fill": true,
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 24000
+                },
+                {
+                    "anim_idx": 6,
+                    "tipo": "anim_zone",
+                    "width": 1590,
+                    "x_absoluta": 25374
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 27138
+                }
+            ]
+        },
+        "ZONA_5": {
+            "x_inicio": 28512,
+            "width": 10944,
+            "elementos": [
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 28935
+                },
+                {
+                    "anim_idx": 8,
+                    "tipo": "anim_zone",
+                    "width": 1590,
+                    "x_absoluta": 30559
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 32572
+                },
+                {
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 34196
+                },
+                {
+                    "anim_idx": 9,
+                    "tipo": "anim_zone",
+                    "width": 1590,
+                    "x_absoluta": 35819
+                },
+                {
+                    "is_fill": true,
+                    "tipo": "static_logo",
+                    "width": 1200,
+                    "x_absoluta": 37833
+                }
+            ]
+        }
+    },
+    "warnings": [],
+    "manual": true,
+    "config": {
+        "stretch_limit": 15.0,
+        "squash_logos": false,
+        "stretch_fit_per": false,
+        "qty_goal": 1,
+        "qty_corner": 1,
+        "qty_cb": 1,
+        "qty_tl": 1,
+        "gl_offset": 0.0,
+        "corner_logo": false,
+        "hide_extreme_edges": true,
+        "logo_under": false,
+        "qty_gl_under": 1,
+        "qty_tl_under": 1,
+        "show_cb": true,
+        "amplify": false,
+        "max_anim_gl": 0,
+        "max_anim_tl": 0,
+        "invert_order": false,
+        "edge_case": null,
+        "amplify_geo": null,
+        "f2_custom": false,
+        "f2_qty_corner": 0,
+        "f2_qty_cb": 0,
+        "f2_qty_tl": 0,
+        "f2_margin": 20,
+        "f2_max_anim": 0,
+        "margin_tl": 20,
+        "under_hotspots": false,
+        "even_spacing": true
+    },
+    "archie": {
+        "version": "v1.02",
+        "stadium": "Chelsea - UEFA Women",
+        "config": {
+            "margin": 20
+        }
+    },
+    "fps": 60,
+    "system_file": {
+        "width": 3840,
+        "height": 2160,
+        "offset": {
+            "x": 0,
+            "y": 0
+        },
+        "mask": {
+            "x": 3744,
+            "y": 0,
+            "width": 96,
+            "height": 2160
+        }
+    }
+}

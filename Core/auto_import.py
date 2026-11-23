@@ -50,16 +50,74 @@ def buscar_elements_hermanos(file_path):
 
     candidatos = {t: [] for t in TIPOS if t != tipo_origen}
     origen = os.path.normcase(os.path.abspath(file_path))
-    for nombre in nombres:
-        ruta = os.path.join(carpeta, nombre)
-        if os.path.normcase(os.path.abspath(ruta)) == origen:
-            continue
-        if not nombre.lower().endswith(EXTENSIONES_ELEMENTS) or nombre.startswith("."):
-            continue
-        if not os.path.isfile(ruta):
-            continue
-        tipo = detectar_tipo(nombre)
-        if tipo in candidatos:
+    for ruta, tipo in _elements_de(carpeta, nombres):
+        if os.path.normcase(os.path.abspath(ruta)) != origen and tipo in candidatos:
             candidatos[tipo].append(ruta)
 
+    # v1.04: carpeta de versión (Elements\NATIONAL, Elements\REGIONAL...): lo que no esté en ella
+    # (p. ej. un BG compartido por todas las versiones) se busca en la carpeta de arriba.
+    faltan = [t for t, rutas in candidatos.items() if not rutas]
+    padre = os.path.dirname(carpeta)
+    if faltan and padre and padre != carpeta:
+        try:
+            for ruta, tipo in _elements_de(padre, os.listdir(padre)):
+                if tipo in faltan:
+                    candidatos[tipo].append(ruta)
+        except OSError:
+            pass
+
     return {t: (rutas[0] if len(rutas) == 1 else None) for t, rutas in candidatos.items() if rutas}
+
+
+def _elements_de(carpeta, nombres):
+    """[(ruta, tipo)] de los ELEMENTS sueltos (con etiqueta) de una carpeta."""
+    out = []
+    for nombre in nombres:
+        if not nombre.lower().endswith(EXTENSIONES_ELEMENTS) or nombre.startswith("."):
+            continue
+        ruta = os.path.join(carpeta, nombre)
+        tipo = detectar_tipo(nombre)
+        if tipo and os.path.isfile(ruta):
+            out.append((ruta, tipo))
+    return out
+
+
+def anims_de_carpeta(file_path):
+    """v1.04: todas las ANIM de la carpeta de un ELEMENT, por nombre (ANIM A, ANIM B...)."""
+    carpeta = os.path.dirname(os.path.abspath(file_path))
+    try:
+        nombres = os.listdir(carpeta)
+    except OSError:
+        return []
+    return sorted((r for r, t in _elements_de(carpeta, nombres) if t == "anim_zone"),
+                  key=lambda r: os.path.basename(r).lower())
+
+
+def carpeta_de_elements(carpeta):
+    """v1.04: carpeta soltada -> (ELEMENTS a cargar, [versiones], versión cargada).
+    Si la carpeta tiene sus ELEMENTS sueltos (con ANIM) se usan esos; si no, sus subcarpetas con ELEMENTS son
+    versiones (NATIONAL, REGIONAL, C1...): se carga la primera por nombre, y lo que le falte (p. ej. un BG
+    compartido suelto en la carpeta) sale de la carpeta soltada."""
+    try:
+        nombres = sorted(os.listdir(carpeta), key=str.lower)
+    except OSError:
+        return [], [], None
+    sueltos = _elements_de(carpeta, nombres)
+    versiones = {}
+    for n in nombres:
+        sub = os.path.join(carpeta, n)
+        if n.startswith((".", "_", "$", "#")) or n.strip().upper() in ("ARCHIE", "OLD", "ARCHIVE", "BACKUP"):
+            continue
+        if os.path.isdir(sub):
+            try:
+                els = _elements_de(sub, sorted(os.listdir(sub), key=str.lower))
+            except OSError:
+                continue
+            if els:
+                versiones[n] = els
+    if not versiones or any(t == "anim_zone" for _, t in sueltos):
+        return [r for r, _ in sueltos], [], None
+    ver = next(iter(versiones))
+    propios = versiones[ver]
+    tipos = {t for _, t in propios}
+    return [r for r, _ in propios] + [r for r, t in sueltos if t not in tipos], list(versiones), ver

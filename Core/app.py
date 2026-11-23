@@ -27,7 +27,7 @@ from amplify import (caja, pintar_sin_led, bandas_fondo, mosaico, franjas_arquit
 from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
-from auto_import import buscar_elements_hermanos
+from auto_import import buscar_elements_hermanos, anims_de_carpeta
 from auto_solver import resolver as resolver_arquitectura, completar_goal, CONFIG_KEYS
 import hotspot_solver  # v0.61: auto-solver por hotspots + referencias JSON aprobadas
 from campaign_panel import CampaignPanel  # v0.58: pestaña CAMPAIGNS (batch de campañas por estadio)
@@ -2117,10 +2117,28 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
             return False
 
         toco_anim = False
+        if zona_dropeada == "anim_zone":
+            # v1.04: ANIM A soltada en la Zone A con ANIM B (C...) en su carpeta: se añaden detrás, por nombre
+            resto = [a for a in anims_de_carpeta(file_path)
+                     if os.path.normcase(os.path.abspath(a)) != os.path.normcase(os.path.abspath(file_path))]
+            if resto:
+                self.archivos_cargados["anim_zones"] = [file_path] + resto
+                self.archivos_cargados["anim_zone"] = file_path
+                toco_anim = True
         for tipo, ruta in encontrados.items():
             if tipo == zona_dropeada:
                 continue
             if tipo == "anim_zone":
+                if ruta is None:
+                    # v1.04: varias ANIM en la carpeta (ANIM A, ANIM B...): se cargan todas, por nombre
+                    grupo = anims_de_carpeta(file_path)
+                    if grupo:
+                        self.archivos_cargados["anim_zones"] = list(grupo)
+                        self.archivos_cargados["anim_zone"] = ruta = grupo[0]
+                        self.output_filename_var.set(os.path.splitext(os.path.basename(ruta))[0])
+                        toco_anim = True
+                        debug(f"Autoimport anim_zones: {grupo}")
+                        continue
                 if not self.archivos_cargados["anim_zones"]:
                     self.archivos_cargados["anim_zones"].append(None)
                 self.archivos_cargados["anim_zones"][0] = ruta

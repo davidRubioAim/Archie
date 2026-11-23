@@ -9,12 +9,15 @@ Mixin de MegaStripApp. Las drop zones de ELEMENTS siguen igual; además se puede
     si hay varias ANIM en la carpeta, se cargan todas como Zone A, B, C... por nombre);
     lo que se ha soltado manda sobre lo encontrado en la carpeta.
 Si se sueltan varios archivos o un .json sobre una drop zone concreta, también se usa esta lógica.
+v1.04: también se puede soltar una carpeta: sus ELEMENTS, o si solo tiene subcarpetas de versión
+(Elements\\NATIONAL, Elements\\REGIONAL...), los de la primera versión (lo que falte, p. ej. un BG compartido,
+se busca en la carpeta de arriba).
 """
 import os
 
 from tkinter import messagebox
 
-from auto_import import detectar_tipo, EXTENSIONES_ELEMENTS
+from auto_import import detectar_tipo, anims_de_carpeta, carpeta_de_elements
 from log_utils import debug
 
 NOMBRES = {"static_logo": "LOGO", "anim_zone": "ANIM", "background": "BG", "center_board": "CB"}
@@ -31,7 +34,7 @@ class GlobalDropMixin:
     @staticmethod
     def _drop_especial(paths):
         """True si no es un solo ELEMENT (varios archivos o un .json): lo resuelve _soltar_archivos."""
-        return len(paths) != 1 or paths[0].lower().endswith(".json")
+        return len(paths) != 1 or paths[0].lower().endswith(".json") or os.path.isdir(paths[0])
 
     def on_drop_global(self, event):
         self._soltar_archivos(self._dnd_paths(event))
@@ -48,15 +51,8 @@ class GlobalDropMixin:
 
     @staticmethod
     def _anims_de_carpeta(file_path):
-        """Todas las ANIM de la carpeta del ELEMENT soltado (las drop zones dejan la Zone A vacía si hay varias)."""
-        carpeta = os.path.dirname(os.path.abspath(file_path))
-        try:
-            nombres = os.listdir(carpeta)
-        except OSError:
-            return []
-        return [os.path.join(carpeta, n) for n in nombres
-                if not n.startswith(".") and n.lower().endswith(EXTENSIONES_ELEMENTS)
-                and detectar_tipo(n) == "anim_zone" and os.path.isfile(os.path.join(carpeta, n))]
+        """Todas las ANIM de la carpeta del ELEMENT soltado (ANIM A, ANIM B... por nombre)."""
+        return anims_de_carpeta(file_path)
 
     def _soltar_archivos(self, paths):
         paths = [p for p in paths if p]
@@ -69,7 +65,16 @@ class GlobalDropMixin:
             self.importar_json(jsons[0])
             return
 
-        files = [p for p in paths if os.path.isfile(p)]
+        # v1.04: carpetas soltadas -> sus ELEMENTS (o los de su primera subcarpeta de versión)
+        files, versiones = [], None
+        for p in paths:
+            if os.path.isdir(p):
+                encontrados, vers, ver = carpeta_de_elements(p)
+                files += encontrados
+                if vers and versiones is None:
+                    versiones = (os.path.basename(os.path.normpath(p)), vers, ver)
+            elif os.path.isfile(p):
+                files.append(p)
         fijos, anims, sin_tipo = {}, [], []
         for p in files:
             t = detectar_tipo(p)
@@ -100,6 +105,9 @@ class GlobalDropMixin:
                 self.show_cb_var.set(True)
         if not anims and not any(self.archivos_cargados.get("anim_zones") or []):
             anims = self._anims_de_carpeta(primero)   # grupo de ANIM en la carpeta (A, B, C...)
+        elif len(anims) == 1:
+            # v1.04: una sola ANIM soltada con ANIM B (C...) en su carpeta -> se cargan todas
+            anims = self._anims_de_carpeta(anims[0]) or anims
         if anims:
             anims = sorted(anims, key=lambda p: os.path.basename(p).lower())
             self.archivos_cargados["anim_zones"] = list(anims)
@@ -117,6 +125,9 @@ class GlobalDropMixin:
         cargados = [f"{NOMBRES[k]}: {os.path.basename(a[k])}" for k in ("static_logo", "background", "center_board") if a.get(k)]
         cargados += [f"ANIM {chr(65 + i)}: {os.path.basename(p)}" for i, p in enumerate(a.get("anim_zones") or []) if p]
         msg = "📥 ELEMENTS loaded · " + " · ".join(cargados)
+        if versiones and len(versiones[1]) > 1:
+            msg += (f"\n• {versiones[0]} has {len(versiones[1])} versions ({', '.join(versiones[1])}): "
+                    f"loaded {versiones[2]}. Drop another version folder to switch.")
         if sin_tipo:
             msg += "\n• Ignored (no LOGO / ANIM / BG / CB in the name): " + ", ".join(sin_tipo[:6])
         self.append_chat("Archie", msg)

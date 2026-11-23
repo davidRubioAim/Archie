@@ -8,6 +8,10 @@ from log_utils import debug, log_error
 from frame_cache import FRAME_CACHE
 from edge_cases import reservas_laterales
 
+# v1.03 (GL estándar): fracción del Goal Line que ocupa el bloque de logos tras la portería. Valor por defecto
+# medido en las arquitecturas aprobadas; hotspot_solver.configurar() la recalcula con Config/referencias.
+CUOTA_GOAL = 0.26
+
 
 class Distribuidor:
 
@@ -509,6 +513,116 @@ class Distribuidor:
       sobran = set(id(e) for e in libres) - set(usados)
       if sobran:
         zonas[zn]["elementos"] = [e for e in zonas[zn]["elementos"] if id(e) not in sobran]
+
+  def _arquitectura_gl(self, zonas, warnings):
+    """v1.03 (gl_estandar, por defecto ON): construye cada Goal Line con la arquitectura aprobada
+
+        |h| logo cerca |h| ANIM |h| logo x k (tras la portería) |h| ANIM |h| logo corner |h|
+
+    - 1 ANIM ZONE a cada lado de la portería (config "anims_gl_lado"; >1 -> separadas por un logo).
+    - k (logos tras la portería) automático: el que deja el bloque del goal más cerca de CUOTA_GOAL del ancho
+      del GL (aprendido de las referencias; ~26%), penalizando aplastar las ANIM ZONES o quedarse sin hueco.
+      Con "goal_auto": False se usa qty_goal tal cual.
+    - Huecos iguales, bordes incluidos; las ANIM ZONES a su ancho real mientras el hueco llegue a ~1,5 alturas,
+      y si no, comprimidas lo justo hasta el stretch_limit. GLR en espejo del GLL.
+    Si no cabe (o hay edge case, logo under, corner partido, offset...) no toca nada y sigue el motor de siempre.
+    -> True si ha reconstruido las dos Goal Lines."""
+    c = self.config
+    if (not c.get("gl_estandar", True) or not c.get("even_spacing") or c.get("logo_under") or c.get("corner_logo")
+        or c.get("stretch_fit_per") or (c.get("gl_offset") or 0) or self.res_izq or self.res_der
+        or self.goal_pos is not None or self.goal_line <= 0 or not self.archivos.get("static_logo")
+        or not self.anim_files):
+      return False
+    W = float(self.goal_line)
+    lw = float(self.logo_w)
+    n_lado = max(1, int(c.get("anims_gl_lado") or 1))
+    cap = int(c.get("max_anim_gl") or 0)
+    if cap > 0:
+      n_lado = max(1, min(n_lado, cap // 2))
+    hueco_obj = float(c.get("hueco_gl") or round(self.h_total * 225.0 / 144.0))
+    s_lim = max(0.0, min(0.9, float(c.get("stretch_limit") or 0) / 100.0))
+    w_min, w_max = self.anim_w * (1.0 - s_lim), float(self.anim_w)
+    cuota_obj = float(c.get("cuota_goal") or CUOTA_GOAL)
+    if c.get("goal_auto", True):
+      opciones = range(1, 10)
+    else:
+      opciones = [int(c.get("qty_goal") or 0)]
+    n_anims = 2 * n_lado
+    mejor = None
+    for k in opciones:
+      if k < 0:
+        continue
+      n_logos = 2 + k + 2 * (n_lado - 1)
+      n_huecos = n_logos + n_anims + 1
+      libre = W - n_logos * lw
+      w_a = max(w_min, min(w_max, (libre - n_huecos * hueco_obj) / n_anims))
+      hueco = (libre - n_anims * w_a) / n_huecos
+      if hueco < max(1.0, self.m_gl):
+        continue
+      cuota = (k * lw + max(0, k - 1) * hueco) / W
+      # puntos: distancia a la cuota aprendida (en %), + deformación de las ANIM ZONES (%) y hueco por debajo
+      # del objetivo (%) como penalización: a igualdad, antes 1 logo menos que ANIM ZONES aplastadas
+      compr = 100.0 * (w_max - w_a) / w_max
+      corto = 100.0 * max(0.0, hueco_obj - hueco) / hueco_obj
+      clave = (100.0 * abs(cuota - cuota_obj) + 0.6 * compr + 0.1 * corto, compr)
+      if mejor is None or clave < mejor[0]:
+        mejor = (clave, k, w_a, hueco)
+    if mejor is None:
+      return False
+    _, k, w_a, hueco = mejor
+
+    # secuencia (simétrica: vale igual para GLL y GLR)
+    lado = []
+    for i in range(n_lado):
+      lado.append("A")
+      if i < n_lado - 1:
+        lado.append("S")
+    secuencia = ["L"] + lado + ["G"] * k + lado[::-1] + ["L"]
+
+    nuevos = {}
+    for z0 in (0, self.w_total - self.goal_line):
+      nombre = next((n for n, z in zonas.items()
+                     if z.get("x_inicio") == z0 and z.get("width") == self.goal_line), None)
+      if nombre is None:
+        return False
+      viejos = zonas[nombre]["elementos"]
+      if any(e["tipo"] not in ("static_logo", "anim_zone") for e in viejos):
+        return False
+      idx_viejos = [e.get("anim_idx") for e in sorted(viejos, key=lambda e: e["x_absoluta"])
+                    if e["tipo"] == "anim_zone" and e.get("anim_idx") is not None]
+      if z0 > 0:
+        idx_viejos = idx_viejos[::-1]   # GLR: el que se conserva es el del lado de la portería/corner
+      # anchos enteros primero y el resto repartido en huecos iguales (sin acumular redondeos)
+      ancho_a = max(1, int(round(w_a)))
+      anchos = [ancho_a if t == "A" else int(lw) for t in secuencia]
+      h_int = (self.goal_line - sum(anchos)) / float(len(secuencia) + 1)
+      els, acum = [], 0
+      ia = 0
+      for i, t in enumerate(secuencia):
+        xi = int(round(z0 + h_int * (i + 1) + acum))
+        acum += anchos[i]
+        if t == "A":
+          idx = idx_viejos[ia] if ia < len(idx_viejos) else self.get_anim_idx()
+          ia += 1
+          els.append({"tipo": "anim_zone", "width": anchos[i], "offset_x": 0.0, "anim_idx": idx, "x_absoluta": xi})
+        else:
+          e = {"tipo": "static_logo", "width": anchos[i], "x_absoluta": xi}
+          if t == "S":
+            e["is_fill"] = True
+          els.append(e)
+      if els[0]["x_absoluta"] < z0 or els[-1]["x_absoluta"] + els[-1]["width"] > z0 + self.goal_line:
+        return False
+      if any(b["x_absoluta"] < a["x_absoluta"] + a["width"] for a, b in zip(els, els[1:])):
+        return False
+      nuevos[nombre] = els
+    for nombre, els in nuevos.items():
+      zonas[nombre]["elementos"] = els
+    while "goal_overlap" in warnings:
+      warnings.remove("goal_overlap")
+    self.gl_repartido = True
+    self.gl_estandar_info = {"qty_goal": k, "anims_lado": n_lado, "anim_w": round(w_a, 1), "hueco": round(hueco, 1)}
+    debug(f"GL estándar: goal={k} logos, {n_lado} ANIM/lado, ANIM {w_a:.0f}px (nativo {self.anim_w}), hueco {hueco:.0f}px")
+    return True
 
   def _repartir_gl(self, zonas, warnings):
     """v0.67/v0.68 (even_spacing): reparte cada Goal Line con todos sus elementos equidistantes:
@@ -1114,7 +1228,8 @@ class Distribuidor:
 
       if not self.config.get("logo_under"):
         self._espaciar_clusters(zonas, cb_start, cb_end)
-        self._repartir_gl(zonas, warnings)
+        if not self._arquitectura_gl(zonas, warnings):   # v1.03
+          self._repartir_gl(zonas, warnings)
         self._aplicar_stretch_fit(zonas, warnings, cb_start, cb_end)
 
       return {
@@ -1526,10 +1641,67 @@ def generar_imagen_arquitectura(
 def calcular_layout_data(
     w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config
 ):
+  """v1.03: cálculo de siempre + Touchline equidistante (todos los huecos iguales, bordes incluidos)."""
+  datos = _calcular_layout(w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config)
+  try:
+    _tl_equidistante(datos, config, margin)
+  except Exception as e:
+    log_error(f"TL equidistante: {e}")
+  # v1.04: LOGO UNDER sin logos medio tapados entre ANIM ZONES + ANIM A/B de izquierda a derecha
+  from logo_under import postprocesar
+  postprocesar(datos, config, margin)
+  return datos
+
+
+def _tl_equidistante(datos, config, margin):
+  """v1.03 (tl_equidistante, por defecto ON con even_spacing): reparte los elementos de cada Touchline
+  (ZONA_2 / ZONA_4) con huecos iguales, bordes incluidos, sin cambiar anchos ni orden. En AMPLIFY se reparte
+  cada fila por separado. No toca nada si el hueco resultante quedara por debajo del margen del TL."""
+  if (not datos or not config.get("even_spacing") or not config.get("tl_equidistante", True)
+      or config.get("logo_under") or config.get("stretch_fit_per")):
+    return
+  m_tl = config.get("margin_tl")
+  m_tl = margin if m_tl is None or m_tl < 0 else m_tl
+  for zn in ("ZONA_2", "ZONA_4"):
+    z = (datos.get("zonas") or {}).get(zn)
+    if not z or not z.get("elementos"):
+      continue
+    if any(e["tipo"] not in ("static_logo", "anim_zone") for e in z["elementos"]):
+      continue
+    filas = {}
+    for e in z["elementos"]:
+      filas.setdefault((e.get("y"), e.get("h")), []).append(e)
+    z0, W = z["x_inicio"], z["width"]
+    planes = []
+    for els in filas.values():
+      els = sorted(els, key=lambda e: e["x_absoluta"])
+      if els[0]["x_absoluta"] < z0 or els[-1]["x_absoluta"] + els[-1]["width"] > z0 + W:
+        planes = None   # fila que no cabe en la zona (2nd row recortada...): no se toca la zona
+        break
+      hueco = (W - sum(e["width"] for e in els)) / float(len(els) + 1)
+      if hueco < max(1.0, m_tl):
+        planes = None
+        break
+      pos, acum = [], 0
+      for i, e in enumerate(els):
+        pos.append((e, int(round(z0 + hueco * (i + 1) + acum))))
+        acum += e["width"]
+      planes.append(pos)
+    if not planes:
+      continue
+    for pos in planes:
+      for e, xi in pos:
+        e["x_absoluta"] = xi
+        e.pop("offset_x", None) if e["tipo"] == "static_logo" else e.update(offset_x=0.0)
+
+
+def _calcular_layout(
+    w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config
+):
   # v0.95: AMPLIFY en el touchline -> dos pasadas del motor de siempre (GL a 1 fila, TL a 1st + 2nd), ver amplify.py
   if config.get("amplify"):
     from amplify import calcular_layout_amplify
-    return calcular_layout_amplify(calcular_layout_data, w_total, h_total, goal_line, cb_width, margin,
+    return calcular_layout_amplify(_calcular_layout, w_total, h_total, goal_line, cb_width, margin,
                                    archivos_cargados, config)
   dist = Distribuidor(w_total, h_total, goal_line, cb_width, margin, archivos_cargados, config)
   datos = dist.procesar()

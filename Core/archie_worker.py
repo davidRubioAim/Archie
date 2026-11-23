@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import sys
 import threading
@@ -169,10 +170,22 @@ class Store:
     def set(self, stadium, code, info, variant=""):
         with self.lock:
             self.done[self.key(stadium, code, variant)] = info
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"done": self.done}, f, indent=1, ensure_ascii=False)
-            os.replace(tmp, self.path)
+            self._guardar()
+
+    def quitar(self, stadium, code):
+        """Olvida todas las entregas (todas las versiones) de un código en un estadio. Devuelve los registros."""
+        pre = f"{stadium}|{code}"
+        with self.lock:
+            fuera = {k: self.done.pop(k) for k in list(self.done) if k == pre or k.startswith(pre + "|")}
+            if fuera:
+                self._guardar()
+        return fuera
+
+    def _guardar(self):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"done": self.done}, f, indent=1, ensure_ascii=False)
+        os.replace(tmp, self.path)
 
 
 # ====================================================================== textos (inglés, para los PMs)
@@ -214,6 +227,31 @@ def etiqueta(v):
     return v or "main"
 
 
+def _norm_version(v):
+    """'C1 SPANISH' / 'national' -> 'C1_SPANISH' / 'NATIONAL' (para comparar con lo escrito en la hoja)."""
+    return re.sub(r"[^A-Z0-9]+", "_", str(v or "").upper()).strip("_")
+
+
+def codigo_y_version(raw):
+    """v1.03: la celda puede llevar la versión detrás del código: 'AUDI-MLSX-261001 NATIONAL',
+    'AUDI-MLSX-261001_REGIONAL'... -> ('AUDI-MLSX-261001', 'NATIONAL'). Sin versión -> (código, None)."""
+    code = normalizar_codigo(raw)
+    if not codigo_valido(code) and len(code) > 17 and code[16] == "-" and codigo_valido(code[:16]):
+        return code[:16], _norm_version(code[17:])
+    return code, None
+
+
+def filtrar_versiones(variants, ver, elegidas=None):
+    """Versiones a mostrar / renderizar: la escrita en la celda (ver) y/o las elegidas en el menú."""
+    out = list(variants)
+    if ver:
+        out = [v for v in out if _norm_version(v["key"]) == ver]
+    if elegidas:
+        sel = {_norm_version(x) for x in elegidas}
+        out = [v for v in out if _norm_version(v["key"]) in sel]
+    return out
+
+
 def nota_versiones(code, info, filas, bloqueada, recs):
     """Nota de una campaña con varias versiones (C1, C2...): una línea por versión."""
     keys = [v["key"] for v in info["variants"]]
@@ -239,6 +277,33 @@ def carpeta_bcsa(base):
     except OSError:
         pass
     return os.path.join(base, OUTPUT_DIR)
+
+
+# Archivos que genera Archie en BCSA\<Estadio>[\<versión>]: JSON, System File(s) y 3D Preview
+SALIDA_RE = re.compile(r"(ARCHIETOAE\.JSON|_SYS(_1ST_ROW|_2ND_ROW)?\.MP4|3D_PREVIEW\.MP4)$")
+
+
+def borrar_salidas_nas(carpeta, code):
+    """Borra de `carpeta` (y sus subcarpetas de versión) solo los archivos de entrega de Archie de ese código;
+    luego quita las carpetas que queden vacías. Lo que haya puesto el equipo a mano no se toca."""
+    if not carpeta or not os.path.isdir(carpeta):
+        return 0
+    n = 0
+    for raiz, _dirs, files in os.walk(carpeta, topdown=False):
+        for f in files:
+            up = f.upper()
+            if code.upper() in up and SALIDA_RE.search(up):
+                try:
+                    os.remove(os.path.join(raiz, f))
+                    n += 1
+                except OSError as e:
+                    log.warning(f"[BORRAR] No se pudo borrar {os.path.join(raiz, f)}: {e}")
+        try:
+            if not os.listdir(raiz):
+                os.rmdir(raiz)
+        except OSError:
+            pass
+    return n
 
 
 # ====================================================================== worker
@@ -272,6 +337,8 @@ class Worker:
         self.q = queue.Queue()
         self.last_launch = None
         self.last_reset = None
+        self.last_delete = None
+        self._lista_estadios = None   # v1.03: última lista enviada al dropdown de la fila 3
         self.busy = threading.Event()
         self.wake = threading.Event()
         self.rendering = None
@@ -284,6 +351,21 @@ class Worker:
             self.stadiums = {k: v for k, v in data.items() if k != "Custom"}
             self._stadiums_at = time.time()
             log.info(f"[ESTADIOS] {len(self.stadiums)} perfiles ({source}).")
+
+    def sincronizar_dropdown(self, force=False):
+        """v1.03: el dropdown de estadios de la fila 3 con los perfiles de Archie, como en la app: los estadios
+        de 2 rows ('X - 1st' / 'X - 2nd') salen una sola vez ('X'). Solo se envía cuando cambia la lista."""
+        nombres = sorted(self.stadiums, key=str.lower)
+        if not nombres or (nombres == self._lista_estadios and not force):
+            return
+        try:
+            r = self.bridge.call("stadium_list", names=nombres)
+            self._lista_estadios = nombres
+            log.info(f"[ESTADIOS] Dropdown de la hoja: {len(nombres)} estadios"
+                     f"{' · celdas 1st/2nd agrupadas: ' + str(r['fixed']) if r.get('fixed') else ''}.")
+        except Exception as e:      # script de la hoja sin 'stadium_list' (versión anterior): no se reintenta
+            self._lista_estadios = nombres
+            log.warning(f"[ESTADIOS] No se pudo actualizar el dropdown de la hoja: {e}")
 
     def comprobar(self, code, force=False):
         t, info = self.elements.get(code, (0, None))
@@ -311,7 +393,7 @@ class Worker:
         raw = cell["code"]
         if not raw:
             return C_NONE, ""
-        code = normalizar_codigo(raw)
+        code, ver = codigo_y_version(raw)
         if not codigo_valido(code):
             return C_RED, (f"✖ INVALID CAMPAIGN CODE: '{raw}'\n"
                            f"Expected format BRAND-CHANNEL-NNNNNN, e.g. ADID-RMXX-261001.")
@@ -328,7 +410,13 @@ class Worker:
                 return C_GREEN, note_done(code, stadium, next(iter(recs.values())))
             return (C_GREY if info["status"] == ST_NO_NAS else C_RED), note_elements(code, info)
 
-        variants = info["variants"]
+        variants = filtrar_versiones(info["variants"], ver)
+        if ver and not variants:
+            disponibles = ", ".join(etiqueta(v["key"]) for v in info["variants"])
+            return C_RED, (f"✖ VERSION NOT FOUND · {code} {ver}\n\nAvailable versions: {disponibles}\n"
+                           f"Write the code alone to render all of them, or the code and one version "
+                           f"(e.g. {code} {etiqueta(info['variants'][0]['key'])}).")
+        info = dict(info, variants=variants)
         estados, filas = [], []
         for v in variants:
             key = v["key"]
@@ -394,6 +482,7 @@ class Worker:
             self.cargar_estadios(force=True)
         else:
             self.cargar_estadios()
+        self.sincronizar_dropdown(force=bool(data.get("recheck")))
 
         reset = data.get("reset") or ""
         if reset and reset != self.last_reset:
@@ -404,6 +493,12 @@ class Worker:
             self.last_reset = reset
         elif self.last_reset is None:
             self.last_reset = ""
+
+        borrado = data.get("delete")
+        if borrado and borrado.get("id") != self.last_delete:
+            self.borrar(borrado, stadium_by_col)
+            self.last_delete = borrado.get("id")
+            self.bridge.call("ack_delete", id=borrado.get("id"))
 
         launch = data.get("launch")
         if launch and launch.get("id") != self.last_launch:
@@ -439,13 +534,14 @@ class Worker:
         n = 0
         for cell in launch.get("cells") or []:
             stadium = self.perfil(stadium_by_col.get(cell["col"]) or cell.get("stadium") or "")
-            code = normalizar_codigo(cell.get("code"))
+            code, ver = codigo_y_version(cell.get("code"))
             if not codigo_valido(code) or not stadium:
                 continue
             info = self.comprobar(code, force=True)
             if info["status"] != ST_FOUND:
                 continue
-            for v in info["variants"]:
+            # v1.03: solo la versión escrita en la celda y/o las marcadas en "Choose versions to render"
+            for v in filtrar_versiones(info["variants"], ver, cell.get("variants")):
                 if v["status"] != ST_READY:
                     continue
                 key = Store.key(stadium, code, v["key"])
@@ -462,6 +558,39 @@ class Worker:
                 n += 1
         log.info(f"[LANZAMIENTO] {launch.get('by') or '?'}: {n} campaña(s) en cola"
                  f"{' (re-render)' if force else ''}.")
+
+    def borrar(self, req, stadium_by_col):
+        """Archie ▸ Delete files of selected cells: borra las entregas (NAS + Drive) para poder renderizar de nuevo."""
+        for cell in req.get("cells") or []:
+            nombre = stadium_by_col.get(cell["col"]) or cell.get("stadium") or ""
+            stadium = self.perfil(nombre)
+            code = normalizar_codigo(cell.get("code"))
+            if not codigo_valido(code) or not stadium:
+                log.warning(f"[BORRAR] Se omite {cell.get('code')} · {nombre}: código o estadio no válido.")
+                continue
+            with self.jobs_lock:
+                ocupado = any(j.code == code and j.stadium == stadium and j.status in ("queued", "rendering")
+                              for j in self.jobs.values())
+            if ocupado:
+                log.warning(f"[BORRAR] Se omite {code} · {stadium}: se está renderizando.")
+                continue
+            recs = self.store.de_codigo(stadium, code)
+            carpetas = {r.get("nas") for r in recs.values() if r.get("nas")}
+            base = self.nas.carpeta(code)
+            if base:
+                carpetas.add(os.path.join(carpeta_bcsa(base), safe_name(stadium)))
+            n_nas = sum(borrar_salidas_nas(c, code) for c in carpetas)
+            n_drive = "?"
+            try:
+                n_drive = self.bridge.call("drive_delete", code=code, stadium=stadium).get("trashed", 0)
+            except Exception as e:
+                log.error(f"[BORRAR] Drive {code} · {stadium}: {e}")
+            self.store.quitar(stadium, code)
+            with self.jobs_lock:
+                self.jobs = {k: j for k, j in self.jobs.items() if not (j.code == code and j.stadium == stadium)}
+            self.elements.pop(code, None)
+            log.info(f"[BORRAR] {req.get('by') or '?'}: {code} · {stadium} · {n_nas} archivo(s) del NAS, "
+                     f"{n_drive} carpeta(s) de Drive a la papelera.")
 
     def progreso(self, actual, stadium_by_col):
         """Texto + barra por estadio, solo con los trabajos de esta sesión."""

@@ -89,6 +89,71 @@ _CONFIG_DIR = None
 def configurar(config_dir):
     global _CONFIG_DIR
     _CONFIG_DIR = config_dir
+    try:
+        aplicar_cuota_goal(config_dir)   # v1.03
+    except Exception as e:
+        log_error(f"cuota_goal: {e}")
+
+
+def cuota_goal_de(doc):
+    """v1.03: fracción del Goal Line (ZONA_1) que ocupa el bloque de logos tras la portería en un JSON de
+    arquitectura: la racha de logos consecutivos que contiene el centro del GL. None si no hay ANIM ZONE a
+    los dos lados (no es la arquitectura estándar)."""
+    z = (doc.get("zonas") or {}).get("ZONA_1")
+    if not z or not z.get("width"):
+        return None
+    x0, w = z["x_inicio"], float(z["width"])
+    els = sorted((e for e in z["elementos"] if e["tipo"] in ("static_logo", "anim_zone")), key=lambda e: e["x_absoluta"])
+    centro = x0 + w / 2.0
+    i = next((j for j, e in enumerate(els) if e["x_absoluta"] <= centro <= e["x_absoluta"] + e["width"]), None)
+    if i is None:   # el centro cae en un hueco: el logo más cercano
+        if not els:
+            return None
+        i = min(range(len(els)), key=lambda j: abs(els[j]["x_absoluta"] + els[j]["width"] / 2.0 - centro))
+    if els[i]["tipo"] != "static_logo":
+        return None
+    a = b = i
+    while a > 0 and els[a - 1]["tipo"] == "static_logo":
+        a -= 1
+    while b < len(els) - 1 and els[b + 1]["tipo"] == "static_logo":
+        b += 1
+    if a == 0 or b == len(els) - 1:
+        return None
+    return (els[b]["x_absoluta"] + els[b]["width"] - els[a]["x_absoluta"]) / w
+
+
+def cuota_goal_aprendida(config_dir=None):
+    """Mediana de cuota_goal_de() en Config/referencias. Las correcciones (manual / CORRECT en el nombre)
+    cuentan doble: son el criterio más reciente. -> (cuota o None, nº de referencias usadas)"""
+    vals = []
+    for path in glob.glob(os.path.join(_cfg_dir(config_dir), REFS_DIR, "*.json")):
+        if os.path.basename(path).startswith("_"):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+            c = cuota_goal_de(doc)
+        except Exception:
+            continue
+        if c is None:
+            continue
+        peso = 2 if (doc.get("manual") or "CORRECT" in os.path.basename(path).upper()) else 1
+        vals += [c] * peso
+    if len(vals) < 3:
+        return None, len(vals)
+    vals.sort()
+    n = len(vals)
+    med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+    return max(0.12, min(0.45, med)), n
+
+
+def aplicar_cuota_goal(config_dir=None):
+    import motor_distribucion
+    cuota, n = cuota_goal_aprendida(config_dir)
+    if cuota is not None:
+        motor_distribucion.CUOTA_GOAL = round(cuota, 4)
+        debug(f"GL estándar: cuota del goal aprendida {cuota:.3f} ({n} referencias)")
+    return motor_distribucion.CUOTA_GOAL
 
 
 def _cfg_dir(config_dir=None):
@@ -463,7 +528,8 @@ def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, exc
 
     combos = set()
     for qg in reglas["goal_opciones"]:
-        for qc in reglas["corner_opciones"] + [0]:
+        # v1.03: con GL estándar el corner del fondo lleva siempre su logo en el GL y otro en el TL
+        for qc in reglas["corner_opciones"] + ([] if base.get("gl_estandar", True) and not base.get("logo_under") else [0]):
             for qcb in reglas["centro_opciones"] + [0]:
                 for qtl in reglas["separador_opciones"]:
                     for hide in (False, True):
@@ -482,7 +548,8 @@ def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, exc
             evaluados.append(r)
     validos = sorted([r for r in evaluados if not r["solapa"]], key=lambda r: -r["score"])
     # desplazar los logos del goal hacia el corner del fondo solo en los mejores (gana si cabe algo más)
-    for r in validos[:6]:
+    # v1.03: con GL estándar el motor ya decide el goal y el reparto del GL: sin desplazamientos
+    for r in ([] if base.get("gl_estandar", True) else validos[:6]):
         for off in reglas["gl_offsets"]:
             if off == 0:
                 continue
@@ -724,6 +791,9 @@ def completar_goal(w_total, h_total, goal_line, cb_width, margin, archivos, conf
     conf0 = dict(config or {})
     if conf0.get("amplify") or conf0.get("logo_under") or not (archivos or {}).get("static_logo"):
         return config, None
+    if (conf0.get("gl_estandar", True) and conf0.get("even_spacing") and not conf0.get("edge_case")
+            and not (conf0.get("gl_offset") or 0) and not conf0.get("corner_logo")):
+        return config, None   # v1.03: el GL estándar ya elige cuántos logos van tras la portería
     qg0 = int(conf0.get("qty_goal", 0) or 0)
     if qg0 <= 0:
         return config, None
