@@ -8,6 +8,7 @@ import math
 import traceback
 import numpy as np
 import threading
+import time
 import gc
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 import compat_ffmpeg  # noqa: F401  v0.78: MoviePy con ffmpeg 8 ('Stream group'), antes de usar MoviePy
@@ -38,6 +39,7 @@ from vista_3d import Visor3D, geometria_estadio, escala_textura
 from manual_mode import ManualModeMixin  # v0.71: MODO MANUAL en la Architecture Preview
 from json_import import JsonImportMixin  # v0.93: IMPORT JSON (arquitectura aprobada)
 from drop_global import GlobalDropMixin  # v0.93: soltar ELEMENTS / JSON en cualquier parte de la ventana
+from perf import medir  # v1.05: ARCHIE_PERF=1 -> tiempos en consola
 from ui_thread import UiThreadMixin  # v1.04: after() seguro desde hilos (Python 3.14: 'main thread is not in main loop')
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
@@ -101,6 +103,7 @@ except AttributeError:
     PREVIEW_RESAMPLE = Image.BILINEAR
 
 PREVIEW_FRAMES = 8
+PAN_FRAME_MS = 16   # v1.05: repintado del pan / arrastre (≈60 fps)
 
 def aplicar_letterbox_pil(img, target_w, target_h, resample_method):
     if target_w <= 0 or target_h <= 0:
@@ -1268,10 +1271,15 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
 
         try:
             self.ai_client = genai.Client(api_key=api_key)
-            self.ai_config = types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json" 
-            )
+            cfg_ai = dict(system_instruction=system_instruction, response_mime_type="application/json")
+            # v1.05: gemini-2.5-flash "piensa" por defecto (varios segundos por mensaje). Para devolver un JSON de
+            # parámetros no hace falta: presupuesto 0 por defecto. ARCHIE_AI_THINKING=-1 (dinámico) o N tokens en Config/.env.
+            try:
+                presupuesto = int(os.getenv("ARCHIE_AI_THINKING", "0") or 0)
+                cfg_ai["thinking_config"] = types.ThinkingConfig(thinking_budget=presupuesto)
+            except Exception as e:
+                debug(f"Gemini sin thinking_config: {e}")
+            self.ai_config = types.GenerateContentConfig(**cfg_ai)
             self.append_chat("Archie", "Describe the layout you want, e.g. \"2 logos between animations in the touchline\".")
         except Exception as e:
             self.append_chat("System Error", f"⚠️ Failed to initialize AI: {str(e)}")
@@ -1349,7 +1357,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             "edge_case": getattr(self, "edge_case_actual", None),        # v0.61: respeta las zonas negras
             "amplify_geo": getattr(self, "amplify_geo_actual", None),    # v0.95: AMPLIFY en el touchline
         }
-        best_config, msg = resolver_arquitectura(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, base)
+        with medir("Create Architecture (solver)"):   # v1.05
+            best_config, msg = resolver_arquitectura(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, base)
 
         self.current_hide_edges = best_config["hide_extreme_edges"]
         self.current_under_hotspots = best_config.get("under_hotspots", True)  # v0.61
@@ -1544,11 +1553,12 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         
         for intento in range(max_intentos):
             try:
-                response = self.ai_client.models.generate_content(
-                    model="gemini-2.5-flash", 
-                    contents=text,
-                    config=self.ai_config
-                )
+                with medir("Chat: respuesta de Gemini"):   # v1.05
+                    response = self.ai_client.models.generate_content(
+                        model="gemini-2.5-flash", 
+                        contents=text,
+                        config=self.ai_config
+                    )
                 
                 try:
                     raw_json = response.text.replace('```json', '').replace('```', '').strip()
@@ -1996,7 +2006,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             return 15, 15
 
     def load_stadium_library(self):
-        data, self.stadium_source = cargar_estadios(CONFIG_DIR, fallback_dirs=[os.path.join(BASE_DIR, "Config")])
+        with medir("Specs de estadios (Google Sheets / stadium_cache)"):   # v1.05
+            data, self.stadium_source = cargar_estadios(CONFIG_DIR, fallback_dirs=[os.path.join(BASE_DIR, "Config")])
         return data
 
     def refresh_stadium_library(self):
@@ -2693,10 +2704,14 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         # Compatibilidad: cualquier llamada antigua pasa por el nuevo pipeline
         self.start_preview_render()
 
-    def start_preview_render(self):
+    def start_preview_render(self, quiet=False):
+        """quiet (v1.05, MODO MANUAL): sin oscurecer la preview ni bloquear el siguiente arrastre; la vista rápida
+        del cambio ya está pintada y la preview definitiva la sustituye en cuanto llega."""
         debug("Iniciando render de preview...")
         self._cancel_auto_update()
-        datos = self.calcular_layout()
+        self._perf_t0 = time.perf_counter()   # v1.05
+        with medir("Recalcular layout"):
+            datos = self.calcular_layout()
         if not datos:
             self.hide_preview_overlay()
             self.player.release()
@@ -2733,9 +2748,12 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self._render_datos = (gen, datos)   # v0.71: lo que se va a ver (para el modo manual)
         self.preview_dirty = False
         first_idx = self.preview_current_idx if 0 <= self.preview_current_idx < PREVIEW_FRAMES else 0
-        self.btn_create_arch.configure(state="disabled", text="✨ Building Preview...")
-        self.show_preview_overlay("Loading key frames...")
-        self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Calculating...)", text_color="#E67E22")
+        if quiet and self._shown_strip is not None:
+            self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Updating...)", text_color="#E67E22")
+        else:
+            self.btn_create_arch.configure(state="disabled", text="✨ Building Preview...")
+            self.show_preview_overlay("Loading key frames...")
+            self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Calculating...)", text_color="#E67E22")
         self._start_thread(self._render_worker, gen, params, first_idx)
 
     def _render_worker(self, gen, p, first_idx):
@@ -2786,6 +2804,10 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
 
     def _on_first_preview_frame(self, gen, idx, res, sys_canvas, strip3d=None, p=None):
         if gen != self.render_gen: return
+        t0 = getattr(self, "_perf_t0", None)
+        if t0 is not None:
+            from perf import log as perf_log
+            perf_log(f"Preview: primer frame en pantalla a los {(time.perf_counter() - t0) * 1000:.0f} ms")
         rd = getattr(self, "_render_datos", None)
         if rd and rd[0] == gen: self._disp_datos = rd[1]   # v0.71
         self._mv_refresh_ui()   # v0.73: 🧲 SNAP solo en modo LOGO
@@ -3350,7 +3372,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         if rx2 > rx1 and ry2 > ry1:
             sx, sy = img.width / float(sw), img.height / float(sh)
             visible = img.resize(
-                (rx2 - rx1, ry2 - ry1), RESAMPLE_METHOD,
+                (rx2 - rx1, ry2 - ry1), PREVIEW_RESAMPLE if getattr(self, "_pan_rapido", False) else RESAMPLE_METHOD,
                 box=(rx1 * sx, ry1 * sy, rx2 * sx, ry2 * sy), reducing_gap=3.0
             )
             canvas.paste(visible, (paste_x + rx1, paste_y + ry1))
@@ -3461,10 +3483,24 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             self.drag_start_x = event.x_root
             self.drag_start_y = event.y_root
             
-            self.actualizar_imagen_preview()
+            # v1.05: un repintado por fotograma (~60 fps) aunque el ratón mande cientos de eventos, y con
+            # reescalado rápido mientras se arrastra (al soltar se repinta con la calidad normal)
+            self._pan_rapido = True
+            if getattr(self, "_pan_timer", None) is None:
+                self._pan_timer = self.after(PAN_FRAME_MS, self._pan_tick)
+
+    def _pan_tick(self):
+        self._pan_timer = None
+        self.actualizar_imagen_preview()
 
     def on_drag_release(self, event, view_type):
         if view_type == "strip" and self._mv_release(event): return
+        if getattr(self, "_pan_timer", None) is not None:   # v1.05
+            self.after_cancel(self._pan_timer)
+            self._pan_timer = None
+        if getattr(self, "_pan_rapido", False):
+            self._pan_rapido = False
+            self.actualizar_imagen_preview()   # calidad normal al soltar
         if not self.is_dragging:
             if self.player.engaged and self.player.ready:
                 self.player.toggle()  # clic en cualquiera de las dos previews: play / pausa

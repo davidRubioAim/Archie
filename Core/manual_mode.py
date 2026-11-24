@@ -20,6 +20,7 @@ from motor_distribucion import Distribuidor, segmentos_arquitectura
 from video_player import PhotoTarget
 
 C_SEL = (255, 9, 154, 255)        # magenta de la app
+DRAG_FRAME_MS = 16   # v1.05: repintado del arrastre en modo manual (≈60 fps)
 C_ESPEJO = (255, 150, 210, 255)
 C_AVISO = "#E67E22"
 
@@ -419,7 +420,7 @@ class ManualModeMixin:
         if self.manual_drag is not None:   # no re-renderizar en mitad de un arrastre
             self._manual_render_timer = self.after(200, self._mv_render)
             return
-        self.start_preview_render()
+        self.start_preview_render(quiet=True)   # v1.05: sin oscurecer ni bloquear el siguiente arrastre
 
     def _mv_operar(self, fn, delay=0):
         """Aplica fn(modelo) sobre una copia; si sale bien, la pinta al momento y la confirma."""
@@ -584,7 +585,8 @@ class ManualModeMixin:
         segs, h = self._mv_segs()
         if base is None or v is None or not segs:
             return base, base
-        img = base.convert("RGBA").copy()
+        base_rgba = base if base.mode == "RGBA" else base.convert("RGBA")   # v1.05: una conversión, no una por elemento
+        img = base_rgba.copy()
         viejo = {e["uid"]: (e["x"], e["w"]) for e in antes.els}
         nuevo = {e["uid"]: (e["x"], e["w"], e["src"]) for e in despues.els}
         cajas = {e["uid"]: self._mv_caja(antes, e) for e in antes.els}          # v0.95: 2 rows
@@ -619,7 +621,7 @@ class ManualModeMixin:
                 dw, dh = d[2] - d[0], d[3] - d[1]
                 if dw <= 0 or dh <= 0 or s[2] <= s[0] or s[3] <= s[1]:
                     continue
-                trozo = base.convert("RGBA").crop(s)
+                trozo = base_rgba.crop(s)
                 if trozo.size != (dw, dh):
                     trozo = trozo.resize((dw, dh), Image.BILINEAR)
                 img.paste(trozo, d[:2])
@@ -708,17 +710,36 @@ class ManualModeMixin:
         if not d["moved"] and abs(dxp) < 3:
             return True
         d["moved"] = True
+        # v1.05: el ratón manda muchos más eventos de los que se pueden pintar; se guarda el último y se pinta
+        # una vez por fotograma (~60 fps). Antes cada evento clonaba el modelo y recomponía la vista: lag al arrastrar.
+        d["dxp"] = dxp
+        if d.get("timer") is None:
+            d["timer"] = self.after(DRAG_FRAME_MS, self._mv_motion_tick)
+        return True
+
+    def _mv_motion_tick(self):
+        d = self.manual_drag
+        if d is None or d.get("noop"):
+            return
+        d["timer"] = None
+        self._mv_arrastre(d)
+
+    def _mv_arrastre(self, d):
+        """Aplica el último desplazamiento pendiente del arrastre (vista rápida, sin render)."""
+        dxp = d.get("dxp")
+        if dxp is None or dxp == d.get("aplicado"):
+            return
+        d["aplicado"] = dxp
         v = d["view"]
         if v is None:
-            return True
+            return
         m = d["snap"].clone()
         ok, _ = m.mover(d["uid"], dxp / v["sx"])
         if not ok:
-            return True
+            return
         d["model"] = m
         img, d["limpia"] = self._mv_overlay(d["snap"], m, d["base"], v, sel=d["uid"])
         self._mv_mostrar(img)
-        return True
 
     def _mv_release(self, event):
         d = self.manual_drag
@@ -727,6 +748,12 @@ class ManualModeMixin:
         self.manual_drag = None
         if d.get("noop"):
             return True
+        if d.get("timer") is not None:   # v1.05: último movimiento pendiente, antes de confirmar
+            try: self.after_cancel(d["timer"])
+            except Exception: pass
+            d["timer"] = None
+        if d["moved"]:
+            self._mv_arrastre(d)
         if d["moved"] and d.get("model") is not None:
             if d.get("limpia") is not None:
                 self._shown_strip, self._shown_strip_player = d["limpia"], False

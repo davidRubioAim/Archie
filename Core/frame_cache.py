@@ -10,6 +10,7 @@ Caché de frames para la previsualización de ARCHIE.
 import os
 import subprocess
 import threading
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -30,9 +31,54 @@ def is_video(path):
     return bool(path) and os.path.splitext(path)[1].lower() in VIDEO_EXTS
 
 
+# v1.05: la firma (ruta, tamaño, fecha) se cachea unos segundos por ruta. Antes cada consulta hacía un os.stat:
+# con los ELEMENTS en el NAS (\\192.168.110.242) un Create Architecture lanzaba 400-850 stats por SMB (4-9 s solo
+# en eso). El cambio de un fichero en disco se sigue detectando, como mucho SIG_TTL_S segundos más tarde.
+SIG_TTL_S = 5.0
+_SIGS = {}
+_SIGS_LOCK = threading.Lock()
+STATS = {"stat": 0, "stat_cache": 0}   # v1.05: contadores para perf.py
+
+
+_TTL = None
+
+
+def _ttl():
+    """ARCHIE_SIG_TTL_S en Config/.env (se lee la 1ª vez, cuando el .env ya está cargado). 0 = sin caché."""
+    global _TTL
+    if _TTL is None:
+        try:
+            _TTL = max(0.0, float(os.getenv("ARCHIE_SIG_TTL_S", "") or SIG_TTL_S))
+        except ValueError:
+            _TTL = SIG_TTL_S
+    return _TTL
+
+
 def _file_sig(path):
+    ahora = time.monotonic()
+    with _SIGS_LOCK:
+        c = _SIGS.get(path)
+        if c is not None and ahora - c[0] < _ttl():
+            STATS["stat_cache"] += 1
+            return c[1]
     st = os.stat(path)
-    return (os.path.abspath(path), st.st_size, int(st.st_mtime))
+    sig = (os.path.abspath(path), st.st_size, int(st.st_mtime))
+    with _SIGS_LOCK:
+        STATS["stat"] += 1
+        _SIGS[path] = (ahora, sig)
+        if len(_SIGS) > 512:
+            _SIGS.clear()
+    return sig
+
+
+def file_sig(path):
+    """Firma cacheada (ruta, tamaño, fecha) de un fichero. La usan también alpha_utils y el solver."""
+    return _file_sig(path)
+
+
+def olvidar_firmas():
+    with _SIGS_LOCK:
+        _SIGS.clear()
 
 
 class FrameCache:
@@ -151,7 +197,12 @@ class FrameCache:
 
     def _job(self, key, path, t, height, info):
         try:
+            t0 = time.perf_counter()
             img = self._decode(path, t, height, info)
+            ms = (time.perf_counter() - t0) * 1000.0
+            if ms > 400:   # v1.05: con ARCHIE_PERF=1, frames que tardan (NAS lento, ProRes pesado)
+                from perf import log as perf_log
+                perf_log(f"frame lento {ms:.0f} ms · {os.path.basename(path)} t={t:.2f}s h={height}")
         except Exception:
             with self._lock:
                 self._pending.pop(key, None)
@@ -191,6 +242,7 @@ class FrameCache:
         return img
 
     def clear(self):
+        olvidar_firmas()
         with self._lock:
             self._frames.clear()
             self._images.clear()

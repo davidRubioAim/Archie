@@ -27,8 +27,12 @@ _lock = threading.Lock()
 
 
 def _sig(path):
-    st = os.stat(path)
-    return (os.path.abspath(path), st.st_size, int(st.st_mtime))
+    try:  # v1.05: firma cacheada (sin un os.stat al NAS por cada frame)
+        from frame_cache import file_sig
+        return file_sig(path)
+    except ImportError:
+        st = os.stat(path)
+        return (os.path.abspath(path), st.st_size, int(st.st_mtime))
 
 
 def _probe_dur(path):

@@ -764,6 +764,26 @@ def _dims_reales(archivos, h_total):
     return logo_w, anim_w
 
 
+def _dims_conf(archivos):
+    """v1.05: dimensiones reales (sin escalar) del logo y de la 1ª ANIM ZONE, leídas UNA vez por cálculo, en el
+    formato de config["dims"] del motor. Así los cientos de candidatos del solver no vuelven a tocar los ficheros
+    (en el NAS cada consulta era un viaje por SMB). None si falta alguno: el motor lee como siempre."""
+    from frame_cache import FRAME_CACHE
+    anims = [a for a in archivos.get("anim_zones") or [] if a] or ([archivos["anim_zone"]] if archivos.get("anim_zone") else [])
+    out = {}
+    for clave, path in (("static_logo", archivos.get("static_logo")), ("anim", anims[0] if anims else None)):
+        if not path:
+            return None
+        try:
+            w, h = FRAME_CACHE.dimensions(path)
+        except Exception:
+            return None
+        if not (w and h):
+            return None
+        out[clave] = [int(w), int(h)]
+    return out
+
+
 def resolver(w_total, h_total, goal_line, cb_width, margin, archivos, base, config_dir=None):
     """-> (config, msg). Misma salida que auto_solver.resolver (más margin_tl / under_hotspots)."""
     reglas = cargar_reglas(config_dir)
@@ -773,7 +793,8 @@ def resolver(w_total, h_total, goal_line, cb_width, margin, archivos, base, conf
     pesos = pesos_actuales(config_dir)
     geo = Geometria(w_total, h_total, goal_line, cb_width, base.get("edge_case"))
     logo_w, anim_w = _dims_reales(archivos, h_total)
-    mejor, evaluados, info = buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs)
+    mejor, evaluados, info = buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs,
+                                    dims=_dims_conf(archivos))   # v1.05
     if not mejor:
         peor = min(evaluados, key=lambda r: -r["score"]) if evaluados else None
         conf = peor["conf"] if peor else _base_conf(base, reglas)
@@ -818,8 +839,10 @@ def completar_goal(w_total, h_total, goal_line, cb_width, margin, archivos, conf
         if ref is not None and sim >= 0.5 and ref["objetivos_medidos"].get("goal"):
             objetivos = dict(objetivos, goal=ref["objetivos_medidos"]["goal"])
         meta = int(objetivos["goal"])
+        dims = conf0.get("dims") or _dims_conf(archivos)   # v1.05: los ficheros se miden una sola vez
+        conf_eval = dict(conf0, dims=dims) if dims else conf0
 
-        actual = _evaluar(geo, margin, archivos, conf0, logo_w, anim_w, objetivos, pesos, None, 0.0)
+        actual = _evaluar(geo, margin, archivos, conf_eval, logo_w, anim_w, objetivos, pesos, None, 0.0)
         if not actual or actual["solapa"]:
             return config, None
         e0, p0 = actual["estructura"], actual["phi"]
@@ -838,7 +861,8 @@ def completar_goal(w_total, h_total, goal_line, cb_width, margin, archivos, conf
             for st in stretches:
                 for off in offsets:
                     c = dict(conf0, qty_goal=qg, gl_offset=off, stretch_limit=st, even_spacing=True)
-                    r = _evaluar(geo, margin, archivos, c, logo_w, anim_w, objetivos, pesos, None, 0.0)
+                    r = _evaluar(geo, margin, archivos, dict(c, dims=dims) if dims else c,
+                                 logo_w, anim_w, objetivos, pesos, None, 0.0)
                     if not r or r["solapa"]:
                         continue
                     e, p = r["estructura"], r["phi"]
