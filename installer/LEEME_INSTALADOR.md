@@ -1,4 +1,4 @@
-# Archie como programa de Windows (launcher v0.48)
+# Archie como programa de Windows (launcher v0.50)
 
 ## Qué cambia
 - **Pantalla de carga AIM** (v0.47): fondo de gradiente AIM, logotipo Archie y AIM en blanco, texto en Figtree y
@@ -17,6 +17,9 @@
 
 ## Actualizaciones
 - **No hace falta un .exe nuevo por versión.** Cada vez que se abre, Archie.exe lee `version` del Gist y baja ese tag.
+- **Descarga incremental** (launcher v0.50): si ya hay una versión anterior en `versions\`, se copia y solo se bajan
+  los ficheros que cambian entre los dos tags (API compare de GitHub). Si hay más de 150 cambios o algo falla, se baja
+  el zip completo (~45 MB) mostrando el progreso. En `versions\` se quedan solo las 2 últimas versiones.
 - **Botón "Update available"** (Core v1.07): la app mira el Gist al abrir y cada 15 min. Si hay una versión mayor sale
   arriba a la derecha; al pulsarlo avisa de que se cerrará el proyecto y las campañas no exportadas, y si se acepta
   cierra Archie y lo vuelve a abrir ya con la versión nueva.
@@ -39,7 +42,7 @@ Requisitos: Python 3.10+ con tkinter (el de python.org vale). Inno Setup 6 se in
 cd /d "D:\D Rubio\_Git\Archie"
 powershell -ExecutionPolicy Bypass -File .\installer\build_installer.ps1
 ```
-Sale `installer\Output\Archie_Setup_v0.48.exe`. Añade `-SinConsola` para la versión sin consola. La versión del instalador es `LAUNCHER_VERSION` de launcher.py.
+Sale `installer\Output\Archie_Setup_v0.50.exe`. Añade `-SinConsola` para la versión sin consola. La versión del instalador es `LAUNCHER_VERSION` de launcher.py.
 
 ## Pasar de un Archie.exe suelto al instalado
 Instala, y si quieres conservar ajustes copia la carpeta `Config\` de la carpeta del .exe antiguo a

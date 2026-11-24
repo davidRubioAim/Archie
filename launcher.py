@@ -11,7 +11,7 @@ import importlib
 import hashlib
 
 
-LAUNCHER_VERSION = "v0.48"
+LAUNCHER_VERSION = "v0.50"
 FROZEN = getattr(sys, 'frozen', False)
 
 # v0.46: instalado como programa (Archie.exe sin consola). Misma ID que pone Core/app.py en su ventana: así Windows
@@ -158,9 +158,132 @@ def sync_config():
         
     return config['ARCHIE']
 
+# --- v0.50: actualización incremental ----------------------------------------------------------------------------
+INCREMENTAL_MAX_FILES = 150   # más ficheros cambiados que esto: sale más a cuenta el zip completo
+KEEP_VERSIONS = 2             # versiones que se conservan en versions\ (además de la que se abre)
+
+
+def _vkey(v):
+    import re
+    return tuple(int(x) for x in re.findall(r"\d+", v))
+
+
+def _is_version_dir(name):
+    import re
+    return re.fullmatch(r"v\d+(\.\d+)*", name) is not None
+
+
+def _gh_headers(token, accept="application/vnd.github+json"):
+    h = {"User-Agent": "Archie-Launcher", "Accept": accept}
+    if token:
+        h["Authorization"] = f"Bearer {token.strip()}"
+    return h
+
+
+def incremental_update(version, repo, token):
+    """Crea versions/<version> copiando la última versión local anterior y bajando SOLO los ficheros que cambian entre
+    los dos tags (API compare de GitHub). Una versión con cambios de código pesa KB en vez de los ~45 MB del zip.
+    Devuelve True si lo consigue; ante cualquier duda devuelve False y se hace la descarga completa de siempre."""
+    import urllib.parse
+    base = None
+    for d in os.listdir(VERSIONS_DIR):
+        if _is_version_dir(d) and _vkey(d) < _vkey(version) and \
+                os.path.exists(os.path.join(VERSIONS_DIR, d, "Core", "app.py")):
+            if base is None or _vkey(d) > _vkey(base):
+                base = d
+    if not base:
+        return False
+    try:
+        print(f"  [*] Buscando qué ha cambiado de {base} a {version}...")
+        url = f"https://api.github.com/repos/{repo}/compare/{base}...{version}"
+        with urllib.request.urlopen(urllib.request.Request(url, headers=_gh_headers(token)), timeout=30) as r:
+            cmp = json.loads(r.read().decode("utf-8"))
+        files = cmp.get("files") or []
+        if cmp.get("status") not in ("ahead", "identical") or len(files) >= 300:
+            print("  [*] Cambios no comparables: descarga completa.")
+            return False
+        descargas = [f for f in files if f.get("status") != "removed"]
+        if len(descargas) > INCREMENTAL_MAX_FILES:
+            print(f"  [*] {len(descargas)} ficheros cambiados: descarga completa.")
+            return False
+
+        temp = os.path.join(VERSIONS_DIR, f"_inc_{version}")
+        if os.path.exists(temp):
+            shutil.rmtree(temp)
+        shutil.copytree(os.path.join(VERSIONS_DIR, base), temp,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        root = os.path.realpath(temp)
+
+        def ruta(rel):
+            p = os.path.realpath(os.path.join(temp, *rel.split("/")))
+            if not p.startswith(root + os.sep):
+                raise ValueError(f"ruta fuera de la carpeta: {rel}")
+            return p
+
+        for f in files:
+            st = f.get("status")
+            if st in ("removed", "renamed") and (f.get("previous_filename") or st == "removed"):
+                viejo = ruta(f["previous_filename"] if st == "renamed" else f["filename"])
+                if os.path.isfile(viejo):
+                    os.remove(viejo)
+        total = 0
+        for i, f in enumerate(descargas, 1):
+            rel = f["filename"]
+            api = (f"https://api.github.com/repos/{repo}/contents/{urllib.parse.quote(rel)}"
+                   f"?ref={urllib.parse.quote(version)}")
+            req = urllib.request.Request(api, headers=_gh_headers(token, "application/vnd.github.raw"))
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = r.read()
+            dest = ruta(rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as out:
+                out.write(data)
+            total += len(data)
+            print(f"  [*] Actualizando {version}: {i}/{len(descargas)} ficheros ({total / 1024:.0f} KB)")
+
+        if not os.path.exists(os.path.join(temp, "Core", "app.py")):
+            raise ValueError("falta Core/app.py tras aplicar los cambios")
+        final_path = os.path.join(VERSIONS_DIR, version)
+        if os.path.exists(final_path):
+            shutil.rmtree(final_path)
+        os.rename(temp, final_path)
+        print(f"  [OK] {version} lista: {len(descargas)} ficheros nuevos o cambiados ({total / 1048576:.1f} MB) "
+              f"sobre {base}.")
+        return True
+    except Exception as e:
+        print(f"  [WARN] Actualización incremental no disponible ({e}). Descarga completa.")
+        try:
+            shutil.rmtree(os.path.join(VERSIONS_DIR, f"_inc_{version}"))
+        except Exception:
+            pass
+        return False
+
+
+def cleanup_old_versions(current):
+    """Deja en versions/ solo la que se abre y las KEEP_VERSIONS más recientes (las viejas ocupan ~45 MB cada una).
+    Solo en el programa instalado: en el repo de desarrollo no se toca nada."""
+    if not FROZEN:
+        return
+    vers = sorted((d for d in os.listdir(VERSIONS_DIR)
+                   if _is_version_dir(d) and os.path.isdir(os.path.join(VERSIONS_DIR, d))), key=_vkey, reverse=True)
+    keep = set(vers[:KEEP_VERSIONS]) | {current}
+    for d in vers:
+        if d not in keep:
+            try:
+                shutil.rmtree(os.path.join(VERSIONS_DIR, d))
+                print(f"  [*] Versión antigua eliminada: {d}")
+            except Exception:
+                pass  # en uso (otro Archie abierto) o bloqueada: se intenta en el próximo arranque
+    for d in os.listdir(VERSIONS_DIR):  # restos de descargas interrumpidas
+        if d.startswith(("_inc_", "_temp_")):
+            shutil.rmtree(os.path.join(VERSIONS_DIR, d), ignore_errors=True)
+
+
 def download_from_github(version, repo, token):
     print(f"  [*] La versión {version} no está en caché local.")
-    print(f"  [*] Descargando paquete desde GitHub ({repo})...")
+    if incremental_update(version, repo, (token or "").strip()):
+        return True
+    print(f"  [*] Descargando paquete completo desde GitHub ({repo})...")
     
     token_clean = token.strip() if token else ""
     if token_clean:
@@ -178,8 +301,7 @@ def download_from_github(version, repo, token):
     req = urllib.request.Request(url, headers=headers)
 
     try:
-        with urllib.request.urlopen(req) as response, open(zip_path, 'wb') as out_file:
-            shutil.copyfileobj(response, out_file)
+        _download_with_progress(req, zip_path, version)
             
         print("  [*] Extrayendo módulos del motor y CustomTkinter...")
         
@@ -232,6 +354,33 @@ def latest_local_version(exclude=None):
             if best is None or key > best[0]:
                 best = (key, d)
     return best[1] if best else None
+
+def _download_with_progress(req, zip_path, version, intentos=3):
+    """v0.49: descarga por bloques mostrando los MB (el paquete pesa ~45 MB: con conexión lenta parecía colgado) y con
+    timeout de 60 s por lectura + reintentos, para que una conexión caída no deje el launcher esperando para siempre."""
+    for intento in range(1, intentos + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response, open(zip_path, 'wb') as out_file:
+                total = int(response.headers.get("Content-Length") or 0)
+                hecho, aviso, t0 = 0, 0, time.time()
+                while True:
+                    bloque = response.read(256 * 1024)
+                    if not bloque:
+                        break
+                    out_file.write(bloque)
+                    hecho += len(bloque)
+                    if hecho - aviso >= 2 * 1024 * 1024:
+                        aviso = hecho
+                        vel = hecho / max(time.time() - t0, 0.1) / 1048576
+                        de = f" de {total / 1048576:.0f}" if total else ""
+                        print(f"  [*] Descargando {version}: {hecho / 1048576:.0f}{de} MB ({vel:.1f} MB/s)")
+            return
+        except Exception as e:
+            if getattr(e, "code", None) == 404 or intento == intentos:
+                raise
+            print(f"  [WARN] Descarga interrumpida ({e}). Reintento {intento + 1} de {intentos}...")
+            time.sleep(3)
+
 
 def self_update_launcher(version_path):
     """Sustituye este launcher.py por el de la versión descargada (efectivo en el próximo arranque)."""
@@ -403,6 +552,7 @@ def main():
         expected_core_app = os.path.join(version_path, "Core", "app.py")
 
     self_update_launcher(version_path)
+    cleanup_old_versions(target_version)
 
     print(f"  [OK] Lanzando Archie (Motor {target_version})...")
     print("=======================================================\n")
