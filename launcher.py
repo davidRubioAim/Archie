@@ -11,8 +11,20 @@ import importlib
 import hashlib
 
 
-LAUNCHER_VERSION = "v0.45"
+LAUNCHER_VERSION = "v0.48"
 FROZEN = getattr(sys, 'frozen', False)
+
+# v0.46: instalado como programa (Archie.exe sin consola). Misma ID que pone Core/app.py en su ventana: así Windows
+# agrupa la ventana de Archie con el acceso directo del menú Inicio (que el instalador crea con esta ID) y al anclarla
+# a la barra de tareas guarda ese acceso directo, con su icono, en vez de python.exe.
+APP_ID = "AIM.Archie"
+# Pantalla de carga: el .exe instalado, o "python launcher.py --gui" para probarla sin compilar. "--console" la quita.
+GUI = (FROZEN or "--gui" in sys.argv) and "--console" not in sys.argv
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+# v0.47: el .exe puede compilarse con consola (por defecto, para debug) o sin ella (build_installer.ps1 -SinConsola).
+# Con consola, todo lo que imprimen launcher y Core sale en ella y además en logs\.
+HAS_CONSOLE = sys.stdout is not None and getattr(sys.stdout, "isatty", lambda: False)()
+NO_WINDOW = 0 if HAS_CONSOLE else getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Compilado con PyInstaller (--onefile), __file__ apunta a una carpeta temporal que se borra al cerrar:
 # la carpeta de trabajo tiene que ser la del .exe, o versions/ y config.ini se perderían en cada arranque.
@@ -78,6 +90,27 @@ def fetch_sheet_value(key):
         print(f"  [WARN] No se pudo leer la hoja de configuración ({e}).")
     return ""
 
+REMOTE = {}  # contenido del version.json del Gist (lo usa check_launcher_update)
+GIST_API = "https://api.github.com/gists/" + GIST_URL.split("/")[4]
+
+
+def read_gist():
+    """version.json del Gist. v0.48: primero por la API de GitHub, que no tiene la caché de ~5 min de
+    gist.githubusercontent.com (por eso a veces se seguía abriendo la versión anterior); si falla, la URL raw."""
+    hdr = {'Cache-Control': 'no-cache', 'User-Agent': 'Archie-Launcher'}
+    try:
+        req = urllib.request.Request(GIST_API, headers=dict(hdr, Accept="application/vnd.github+json"))
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            files = json.loads(resp.read().decode('utf-8')).get("files", {})
+        content = (files.get("version.json") or next(iter(files.values()), {})).get("content", "")
+        if content:
+            return json.loads(content)
+    except Exception as e:
+        print(f"  [WARN] API del Gist no disponible ({e}); uso la URL raw.")
+    req = urllib.request.Request(f"{GIST_URL}?t={int(time.time())}", headers=hdr)
+    with urllib.request.urlopen(req, timeout=4) as response:
+        return json.loads(response.read().decode('utf-8'))
+
 def sync_config():
     config = configparser.ConfigParser()
     config_path = os.path.join(BASE_DIR, 'config.ini')
@@ -98,11 +131,9 @@ def sync_config():
         config.read(config_path)
 
     try:
-        url_busted = f"{GIST_URL}?t={int(time.time())}"
-        req = urllib.request.Request(url_busted, headers={'Cache-Control': 'no-cache', 'User-Agent': 'Archie-Launcher'})
-        with urllib.request.urlopen(req, timeout=4) as response:
-            remote_data = json.loads(response.read().decode('utf-8'))
-            
+        remote_data = read_gist()
+        REMOTE.update(remote_data)
+
         remote_v = remote_data.get("version")
         remote_repo = remote_data.get("github_repo", DEFAULT_REPO)
         
@@ -180,10 +211,27 @@ def download_from_github(version, repo, token):
         
     except Exception as e:
         print(f"  [ERROR] Falló la descarga desde GitHub ({url}): {e}")
+        if getattr(e, "code", None) == 404:
+            print(f"  [ERROR] El tag {version} no existe en {repo} (¿se hizo git push del tag?) o el token no ve el repo.")
         if os.path.exists(zip_path): os.remove(zip_path)
         if 'temp_extract_dir' in locals() and os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir)
-        fail("Revisa la conexión y que GITHUB_TOKEN de la hoja tenga acceso al repo.")
+        return False
+    return True
+
+
+def latest_local_version(exclude=None):
+    """La versión descargada más alta que tenga Core/app.py (respaldo si la del Gist no se puede bajar)."""
+    import re
+    best = None
+    for d in os.listdir(VERSIONS_DIR):
+        if d == exclude or not re.fullmatch(r"v\d+(\.\d+)*", d):
+            continue
+        if os.path.exists(os.path.join(VERSIONS_DIR, d, "Core", "app.py")):
+            key = tuple(int(x) for x in d[1:].split("."))
+            if best is None or key > best[0]:
+                best = (key, d)
+    return best[1] if best else None
 
 def self_update_launcher(version_path):
     """Sustituye este launcher.py por el de la versión descargada (efectivo en el próximo arranque)."""
@@ -200,8 +248,19 @@ def self_update_launcher(version_path):
     except Exception as e:
         print(f"  [WARN] No se pudo actualizar el launcher: {e}")
 
+def message_box(text, title="Archie", flags=0x10):
+    """MessageBox nativo (seguro desde cualquier hilo). flags: 0x10 error, 0x40 info, 0x24 pregunta Sí/No. Devuelve 6 si Sí."""
+    try:
+        import ctypes
+        return ctypes.windll.user32.MessageBoxW(None, text, title, flags | 0x10000)  # 0x10000: en primer plano
+    except Exception:
+        return 0
+
 def fail(msg):
     print(f"  [ERROR] {msg}")
+    if GUI:
+        message_box(f"{msg}\n\nDetalle en:\n{LOG_PATH}", "Archie: no se pudo arrancar")
+        os._exit(1)  # con consola, el mensaje ya está en ella  # puede llamarse desde el hilo de trabajo: sys.exit solo cerraría ese hilo
     if FROZEN:
         input("\n  Pulsa Enter para cerrar...")
     sys.exit(1)
@@ -256,7 +315,7 @@ def install_private_python():
             "InstallAllUsers=0", f"TargetDir={RUNTIME_DIR}", "PrependPath=0",
             "Include_launcher=0", "Include_test=0", "Include_doc=0", "Shortcuts=0", "AssociateFiles=0",
             "Include_pip=1", "Include_tcltk=1",
-        ], check=False)
+        ], check=False, creationflags=NO_WINDOW)
     except Exception as e:
         print(f"  [WARN] Falló la instalación automática de Python: {e}")
     finally:
@@ -291,13 +350,15 @@ def ensure_dependencies(python_cmd, version_path):
                 return
 
     print("  [*] Verificando e instalando dependencias (solo la primera vez o si cambian)...\n")
-    pip_check = subprocess.run(python_cmd + ["-m", "pip", "--version"], capture_output=True, text=True)
+    pip_check = subprocess.run(python_cmd + ["-m", "pip", "--version"], capture_output=True, text=True,
+                               creationflags=NO_WINDOW)
     if pip_check.returncode != 0:
-        subprocess.run(python_cmd + ["-m", "ensurepip", "--upgrade"], capture_output=True, text=True)
+        subprocess.run(python_cmd + ["-m", "ensurepip", "--upgrade"], capture_output=True, text=True,
+                       creationflags=NO_WINDOW)
 
     result = subprocess.run(
         python_cmd + ["-m", "pip", "install", "-q", "--disable-pip-version-check", "-r", req_file],
-        capture_output=True, text=True
+        capture_output=True, text=True, creationflags=NO_WINDOW
     )
     if result.returncode != 0:
         print("  [WARN] Falló la instalación de algunas dependencias mediante pip:")
@@ -308,6 +369,8 @@ def ensure_dependencies(python_cmd, version_path):
     print("  [OK] Dependencias instaladas.")
 
 def main():
+    # v0.48: para que el botón "Update available" del Core pueda volver a abrir este launcher
+    os.environ["ARCHIE_LAUNCHER_EXE"] = sys.executable if FROZEN else os.path.abspath(__file__)
     print("=======================================================")
     print(f"  ARCHIE: Sincronizando entorno de trabajo... (launcher {LAUNCHER_VERSION})")
     print("=======================================================")
@@ -315,7 +378,9 @@ def main():
     setup_ssl()
     config = sync_config()
     
-    target_version = sys.argv[1] if len(sys.argv) > 1 else config.get('target_version', 'v0.24')
+    check_launcher_update(token_hint=config.get('github_token', fallback=""))
+
+    target_version = ARGS[0] if ARGS else config.get('target_version', 'v0.24')
     repo = config.get('github_repo', DEFAULT_REPO)
     # El token de la hoja manda; el de config.ini solo es respaldo
     token = fetch_sheet_value("GITHUB_TOKEN") or config.get('github_token', fallback="").strip()
@@ -326,8 +391,16 @@ def main():
     if os.path.exists(version_path) and not os.path.exists(expected_core_app):
         shutil.rmtree(version_path)
 
-    if not os.path.exists(version_path):
-        download_from_github(target_version, repo, token)
+    if not os.path.exists(version_path) and not download_from_github(target_version, repo, token):
+        # v0.48: si la versión publicada no se puede bajar, se abre la última que ya está en este equipo
+        fallback = latest_local_version(exclude=target_version)
+        if not fallback:
+            fail(f"No se pudo descargar {target_version} y no hay ninguna versión anterior en este equipo. "
+                 f"Revisa la conexión, que el tag exista en GitHub y que GITHUB_TOKEN de la hoja tenga acceso al repo.")
+        print(f"  [WARN] Abro la última versión disponible en este equipo: {fallback}")
+        target_version = fallback
+        version_path = os.path.join(VERSIONS_DIR, target_version)
+        expected_core_app = os.path.join(version_path, "Core", "app.py")
 
     self_update_launcher(version_path)
 
@@ -347,7 +420,297 @@ def main():
     importlib.invalidate_caches()
 
     # 3. Ejecutar la aplicación
-    subprocess.run(python_cmd + [expected_core_app], cwd=script_dir)
+    if not GUI:
+        subprocess.run(python_cmd + [expected_core_app], cwd=script_dir)
+        return
+    launch_core_hidden(python_cmd, expected_core_app, script_dir)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v0.46: modo programa instalado · v0.47: consola opcional y pantalla de carga AIM
+# ---------------------------------------------------------------------------------------------------------------
+import threading
+
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_PATH = os.path.join(LOG_DIR, "launcher.log")
+CORE_LOG_PATH = os.path.join(LOG_DIR, "archie_core.log")
+HIDE_SPLASH = threading.Event()  # el Core ya está abriendo su ventana: la de carga sobra
+CONSOLE_OUT = sys.stdout         # consola real (None si el .exe se compiló sin consola)
+
+
+def resource_dir():
+    """Recursos empaquetados (splash, fuentes): _internal del .exe; installer/ y Assets/ en el repo."""
+    return getattr(sys, "_MEIPASS", None)
+
+
+def resource(*partes_exe, repo=None):
+    base = resource_dir()
+    ruta = os.path.join(base, *partes_exe) if base else os.path.join(BASE_DIR, *(repo or partes_exe))
+    return ruta if os.path.exists(ruta) else None
+
+
+def set_app_id():
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        except Exception:
+            pass
+
+
+def launch_core_hidden(python_cmd, app_py, cwd):
+    """Arranca el Core. Todo lo que imprime va a logs/archie_core.log y, si hay consola, también a la consola.
+    Sin consola: python.exe con CREATE_NO_WINDOW (tampoco salen consolas de ffmpeg) y el launcher se cierra.
+    Con consola: el launcher sigue vivo mostrando la salida hasta que se cierra Archie."""
+    os.makedirs(LOG_DIR, exist_ok=True)
+    if os.path.exists(CORE_LOG_PATH):
+        try: os.replace(CORE_LOG_PATH, CORE_LOG_PATH + ".old")
+        except OSError: pass
+    log = open(CORE_LOG_PATH, "w", encoding="utf-8", errors="replace", buffering=1)
+    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", ARCHIE_LAUNCHER=LAUNCHER_VERSION)
+    print("  [OK] Abriendo la ventana de Archie...")
+    if HAS_CONSOLE:
+        proc = subprocess.Popen(python_cmd + [app_py], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, env=env, encoding="utf-8", errors="replace", bufsize=1)
+
+        def copiar():
+            for linea in proc.stdout:
+                log.write(linea)
+                try:
+                    CONSOLE_OUT.write(linea)
+                    CONSOLE_OUT.flush()
+                except Exception:
+                    pass
+        lector = threading.Thread(target=copiar, daemon=True)
+        lector.start()
+    else:
+        proc = subprocess.Popen(python_cmd + [app_py], cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, env=env, creationflags=NO_WINDOW)
+    for i in range(80):  # 8 s: tiempo para importar customtkinter/moviepy y abrir la ventana
+        if proc.poll() is not None:
+            break
+        if i == 30:
+            HIDE_SPLASH.set()
+        time.sleep(0.1)
+    HIDE_SPLASH.set()
+    if HAS_CONSOLE:
+        proc.wait()
+        lector.join(timeout=2)
+    log.close()
+    if proc.returncode not in (None, 0):
+        try:
+            with open(CORE_LOG_PATH, encoding="utf-8", errors="replace") as f:
+                tail = f.read()[-1500:]
+        except OSError:
+            tail = ""
+        message_box(f"Archie se cerró con un error (código {proc.returncode}).\n\n{tail}\n\nLog completo:\n{CORE_LOG_PATH}",
+                    "Archie: error")
+
+
+def _version_tuple(v):
+    import re
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or "")))
+
+
+def check_launcher_update(token_hint=""):
+    """El Core se actualiza solo (tag de GitHub). El propio Archie.exe solo cambia cuando cambia el launcher: si el
+    version.json del Gist trae "launcher_version" mayor que esta e "installer_url", se descarga el instalador nuevo y
+    se ejecuta en silencio (Inno Setup cierra Archie, sustituye el .exe y lo vuelve a abrir)."""
+    if not FROZEN:
+        return
+    remote_lv = REMOTE.get("launcher_version")
+    url = REMOTE.get("installer_url", "")
+    if not remote_lv or not url or _version_tuple(remote_lv) <= _version_tuple(LAUNCHER_VERSION):
+        return
+    if message_box(f"Hay una versión nueva del programa Archie ({remote_lv}, tienes {LAUNCHER_VERSION}).\n\n"
+                   f"¿Instalarla ahora? Tarda unos segundos y Archie se vuelve a abrir solo.",
+                   "Archie: actualización", 0x24) != 6:
+        return
+    import tempfile
+    dest = os.path.join(tempfile.gettempdir(), f"Archie_Setup_{remote_lv}.exe")
+    try:
+        print(f"  [*] Descargando el instalador {remote_lv}...")
+        headers = {"User-Agent": "Archie-Launcher"}
+        token = (fetch_sheet_value("GITHUB_TOKEN") or token_hint or "").strip()
+        if url.startswith("https://api.github.com/"):  # release de GitHub (sirve aunque el repo sea privado)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if "/releases/tags/" in url or url.rstrip("/").endswith("/releases/latest"):
+                # URL de la release: se busca el .exe entre sus assets
+                req = urllib.request.Request(url, headers=dict(headers, Accept="application/vnd.github+json"))
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    assets = json.loads(resp.read().decode("utf-8")).get("assets", [])
+                url = next(a["url"] for a in assets if a.get("name", "").lower().endswith(".exe"))
+            headers["Accept"] = "application/octet-stream"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
+            shutil.copyfileobj(resp, f)
+        with open(dest, "rb") as f:
+            if f.read(2) != b"MZ":
+                raise ValueError("lo descargado no es un .exe (¿enlace sin acceso directo?)")
+        subprocess.Popen([dest, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/RELAUNCH"], close_fds=True)
+        os._exit(0)
+    except Exception as e:
+        print(f"  [WARN] No se pudo actualizar el programa ({e}). Sigo con la versión instalada.")
+
+
+# --- Pantalla de carga --------------------------------------------------------------------------------------------
+# Geometría a escala 1 (la misma que installer/splash/generar_splash.py, que hornea fondo, logos y pista de la barra)
+SPLASH_W, SPLASH_H = 640, 360
+SPLASH_TEXTO = (44, 290)              # x, línea base inferior del texto de estado
+SPLASH_BARRA = (44, 302, 596)         # x0, y centro, x1
+SPLASH_FUENTE = "Figtree"
+
+
+def _registrar_fuentes():
+    carpeta = resource("fonts", repo=("Assets", "fonts"))
+    if not carpeta or os.name != "nt":
+        return False
+    import ctypes, glob
+    return sum(ctypes.windll.gdi32.AddFontResourceExW(r, 0x10, 0) > 0
+               for r in glob.glob(os.path.join(carpeta, "*.ttf"))) > 0   # 0x10 = FR_PRIVATE: solo este proceso
+
+
+def _dpi_aware():
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # nítido en pantallas al 125-200 %
+    except Exception:
+        pass
+
+
+def _esquinas_redondeadas(root):
+    """Windows 11: esquinas redondeadas también en una ventana sin marco (en Windows 10 no hace nada)."""
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        valor = ctypes.c_int(2)  # DWMWCP_ROUND
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(valor), ctypes.sizeof(valor))
+    except Exception:
+        pass
+
+
+def run_gui():
+    """Pantalla de carga con la estética AIM mientras se sincroniza (descargas, pip la primera vez).
+    Se oculta al abrirse el Core. Los mensajes van también a la consola (si la hay) y a logs/launcher.log."""
+    import queue
+    import tkinter as tk
+
+    os.makedirs(LOG_DIR, exist_ok=True)
+    msgs = queue.Queue()
+
+    class _Out:
+        def __init__(self):
+            self.f = open(LOG_PATH, "w", encoding="utf-8", errors="replace", buffering=1)
+        def write(self, text):
+            self.f.write(text)
+            if CONSOLE_OUT is not None:
+                try:
+                    CONSOLE_OUT.write(text)
+                    CONSOLE_OUT.flush()
+                except Exception:
+                    pass
+            for line in text.splitlines():
+                line = line.strip(" =")
+                if line:
+                    msgs.put(line.replace("[*] ", "").replace("[OK] ", "").replace("[WARN] ", "Aviso: ")
+                             .replace("[ERROR] ", "Error: "))
+        def flush(self):
+            self.f.flush()
+
+    sys.stdout = sys.stderr = _Out()
+
+    _dpi_aware()
+    fuente = SPLASH_FUENTE if _registrar_fuentes() else "Segoe UI"
+
+    root = tk.Tk()
+    root.title("Archie")
+    root.overrideredirect(True)
+    root.attributes("-alpha", 0.0)
+    try:
+        root.iconbitmap(default=resource("Archie.ico", repo=("installer", "Archie.ico")))
+    except Exception:
+        pass
+
+    # Escala de la pantalla -> imagen 100/150/200 %
+    escala_real = root.winfo_fpixels("1i") / 96.0
+    nombre, s = "100", 1.0
+    for n, v in (("150", 1.5), ("200", 2.0)):
+        if escala_real >= v - 0.13:
+            nombre, s = n, v
+    img_path = resource("splash", f"splash_{nombre}.png", repo=("installer", "splash", f"splash_{nombre}.png"))
+    w, h = round(SPLASH_W * s), round(SPLASH_H * s)
+    root.geometry(f"{w}x{h}+{(root.winfo_screenwidth() - w) // 2}+{(root.winfo_screenheight() - h) // 2}")
+
+    cv = tk.Canvas(root, width=w, height=h, highlightthickness=0, bd=0, bg="#ff2bd6")
+    cv.pack()
+    if img_path:
+        root._fondo = tk.PhotoImage(file=img_path)
+        cv.create_image(0, 0, image=root._fondo, anchor="nw")
+    else:  # sin imagen: degradado plano con los rosas AIM
+        cv.create_text(44 * s, 150 * s, text="Archie", anchor="w", fill="white", font=(fuente, -round(64 * s), "bold"))
+        x0, y, x1 = [v * s for v in SPLASH_BARRA]
+        cv.create_line(x0, y, x1, y, fill="#ff8fd8", width=round(4 * s), capstyle="round")
+
+    tx, ty = SPLASH_TEXTO
+    estado = cv.create_text(tx * s, ty * s, anchor="sw", fill="white", text="Comprobando actualizaciones...",
+                            font=(f"{fuente} Medium" if fuente == SPLASH_FUENTE else fuente, -round(13 * s)),
+                            width=round((SPLASH_W - 2 * tx) * s))
+    cv.create_text((SPLASH_W - 44) * s, (SPLASH_H - 24) * s, anchor="se", fill="#ffd9f1",
+                   text=f"launcher {LAUNCHER_VERSION}", font=(fuente, -round(10 * s)))
+    x0, yb, x1 = [v * s for v in SPLASH_BARRA]
+    tramo = cv.create_line(x0, yb, x0, yb, fill="white", width=round(4 * s), capstyle="round")
+
+    _esquinas_redondeadas(root)
+    done = threading.Event()
+    t0 = time.time()
+
+    def work():
+        try:
+            main()
+        except SystemExit:
+            pass
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            fail(f"Error inesperado: {e}")
+        finally:
+            done.set()
+
+    def anim():
+        if done.is_set():
+            root.destroy()
+            return
+        if HIDE_SPLASH.is_set():
+            if root.state() != "withdrawn":
+                root.withdraw()
+            root.after(200, anim)
+            return
+        t = time.time() - t0
+        root.attributes("-alpha", min(1.0, t / 0.25))          # aparece en 0,25 s
+        # barra indeterminada: un tramo del 28 % que recorre la pista con aceleración suave
+        largo = (x1 - x0) * 0.28
+        fase = (t % 1.6) / 1.6
+        fase = fase * fase * (3 - 2 * fase)
+        cabeza = x0 + (x1 - x0 + largo) * fase
+        cv.coords(tramo, max(x0, cabeza - largo), yb, min(x1, cabeza), yb)
+        try:
+            ultimo = None
+            while True:
+                ultimo = msgs.get_nowait()
+        except queue.Empty:
+            if ultimo:
+                cv.itemconfigure(estado, text=ultimo)
+        root.after(16, anim)
+
+    threading.Thread(target=work, daemon=True).start()
+    root.after(16, anim)
+    root.mainloop()
+
 
 if __name__ == "__main__":
-    main()
+    set_app_id()
+    if GUI:
+        run_gui()
+    else:
+        main()

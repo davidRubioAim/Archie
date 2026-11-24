@@ -37,3 +37,6 @@ Assets/plates/estadios/
 Assets/plates/plate_*
 !Assets/plates/plate_A_ancho*
 Assets/plates/*.psd
+
+# v0.46: instalador compilado (installer\build_installer.ps1)
+installer/Output/

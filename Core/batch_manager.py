@@ -51,7 +51,7 @@ class BatchManager:
         header = ctk.CTkFrame(self.modal, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=(20, 10))
         
-        ctk.CTkLabel(header, text="Select Stadiums for Batch Render", font=ctk.CTkFont(family="Montserrat", size=22, weight="bold"), text_color=self.app.c_magenta, wraplength=480, justify="left").pack(anchor="w")
+        ctk.CTkLabel(header, text="Select Stadiums for Batch Render", font=ctk.CTkFont(family="Figtree", size=22, weight="bold"), text_color=self.app.c_magenta, wraplength=480, justify="left").pack(anchor="w")
         ctk.CTkLabel(header, text="Filter by UEFA competition tags or search by name. The system will auto-solve overlaps and generate QC files.", font=self.app.font_t3, text_color=self.app.c_text_muted, justify="left", wraplength=480).pack(anchor="w", pady=(5, 0))
 
         actions = ctk.CTkFrame(self.modal, fg_color="transparent")

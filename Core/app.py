@@ -70,6 +70,12 @@ def find_asset(filename):
             return path
     return None
 
+# v1.06: Figtree en toda la app (Assets/fonts, registrada solo para este proceso)
+import fuentes
+import update_check  # v1.07: botón "Update available"
+fuentes.registrar(os.path.join(ASSETS_DIR, "fonts"), os.path.join(BASE_DIR, "Assets", "fonts"))
+fuentes.aplicar_a_customtkinter()
+
 # Windows agrupa la ventana bajo python.exe (y le pone su icono en la barra de tareas) si no tiene un AppUserModelID propio
 if os.name == "nt":
     try:
@@ -119,7 +125,12 @@ def aplicar_letterbox_pil(img, target_w, target_h, resample_method):
     return canvas
 
 def obtener_version_local():
-    """Lee la versión real dictada por el launcher desde config.ini maestro"""
+    """Versión abierta: la carpeta versions/vX.XX de la que se ejecuta (v1.07: manda sobre config.ini, que puede ir
+    por detrás si el launcher se abrió con una versión explícita desde el botón Update); si no, config.ini maestro."""
+    if os.path.basename(os.path.dirname(BASE_DIR)).lower() == "versions":
+        carpeta = os.path.basename(BASE_DIR)
+        if carpeta.startswith("v"):
+            return carpeta
     import configparser
     config_path = os.path.join(MASTER_DIR, "config.ini")
     if os.path.exists(config_path):
@@ -167,8 +178,50 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         except Exception as e:
             print(f"  [WARN] No se pudo poner el icono ({ico}): {e}")
 
+    # --- v1.07: actualización desde la app ---------------------------------------------------------------------------
+    def _update_programar(self):
+        threading.Thread(target=self._update_comprobar, daemon=True).start()
+        self.after(update_check.INTERVALO_S * 1000, self._update_programar)
+
+    def _update_comprobar(self):
+        nueva = update_check.version_nueva(self.current_version_str)
+        if nueva:
+            self.ui_llamar(self._update_mostrar, nueva)
+
+    def _update_mostrar(self, version):
+        self._update_version = version
+        self.btn_update.configure(text=f"\u2191  Update available \u00b7 {version}")
+        if not self.btn_update.winfo_ismapped():
+            self.btn_update.pack(side="right", padx=(10, 0), before=self.stadium_frame)
+
+    def on_update_click(self):
+        from tkinter import messagebox
+        v = self._update_version
+        if not v:
+            return
+        if not messagebox.askyesno(
+                "Update available",
+                f"Hay una versión nueva de Archie: {v} (tienes {self.current_version_str}).\n\n"
+                "Si actualizas ahora, Archie se cerrará y se perderán el proyecto actual y todas las campañas "
+                "abiertas que no hayan sido exportadas.\n\n"
+                "¿Actualizar y reiniciar Archie ahora?",
+                icon="warning", default="no", parent=self):
+            return
+        try:
+            ok = update_check.relanzar(MASTER_DIR, v)
+        except Exception as e:
+            ok = False
+            print(f"  [WARN] No se pudo abrir el launcher: {e}")
+        if not ok:
+            messagebox.showerror("Update", "No encuentro el launcher de Archie (Archie.exe). Cierra Archie y ábrelo "
+                                 "desde el menú Inicio para cargar la versión nueva.", parent=self)
+            return
+        print(f"  [OK] Actualizando a {v}: cerrando Archie...")
+        self.after(300, lambda: os._exit(0))
+
     def __init__(self):
         super().__init__()
+        fuentes.aplicar_a_tk(self)  # v1.06: Figtree también en los widgets tk y diálogos
         self.ui_iniciar_cola()  # v1.04: antes de lanzar ningún hilo
         self._mv_init_state()   # v0.71
         
@@ -192,9 +245,9 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.c_text_dark = "#1A1A1A" 
         self.c_text_muted = "#7A7A7A"
 
-        self.font_t1 = ctk.CTkFont(family="Montserrat", size=28, weight="bold")
-        self.font_t2 = ctk.CTkFont(family="Open Sans", size=12, weight="bold")
-        self.font_t3 = ctk.CTkFont(family="Open Sans", size=14, weight="normal")
+        self.font_t1 = ctk.CTkFont(family="Figtree", size=28, weight="bold")
+        self.font_t2 = ctk.CTkFont(family="Figtree", size=12, weight="bold")
+        self.font_t3 = ctk.CTkFont(family="Figtree", size=14, weight="normal")
 
         self.configure(fg_color=self.c_grey)
 
@@ -286,6 +339,14 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             
         self.stadium_frame = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.stadium_frame.pack(side="right", padx=10)
+
+        # v1.07: "Update available" en la esquina superior derecha (oculto hasta que el Gist publique una versión mayor)
+        self._update_version = None
+        self.btn_update = ctk.CTkButton(
+            self.header_frame, text="Update available", width=150, height=32, corner_radius=16,
+            font=ctk.CTkFont(size=12, weight="bold"), fg_color=self.c_magenta, hover_color="#C8007A",
+            text_color=self.c_white, command=self.on_update_click)
+        self.after(4000, self._update_programar)
 
         top_stadium_row = ctk.CTkFrame(self.stadium_frame, fg_color="transparent")
         top_stadium_row.pack(fill="x", anchor="e", pady=(0, 4))
@@ -557,7 +618,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.visor_3d.activo = self._v3d_visible
         self.visor_3d.on_escala = self._on_escala_3d
         # v0.74: medidas del estadio abajo a la izquierda de la vista (la cabecera tiene ahora las cámaras)
-        self.lbl_v3d_info = tk.Label(self.v3d_container, text="", font=("Segoe UI", 9), fg="gray", bg="#0c0c0c")
+        self.lbl_v3d_info = tk.Label(self.v3d_container, text="", font=("Figtree", 9), fg="gray", bg="#0c0c0c")
         self.lbl_v3d_info.place(relx=0, rely=1, x=6, y=-6, anchor="sw")
 
 

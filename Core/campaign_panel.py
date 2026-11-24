@@ -54,12 +54,13 @@ def pill_de(estado):
 def _fuente_pill(px):
     core = os.path.dirname(os.path.abspath(__file__))
     for base in (os.path.dirname(core), os.path.dirname(os.path.dirname(os.path.dirname(core)))):
-        cand = os.path.join(base, "Assets", "Montserrat-Bold.ttf")
-        if os.path.isfile(cand):
-            try:
-                return ImageFont.truetype(cand, px)
-            except Exception:
-                pass
+        for nombre in (os.path.join("fonts", "Figtree-Bold.ttf"), "Montserrat-Bold.ttf"):  # v1.06: Figtree
+            cand = os.path.join(base, "Assets", nombre)
+            if os.path.isfile(cand):
+                try:
+                    return ImageFont.truetype(cand, px)
+                except Exception:
+                    pass
     for cand in ("arialbd.ttf", "DejaVuSans-Bold.ttf"):
         try:
             return ImageFont.truetype(cand, px)
@@ -140,7 +141,7 @@ class CampaignPanel:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        fuente = tkfont.Font(f, family="Open Sans", size=9)
+        fuente = tkfont.Font(f, family="Figtree", size=9)
         self._fuente = fuente
         alto_fila = fuente.metrics("linespace") + 6
         w_code = fuente.measure("ADID-RMXX-261001") + 18
@@ -685,7 +686,7 @@ class CampaignPanel:
             except tk.TclError:
                 pass
             txt = codes[0] + (f"  (+{len(codes) - 1})" if len(codes) > 1 else "")
-            tk.Label(w, text=txt, bg=self.app.c_magenta, fg="white", font=("Open Sans", 10, "bold"),
+            tk.Label(w, text=txt, bg=self.app.c_magenta, fg="white", font=("Figtree", 10, "bold"),
                      padx=8, pady=3).pack()
             self._drag_win = w
         self._drag_win.geometry(f"+{e.x_root + 12}+{e.y_root + 8}")
@@ -1081,7 +1082,7 @@ class CampaignPanel:
         win.resizable(False, False)
         ok = info["status"] == ST_READY
         titulo = "Check the campaign files" if info["status"] == "review" else "Campaign Elements not available"
-        ctk.CTkLabel(win, text=titulo, font=ctk.CTkFont(family="Montserrat", size=18, weight="bold"),
+        ctk.CTkLabel(win, text=titulo, font=ctk.CTkFont(family="Figtree", size=18, weight="bold"),
                      text_color=app.c_magenta).pack(anchor="w", padx=24, pady=(20, 8))
         ctk.CTkLabel(win, text=mensaje(code, info), font=ctk.CTkFont(size=13), text_color=app.c_text_dark,
                      justify="left", wraplength=560, anchor="w").pack(anchor="w", padx=24)

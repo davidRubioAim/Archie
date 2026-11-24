@@ -98,7 +98,7 @@ class PanelAI:
         self.cv.grid(row=0, column=0, sticky="nsew")
         self._photo = None
         self._tam = None
-        self._fam = _familia(("Open Sans",), "Segoe UI")
+        self._fam = _familia(("Figtree", "Open Sans"), "Segoe UI")  # v1.06
         self._fam_fina = _familia(("Figtree Light", "Open Sans Light", "Segoe UI Light", "Segoe UI Semilight"), self._fam)
 
         app.chat_history = ctk.CTkTextbox(self.cv, wrap="word", fg_color="#FFFFFF", bg_color="#FFFFFF",
