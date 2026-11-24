@@ -126,6 +126,7 @@ def _cache_path(config_dir):
 
 def guardar_cache(config_dir, rows, source):
     try:
+        os.makedirs(config_dir, exist_ok=True)  # v1.04: en un equipo nuevo Config/ puede no existir
         with open(_cache_path(config_dir), "w", encoding="utf-8") as f:
             json.dump({"source": source, "saved_at": time.strftime("%Y-%m-%d %H:%M"), "rows": rows}, f,
                       ensure_ascii=False)
@@ -158,6 +159,11 @@ def load_campaigns(config_dir, log=print):
         log(f"  [CAMPAÑAS] Sin conexión con la hoja ({'; '.join(errores)[:160]}). "
             f"{len(campaigns)} códigos desde la copia local ({saved_at}).")
         return campaigns, {"source": "cache", "detail": detail, "invalid": invalid, "duplicates": dups}
+    except FileNotFoundError:
+        # v1.04: equipo nuevo, sin copia local todavía. No es un error: se creará en cuanto la hoja responda.
+        motivo = "; ".join(errores)[:160] or "sin URL de hoja configurada"
+        log(f"  [CAMPAÑAS] Hoja no disponible ({motivo}) y aún sin copia local. "
+            f"La pestaña CAMPAIGNS funcionará con el NAS; la copia se creará al conectar con la hoja.")
     except Exception as e:
-        log(f"  [CAMPAÑAS] Sin hoja ni copia local ({e}).")
-        return [], {"source": "none", "detail": "No campaign list available", "invalid": [], "duplicates": {}}
+        log(f"  [CAMPAÑAS] Sin hoja ni copia local válida ({e}).")
+    return [], {"source": "none", "detail": "No campaign list available", "invalid": [], "duplicates": {}}

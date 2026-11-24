@@ -38,6 +38,7 @@ from vista_3d import Visor3D, geometria_estadio, escala_textura
 from manual_mode import ManualModeMixin  # v0.71: MODO MANUAL en la Architecture Preview
 from json_import import JsonImportMixin  # v0.93: IMPORT JSON (arquitectura aprobada)
 from drop_global import GlobalDropMixin  # v0.93: soltar ELEMENTS / JSON en cualquier parte de la ventana
+from ui_thread import UiThreadMixin  # v1.04: after() seguro desde hilos (Python 3.14: 'main thread is not in main loop')
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -143,7 +144,7 @@ class CTkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
         super().__init__(*args, **kwargs)
         self.TkdndVersion = TkinterDnD._require(self)
 
-class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
+class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
     def _set_window_icon(self):
         """Icono de ventana y barra de tareas a partir de Assets/logo_Archie.ico.
         No se usa iconbitmap(): el lector de .ico de Tk no entiende las capas guardadas como PNG (lo habitual en .ico
@@ -165,6 +166,7 @@ class MegaStripApp(GlobalDropMixin, JsonImportMixin, ManualModeMixin, CTkDnD):
 
     def __init__(self):
         super().__init__()
+        self.ui_iniciar_cola()  # v1.04: antes de lanzar ningún hilo
         self._mv_init_state()   # v0.71
         
         # 1. Obtener versión dinámica al inicio

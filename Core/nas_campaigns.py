@@ -115,6 +115,7 @@ class NasIndex:
 
     def _guardar_cache(self):
         try:
+            os.makedirs(self.config_dir, exist_ok=True)  # v1.04: equipo nuevo sin Config/
             with open(self._cache_path(), "w", encoding="utf-8") as f:
                 json.dump({"root": self.root, "scanned_at": self.scanned_at, "codes": self.codes,
                            "brand_dirs": self.brand_dirs, "titles": self.titles, "elements": self.elements},
