@@ -11,7 +11,7 @@ import importlib
 import hashlib
 
 
-LAUNCHER_VERSION = "v0.50"
+LAUNCHER_VERSION = "v0.51"
 FROZEN = getattr(sys, 'frozen', False)
 
 # v0.46: instalado como programa (Archie.exe sin consola). Misma ID que pone Core/app.py en su ventana: así Windows
@@ -517,7 +517,23 @@ def ensure_dependencies(python_cmd, version_path):
         f.write(stamp)
     print("  [OK] Dependencias instaladas.")
 
+# v0.51: variables que pone PyInstaller en el .exe (sobre todo TCL_LIBRARY/TK_LIBRARY, apuntando a su Tcl 8.6.13 de
+# _internal). Si llegan al Python con el que corre el Core, su tkinter (p. ej. Tcl 8.6.15 del Python privado) carga el
+# init.tcl equivocado: "version conflict for package Tcl" y Archie no abre. Se quitan antes de lanzar ningún proceso.
+_PYI_ENV_VARS = ("TCL_LIBRARY", "TK_LIBRARY", "TCLLIBPATH", "TIX_LIBRARY", "PYTHONHOME", "PYTHONPATH",
+                 "_MEIPASS2", "_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL",
+                 "_PYI_SPLASH_IPC", "PYINSTALLER_RESET_ENVIRONMENT")
+
+
+def clean_child_env():
+    if not FROZEN:
+        return
+    for k in _PYI_ENV_VARS:
+        os.environ.pop(k, None)
+
+
 def main():
+    clean_child_env()
     # v0.48: para que el botón "Update available" del Core pueda volver a abrir este launcher
     os.environ["ARCHIE_LAUNCHER_EXE"] = sys.executable if FROZEN else os.path.abspath(__file__)
     print("=======================================================")
