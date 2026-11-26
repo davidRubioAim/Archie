@@ -74,6 +74,7 @@ def resolver(w_total, h_total, goal_line, cb_width, margin, archivos, base):
         geo = resolver_geo(w_total, h_total, goal_line, base.get("amplify_geo"))
         base1 = {k: v for k, v in base.items() if k != "amplify_geo"}
         base1["amplify"] = False
+        base1["_amplify_caso"] = True   # v1.10: el hotspot solver da más peso a las referencias Amplify
         config, msg = resolver(w_total, geo["h1"], goal_line, cb_width, margin, archivos, base1)
         config = dict(config or {})
         config["amplify"] = True

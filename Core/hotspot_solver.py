@@ -125,19 +125,19 @@ def cuota_goal_de(doc):
 def cuota_goal_aprendida(config_dir=None):
     """Mediana de cuota_goal_de() en Config/referencias. Las correcciones (manual / CORRECT en el nombre)
     cuentan doble: son el criterio más reciente. -> (cuota o None, nº de referencias usadas)"""
+    # v1.10: lee las mismas referencias que el solver (carpeta maestra + local + versión), no solo la local.
+    # En las Amplify, doc es su equivalente de una fila: el Goal Line es el aprobado, tal cual.
     vals = []
-    for path in glob.glob(os.path.join(_cfg_dir(config_dir), REFS_DIR, "*.json")):
-        if os.path.basename(path).startswith("_"):
-            continue
+    refs, _ = cargar_referencias(config_dir)
+    for r in refs:
+        doc = r["doc"]
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                doc = json.load(f)
             c = cuota_goal_de(doc)
         except Exception:
             continue
         if c is None:
             continue
-        peso = 2 if (doc.get("manual") or "CORRECT" in os.path.basename(path).upper()) else 1
+        peso = 2 if (doc.get("manual") or "CORRECT" in r["nombre"].upper()) else 1
         vals += [c] * peso
     if len(vals) < 3:
         return None, len(vals)
@@ -297,12 +297,15 @@ def puntuar(phi, pesos):
 
 
 # ---------------------------------------------------------------- referencias
-def _rasgos_caso(w, h, gl, cb, logo_w, anim_w, under):
+def _rasgos_caso(w, h, gl, cb, logo_w, anim_w, under, amplify=False):
     return [math.log(max(1e-6, logo_w / float(h))), math.log(max(1e-6, anim_w / float(max(1, logo_w)))),
-            gl / float(w), cb / float(w), 1.0 if under else 0.0]
+            gl / float(w), cb / float(w), 1.0 if under else 0.0, 1.0 if amplify else 0.0]
 
 
-_ESCALA = [0.15, 0.35, 0.05, 0.1, 0.5]   # v0.62: el logo pesa más que el CB al buscar la plantilla
+# v0.62: el logo pesa más que el CB al buscar la plantilla.
+# v1.10: Amplify con escala 1.0: una referencia Amplify se parece más a un caso Amplify (x1 frente a x0,61), pero
+# sigue sirviendo de plantilla a un estadio de una fila con geometría parecida.
+_ESCALA = [0.15, 0.35, 0.05, 0.1, 0.5, 1.0]
 
 
 def similitud(a, b):
@@ -319,44 +322,113 @@ def _moda(valores):
     return max(cuenta.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
+_MOTIVOS = {}   # v1.10: path -> por qué una referencia no se puede usar (para avisar al guardarla)
+
+
+def motivo_no_usable(path):
+    """v1.10: None si el solver puede aprender de la referencia; si no, el motivo (en inglés, para el chat)."""
+    r = leer_referencia(path)
+    return None if r else (_MOTIVOS.get(path) or "unknown format")
+
+
+def _deducir_margen(elementos, defecto=20):
+    todos = sorted((e["x_absoluta"], e["x_absoluta"] + e["width"]) for e in elementos)
+    huecos = [b0 - a1 for (a0, a1), (b0, b1) in zip(todos, todos[1:]) if b0 - a1 > 0]
+    return min(huecos) if huecos else defecto
+
+
+def equivalente_una_fila(doc, cfg, margin=None):
+    """v1.10: JSON de un estadio de 2 rows (Amplify) -> (doc equivalente de UNA fila al alto h1, h1, modo).
+    El Auto-Solver resuelve Amplify como un estadio de una fila de alto h1 (auto_solver.resolver) y el motor aplica
+    esa config a las dos filas, así que la referencia se aprende en ese mismo idioma:
+      - SINGLE ROW: la 1st row (ZONA_1..5) ya es un estadio completo de una fila a alto h1: se usa tal cual.
+        La 2nd row (FILA2_*) es un strip sin Goal Lines y no tiene hotspots de porterías: no se usa (de momento).
+      - AMPLIFY: las Goal Lines (ZONA_1 / ZONA_5) están a alto h1: se usan tal cual (lo aprobado). El touchline
+        amplificado (alto H) se rehace a alto h1 con la config aprobada y los tamaños del GL.
+    -> (None, motivo, None) si no se puede."""
+    zon = doc["zonas"]
+    H = int(doc["dimensiones_globales"]["height"])
+    w = int(doc["dimensiones_globales"]["width"])
+    geo_a = doc.get("amplify_geo") or cfg.get("amplify_geo") or {}
+    h1 = int(geo_a.get("h1") or H // 2)
+    modo = geo_a.get("modo") or "amplify"
+    fila1 = {k: copy.deepcopy(z) for k, z in zon.items() if k.startswith("ZONA_")}
+    out = copy.deepcopy({k: v for k, v in doc.items() if k != "zonas"})
+    out["dimensiones_globales"] = {"width": w, "height": h1}
+    out["zonas"] = fila1
+    if modo == "single":
+        return out, h1, modo
+    gl_els = [e for k in ("ZONA_1", "ZONA_5") for e in zon.get(k, {}).get("elementos", [])]
+    gl_logos = [e["width"] for e in gl_els if e["tipo"] == "static_logo"]
+    gl_anims = [e["width"] for e in gl_els if e["tipo"] == "anim_zone"]
+    if not gl_logos:
+        return None, "Amplify: no static logos on the Goal Lines", None
+    logo_w = _moda(gl_logos)
+    anim_w = max(gl_anims or [logo_w * 3])
+    if margin is None:
+        margin = _deducir_margen([e for e in gl_els if e["tipo"] in ("static_logo", "anim_zone")])
+    conf = {k: v for k, v in cfg.items() if not k.startswith("f2_") and k not in ("amplify", "amplify_geo", "margin")}
+    conf["amplify"] = False
+    conf["dims"] = {"static_logo": [logo_w, h1], "anim": [anim_w, h1]}
+    gl = int(zon.get("ZONA_1", {}).get("width", 0))
+    cb = int(zon.get("ZONA_3", {}).get("width", 0))
+    try:
+        datos = calcular_layout_data(w, h1, gl, cb, int(margin), _archivos_ref(), conf)
+    except Exception as e:
+        return None, f"Amplify: could not rebuild the touchline at 1st-row height ({e})", None
+    for k in ("ZONA_2", "ZONA_3", "ZONA_4"):
+        if k in (datos.get("zonas") or {}):
+            out["zonas"][k] = datos["zonas"][k]
+    return out, h1, modo
+
+
 def leer_referencia(path):
-    """JSON de arquitectura aprobado -> dict con geometría, dims, config, rasgos. None si no sirve."""
+    """JSON de arquitectura aprobado -> dict con geometría, dims, config, rasgos. None si no sirve
+    (el motivo queda en _MOTIVOS[path]). v1.10: las Amplify se leen como su equivalente de una fila."""
+    _MOTIVOS.pop(path, None)
     try:
         with open(path, "r", encoding="utf-8") as f:
             doc = json.load(f)
     except Exception as e:
         log_error(f"Referencia ilegible {os.path.basename(path)}: {e}")
+        _MOTIVOS[path] = f"unreadable JSON ({e})"
         return None
     if "zonas" not in doc or "dimensiones_globales" not in doc:
+        _MOTIVOS[path] = "not an architecture JSON (no zones / global dimensions)"
         return None
+    cfg = dict(doc.get("config") or {})
+    archie_cfg = (doc.get("archie") or {}).get("config") or {}
+    cfg.update({k: v for k, v in archie_cfg.items() if k not in cfg})
+    amplify, modo_amplify = bool(cfg.get("amplify")), None
+    if amplify:
+        doc, h_o_motivo, modo_amplify = equivalente_una_fila(doc, cfg, archie_cfg.get("margin"))
+        if doc is None:
+            _MOTIVOS[path] = h_o_motivo
+            return None
+        cfg["amplify"] = False
     zon = doc["zonas"]
     w = int(doc["dimensiones_globales"]["width"])
     h = int(doc["dimensiones_globales"]["height"])
     gl = int(zon.get("ZONA_1", {}).get("width", 0))
     cb = int(zon.get("ZONA_3", {}).get("width", 0))
-    cfg = dict(doc.get("config") or {})
-    archie_cfg = (doc.get("archie") or {}).get("config") or {}
-    cfg.update({k: v for k, v in archie_cfg.items() if k not in cfg})
-    if cfg.get("amplify"):
-        return None
     logos = [e for z in zon.values() for e in z["elementos"] if e["tipo"] == "static_logo"]
     anims = [e for z in zon.values() for e in z["elementos"] if e["tipo"] == "anim_zone"]
     if not logos:
+        _MOTIVOS[path] = "it has no static logos (the Auto-Solver learns from logo positions)"
         return None
     logo_w = _moda([e["width"] for e in logos])
     anim_w = max([e["width"] for e in anims] or [logo_w * 3])
     margin = archie_cfg.get("margin")
     if margin is None:   # se deduce: hueco mínimo entre elementos consecutivos
-        todos = sorted((e["x_absoluta"], e["x_absoluta"] + e["width"]) for e in logos + anims)
-        huecos = [b0 - a1 for (a0, a1), (b0, b1) in zip(todos, todos[1:]) if b0 - a1 > 0]
-        margin = min(huecos) if huecos else 20
+        margin = _deducir_margen(logos + anims)
     under = bool(cfg.get("logo_under"))
     geo = Geometria(w, h, gl, cb, cfg.get("edge_case"))
     return {
         "path": path, "nombre": os.path.basename(path), "doc": doc, "geo": geo,
         "w": w, "h": h, "gl": gl, "cb": cb, "logo_w": logo_w, "anim_w": anim_w, "margin": int(margin),
         "margin_tl": cfg.get("margin_tl"), "config": cfg, "under": under,
-        "caso": _rasgos_caso(w, h, gl, cb, logo_w, anim_w, under),
+        "amplify": amplify, "modo_amplify": modo_amplify,   # v1.10
+        "caso": _rasgos_caso(w, h, gl, cb, logo_w, anim_w, under, amplify),
     }
 
 
@@ -386,9 +458,11 @@ _CACHE = {"firma": None, "refs": []}
 
 
 def carpetas_referencias(config_dir=None):
-    """v0.64: 0) carpetas de ARCHIE_REFERENCIAS (Config\\.env); v0.62: 1) Config\\referencias de la instalación (las que guarda ★ en este PC);
-    2) Config\\referencias de la propia versión (las que van en el repo de GitHub y llegan con cada versión).
-    Si un fichero está en las dos, gana el local."""
+    """Carpetas de referencias, por prioridad:
+      0) v0.64: carpetas de ARCHIE_REFERENCIAS (Config\\.env): la memoria compartida ("master");
+      1) v0.62: Config\\referencias de la instalación (las que guarda ★ en este PC sin carpeta maestra);
+      2) Config\\referencias de la propia versión (las del repo de GitHub, llegan con cada versión).
+    v1.10: si el mismo nombre de fichero está en varias, gana la de MAYOR prioridad (maestra > local > versión)."""
     local = os.path.join(_cfg_dir(config_dir), REFS_DIR)
     version = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Config", REFS_DIR)
     carpetas = []
@@ -424,17 +498,67 @@ def cargar_referencias(config_dir=None):
     return _CACHE["refs"], firma
 
 
-def guardar_referencia(datos, nombre, config_dir=None):
-    """Guarda la arquitectura actual como referencia aprobada (botón ★ de Manual Edit).
-    v0.64: si hay carpeta maestra (ARCHIE_REFERENCIAS), se guarda allí; si no, en Config\\referencias local."""
+def _carpeta_guardado(config_dir=None):
     maestras = [c.strip().strip('"') for c in (os.getenv("ARCHIE_REFERENCIAS") or "").split(";") if c.strip()]
     maestras = [c for c in maestras if os.path.isdir(c)]
-    carpeta = maestras[0] if maestras else os.path.join(_cfg_dir(config_dir), REFS_DIR)
+    return maestras[0] if maestras else os.path.join(_cfg_dir(config_dir), REFS_DIR)
+
+
+def _nombre_limpio(nombre):
+    return "".join(c if c.isalnum() or c in "-_ ." else "_" for c in nombre).strip() or "referencia"
+
+
+def _contenido_referencia(datos):
+    return json.dumps(limpiar_referencia(datos), indent=2, ensure_ascii=False)
+
+
+def _huella(contenido):
+    """sha1 de la referencia sin el bloque archie (versión, fecha...): dos ★ de la misma arquitectura coinciden."""
+    try:
+        doc = json.loads(contenido)
+        doc.pop("archie", None)
+        contenido = json.dumps(doc, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        pass
+    return hashlib.sha1(contenido.encode("utf-8")).hexdigest()
+
+
+def referencia_existente(datos, nombre, config_dir=None):
+    """v1.10: antes de guardar con ★. -> (estado, path)
+      ("nueva", None)       no hay ninguna referencia con ese nombre
+      ("igual", path)       ya está guardada exactamente esa arquitectura
+      ("distinta", path)    hay otra arquitectura con ese nombre (de este PC, de otro equipo o de la versión)"""
+    objetivo = f"{_nombre_limpio(nombre)}.json".lower()
+    nuevo = _huella(_contenido_referencia(datos))
+    for carpeta in carpetas_referencias(config_dir):
+        for p in glob.glob(os.path.join(carpeta, "*.json")):
+            if os.path.basename(p).lower() != objetivo:
+                continue
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    viejo = _huella(f.read())
+            except OSError:
+                return "distinta", p
+            return ("igual" if viejo == nuevo else "distinta"), p
+    return "nueva", None
+
+
+def guardar_referencia(datos, nombre, config_dir=None, variante=False):
+    """Guarda la arquitectura actual como referencia aprobada (botón ★ de Manual Edit).
+    v0.64: si hay carpeta maestra (ARCHIE_REFERENCIAS), se guarda allí; si no, en Config\\referencias local.
+    v1.10: variante=True guarda junto a la que ya hay con ese nombre (<nombre>__<hash8>.json) en vez de
+    sustituirla. Escritura atómica (temporal + os.replace): nadie lee un JSON a medio escribir."""
+    carpeta = _carpeta_guardado(config_dir)
     os.makedirs(carpeta, exist_ok=True)
-    limpio = "".join(c if c.isalnum() or c in "-_ ." else "_" for c in nombre).strip() or "referencia"
+    limpio = _nombre_limpio(nombre)
+    contenido = _contenido_referencia(datos)
     path = os.path.join(carpeta, f"{limpio}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(limpiar_referencia(datos), f, indent=2, ensure_ascii=False)
+    if variante:
+        path = os.path.join(carpeta, f"{limpio}__{_huella(contenido)[:8]}.json")
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(contenido)
+    os.replace(tmp, path)
     return path
 
 
@@ -510,7 +634,8 @@ def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, exc
     """Devuelve (mejor, todos los evaluados). logo_w / anim_w ya escalados al alto del strip."""
     clase = clase_logo(logo_w / float(max(1, geo.h)), reglas)
     objetivos = objetivos_por_clase(clase, reglas, geo.cb)
-    caso = _rasgos_caso(geo.w, geo.h, geo.gl, geo.cb, logo_w, anim_w, bool(base.get("logo_under")))
+    caso = _rasgos_caso(geo.w, geo.h, geo.gl, geo.cb, logo_w, anim_w, bool(base.get("logo_under")),
+                        bool(base.get("_amplify_caso")))   # v1.10
     ref, sim = _plantilla(caso, [r for r in refs if r is not excluir])
     estructura_ref = None
     if ref is not None and sim >= 0.5:
@@ -593,6 +718,7 @@ def _base_ref(r):
             "show_cb": c.get("show_cb", True), "invert_order": bool(c.get("invert_order", False)),
             "max_anim_gl": int(c.get("max_anim_gl", 0)), "max_anim_tl": int(c.get("max_anim_tl", 0)),
             "margin_tl": r.get("margin_tl"), "edge_case": c.get("edge_case"),
+            "_amplify_caso": bool(r.get("amplify")),   # v1.10
             "dims": {"static_logo": [r["logo_w"], r["h"]], "anim": [r["anim_w"], r["h"]]}}
 
 

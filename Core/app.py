@@ -2413,14 +2413,65 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             return
         estadio = self.stadium_selector_global.get() or "stadium"
         logo = os.path.splitext(os.path.basename(self.archivos_cargados.get("static_logo") or "logo"))[0]
+        nombre = f"{estadio} - {logo}"
+        # v1.10: una ★ no pisa en silencio otra referencia con el mismo nombre (de este PC o de otro equipo)
         try:
-            path = hotspot_solver.guardar_referencia(datos, f"{estadio} - {logo}", CONFIG_DIR)
+            estado, existente = hotspot_solver.referencia_existente(datos, nombre, CONFIG_DIR)
+        except Exception as e:
+            log_error(f"No se pudo comprobar la referencia existente: {e}")
+            estado, existente = "nueva", None
+        if estado == "igual":
+            self.append_chat("Archie", f"★ This architecture is already saved as a reference: {os.path.basename(existente)}.")
+            return
+        if estado == "distinta":
+            self._preguntar_referencia(datos, nombre, existente)
+            return
+        self._guardar_referencia(datos, nombre)
+
+    def _guardar_referencia(self, datos, nombre, variante=False):
+        try:
+            path = hotspot_solver.guardar_referencia(datos, nombre, CONFIG_DIR, variante=variante)
             n = len(hotspot_solver.cargar_referencias(CONFIG_DIR)[0])
-            self.append_chat("Archie", f"★ Saved as approved reference ({n} in total): {os.path.basename(path)}. "
-                                       "The Auto-Solver will learn from it on the next Create Architecture.")
+            motivo = hotspot_solver.motivo_no_usable(path)   # v1.10
+            if motivo:
+                self.append_chat("Archie", f"★ Saved as reference: {os.path.basename(path)}, but the Auto-Solver "
+                                           f"can't learn from it: {motivo}. ({n} usable references in total.)")
+            else:
+                self.append_chat("Archie", f"★ Saved as approved reference ({n} in total): {os.path.basename(path)}. "
+                                           "The Auto-Solver will learn from it on the next Create Architecture.")
         except Exception as e:
             log_error(f"No se pudo guardar la referencia: {e}")
             self.append_chat("Archie", f"★ Could not save the reference: {e}")
+
+    def _preguntar_referencia(self, datos, nombre, existente):
+        """v1.10: ya hay otra referencia con ese nombre -> "Replace" (corrección) o "Save as variant" (las dos cuentan)."""
+        self.append_chat("Archie", f"★ There is already a different reference with this name: "
+                                   f"{os.path.basename(existente)}. Replace it (if this one is the correction) "
+                                   "or keep both as variants?")
+        tb = self.chat_history._textbox
+        caja_btn = ctk.CTkFrame(tb, fg_color="#FFFFFF")
+        botones = []
+
+        def responder(variante):
+            for b in botones:
+                try: b.configure(state="disabled")
+                except Exception: pass
+            self._guardar_referencia(datos, nombre, variante=variante)
+
+        b_rep = ctk.CTkButton(caja_btn, text="Replace", width=110, height=28, corner_radius=14,
+                              fg_color=self.c_magenta, hover_color="#D1007A", text_color="#FFFFFF",
+                              command=lambda: responder(False))
+        b_var = ctk.CTkButton(caja_btn, text="Save as variant", width=130, height=28, corner_radius=14,
+                              fg_color="#E6E6E6", hover_color="#CFCFCF", text_color="#333333",
+                              command=lambda: responder(True))
+        botones += [b_rep, b_var]
+        b_rep.pack(side="left", padx=(0, 8))
+        b_var.pack(side="left")
+        self.chat_history.configure(state="normal")
+        tb.window_create("end", window=caja_btn)
+        self.chat_history.insert("end", "\n\n")
+        self.chat_history.see("end")
+        self.chat_history.configure(state="disabled")
 
     def config_actual(self):
         """Config de la arquitectura actual para guardarla por campaña (sin edge_case, con margin)."""
