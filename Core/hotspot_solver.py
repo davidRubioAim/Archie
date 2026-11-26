@@ -475,6 +475,7 @@ def _base_conf(base, reglas):
         "margin_tl": base.get("margin_tl"),
         "edge_case": base.get("edge_case"),
         "even_spacing": True,   # v0.62: clusters de hotspot repartidos entre las ANIM ZONES
+        **({"overrides": dict(base["overrides"])} if base.get("overrides") else {}),   # v1.08
     }
 
 
@@ -527,14 +528,16 @@ def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, exc
                           int(rc.get("qty_tl", 1)), bool(rc.get("hide_extreme_edges", False)))
 
     combos = set()
-    for qg in reglas["goal_opciones"]:
+    # v1.08: override confirmado en el chat (porterías sin logos): el solver no vuelve a meterlos
+    sin_goal = bool((base.get("overrides") or {}).get("allow_no_goal_logos"))
+    for qg in ([0] if sin_goal else reglas["goal_opciones"]):
         # v1.03: con GL estándar el corner del fondo lleva siempre su logo en el GL y otro en el TL
         for qc in reglas["corner_opciones"] + ([] if base.get("gl_estandar", True) and not base.get("logo_under") else [0]):
             for qcb in reglas["centro_opciones"] + [0]:
                 for qtl in reglas["separador_opciones"]:
                     for hide in (False, True):
                         combos.add((qg, qc, qcb, qtl, hide))
-    if plantilla_conf:
+    if plantilla_conf and not sin_goal:
         combos.add(plantilla_conf)
 
     evaluados = []

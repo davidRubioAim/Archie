@@ -294,6 +294,7 @@ class JsonImportMixin:
         self.current_hide_edges = bool(cfg.get("hide_extreme_edges", False))
         self.current_under_hotspots = bool(cfg.get("under_hotspots", False))
         self.current_even_spacing = bool(cfg.get("even_spacing", False))
+        self.arch_overrides = dict(cfg.get("overrides") or {})   # v1.08: excepciones de arquitectura
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
         self.arch_key = self.solver_key = self._arch_key()   # JSON aprobado = arquitectura aprobada

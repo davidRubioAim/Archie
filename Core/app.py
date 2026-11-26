@@ -15,8 +15,8 @@ import compat_ffmpeg  # noqa: F401  v0.78: MoviePy con ffmpeg 8 ('Stream group')
 from moviepy import VideoFileClip
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+import gemini_client  # v1.08: cliente Gemini en v1beta (system_instruction no existe en v1)
+import reglas_arquitectura as reglas_arq  # v1.08: avisos de arquitectura con confirmación en el chat
 
 from motor_distribucion import calcular_layout_data, generar_imagen_arquitectura, segmentos_arquitectura
 from edge_cases import edge_de, filas_system, restar_zonas, pintar_zonas_negras, logos_bajo_anims
@@ -270,6 +270,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.arch_stadium = None            # estadio para el que se calculó la arquitectura por defecto
         self.arch_key = None                # v0.66: estadio + logo + anims de la arquitectura actual
         self.solver_key = None              # v0.66: estadio + logo + anims que resolvió el auto-solver
+        self.arch_overrides = {}            # v1.08: excepciones de arquitectura confirmadas en el chat
+        self._aviso_pendiente = None        # v1.08: aviso de arquitectura esperando Continuar / Cancelar
         self.preview_dirty = False          # hay cambios sin aplicar a la preview
         self.render_gen = 0                 # id del render en curso (descarta resultados obsoletos)
         self.render_busy = False
@@ -928,9 +930,11 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                 "f2_custom": self.f2_custom_var.get() if hasattr(self, "f2_custom_var") else False,
             },
             "manual": self._mv_estado(),   # v0.71: arquitectura del MODO MANUAL (None = automático)
+            "overrides": dict(getattr(self, "arch_overrides", {}) or {}),   # v1.08
         }
 
     def _apply_ui_state(self, state):
+        self.arch_overrides = dict(state.get("overrides") or {})   # v1.08 (antes de las etiquetas)
         # 1. Aplicar Inputs
         for k, v in state["inputs"].items():
             if k in self.inputs:
@@ -1323,24 +1327,19 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         7. CONSERVATION OF STATE: Review the [STATE] block provided in the user prompt. ONLY modify parameters that are necessary to fulfill the user's request or solve spatial overlap warnings.
         8. ANIM ZONES LIMITS: To explicitly cap the number of video animations displayed in Goal Lines or Touchlines, modify `max_anim_gl` or `max_anim_tl` (0 = Auto/No limit, 1-10 = explicit limit). When capped, the engine automatically fills remaining space with static logos acting as spacers.
 
+        BASE ARCHITECTURE RULES (motor_distribucion / hotspot_solver):
+""" + reglas_arq.REGLAS_PROMPT + """
         CRITICAL OUTPUT FORMAT:
         You are a strict configuration API. Return a MINIMAL valid JSON object containing ONLY the keys that need to be modified from the current state. Do NOT use markdown code blocks if possible, just pure JSON.
-        Valid keys you can include: "qty_goal", "qty_corner", "qty_cb", "qty_tl", "margin", "margin_tl", "stretch_limit", "squash_logos", "stretch_fit_per", "gl_offset", "corner_logo", "logo_under", "qty_gl_under", "qty_tl_under", "show_cb", "amplify", "invert_order", "max_anim_gl", "max_anim_tl", "explicacion".
-        
+        Valid keys you can include: "qty_goal", "qty_corner", "qty_cb", "qty_tl", "margin", "margin_tl", "stretch_limit", "squash_logos", "stretch_fit_per", "gl_offset", "corner_logo", "logo_under", "qty_gl_under", "qty_tl_under", "show_cb", "amplify", "invert_order", "max_anim_gl", "max_anim_tl", "explicacion", "requires_confirmation", "architecture_warning", "override".
+
         The "explicacion" key MUST be included: a single, clear, professional sentence explaining the architectural change made.
         """
 
         try:
-            self.ai_client = genai.Client(api_key=api_key)
-            cfg_ai = dict(system_instruction=system_instruction, response_mime_type="application/json")
-            # v1.05: gemini-2.5-flash "piensa" por defecto (varios segundos por mensaje). Para devolver un JSON de
-            # parámetros no hace falta: presupuesto 0 por defecto. ARCHIE_AI_THINKING=-1 (dinámico) o N tokens en Config/.env.
-            try:
-                presupuesto = int(os.getenv("ARCHIE_AI_THINKING", "0") or 0)
-                cfg_ai["thinking_config"] = types.ThinkingConfig(thinking_budget=presupuesto)
-            except Exception as e:
-                debug(f"Gemini sin thinking_config: {e}")
-            self.ai_config = types.GenerateContentConfig(**cfg_ai)
+            # v1.08: cliente y config en gemini_client (api_version v1beta fija: con v1 Gemini rechaza system_instruction)
+            self.ai_client = gemini_client.crear_cliente(api_key)
+            self.ai_config = gemini_client.config_chat(system_instruction)
             self.append_chat("Archie", "Describe the layout you want, e.g. \"2 logos between animations in the touchline\".")
         except Exception as e:
             self.append_chat("System Error", f"⚠️ Failed to initialize AI: {str(e)}")
@@ -1391,6 +1390,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
         self.arch_key = self.solver_key = self._arch_key()   # v0.66
+        self.arch_overrides = {}   # v1.08: arquitectura por defecto = sin excepciones confirmadas
         self._actualizar_sliders_desde_ia(*slider_args)
         self.append_chat("System AI", msg)
         self.start_preview_render()
@@ -1442,8 +1442,14 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         # Sliders, chat y preview se aplican juntos en el hilo principal (y nada si se canceló)
         self.after(0, self._on_solver_done, gen, slider_args, msg)
 
-    def aplicar_parametros_ia(self, qty_goal: int, qty_corner: int, qty_cb: int, qty_tl: int, stretch_limit: int, squash_logos: bool, stretch_fit_per: bool, gl_offset: int, corner_logo: bool, logo_under: bool = False, qty_gl_under: int = 1, qty_tl_under: int = 1, show_cb: bool = True, amplify: bool = False, invert_order: bool = False, max_anim_gl: int = 0, max_anim_tl: int = 0, margin: int = 20, margin_tl: int = -1) -> dict:
+    def aplicar_parametros_ia(self, qty_goal: int, qty_corner: int, qty_cb: int, qty_tl: int, stretch_limit: int, squash_logos: bool, stretch_fit_per: bool, gl_offset: int, corner_logo: bool, logo_under: bool = False, qty_gl_under: int = 1, qty_tl_under: int = 1, show_cb: bool = True, amplify: bool = False, invert_order: bool = False, max_anim_gl: int = 0, max_anim_tl: int = 0, margin: int = 20, margin_tl: int = -1, overrides: dict = None) -> dict:
         self.reset_zooms_and_pan()
+        # v1.08: excepciones de arquitectura: las ya confirmadas + las nuevas. Pedir logos en el goal anula
+        # la de porterías sin logos (vuelve el reparto automático).
+        ov = dict(getattr(self, "arch_overrides", {}) or {})
+        ov.update(overrides or {})
+        if int(qty_goal or 0) > 0:
+            ov.pop("allow_no_goal_logos", None)
         amplify = bool(amplify) and AMPLIFY_ACTIVO   # v0.91: AMPLIFY desactivado de momento
         config_prueba = {
             "stretch_limit": stretch_limit, "squash_logos": squash_logos, "stretch_fit_per": stretch_fit_per,
@@ -1460,6 +1466,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             "amplify_geo": getattr(self, "amplify_geo_actual", None),    # v0.95
             **self._config_f2(),
         }
+        if ov:
+            config_prueba["overrides"] = ov
         
         w_total = int(self.inputs["Width"].get() or 0)
         h_total = int(self.inputs["Height"].get() or 0)
@@ -1481,7 +1489,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             # v0.66: si el auto-solver aún no ha calculado esta arquitectura (sliders por defecto o heredados de
             # otro logo/estadio) y el chat no ha tocado los logos del goal, prueba a meter los que pide el logo
             extra = ""
-            if self.solver_key != self._arch_key() and int(qty_goal) == int(self.qty_goal_slider.get()):
+            if (self.solver_key != self._arch_key() and int(qty_goal) == int(self.qty_goal_slider.get())
+                    and not ov.get("allow_no_goal_logos")):
                 conf2, msg_goal = completar_goal(w_total, h_total, goal_line, cb_width, margin_simulado,
                                                  self.archivos_cargados, config_prueba)
                 if msg_goal:
@@ -1489,7 +1498,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                     self.after(0, self.append_chat, "System AI", msg_goal)
                     extra = (f" Also, the goal now has {qty_goal} logos because they fit automatically "
                              "(tell the user).")
-            self.after(0, self._actualizar_sliders_desde_ia, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under, qty_gl_under, qty_tl_under, show_cb, amplify, invert_order, max_anim_gl, max_anim_tl, margin_simulado, True, config_prueba["margin_tl"])
+            self.after(0, self._actualizar_sliders_desde_ia, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under, qty_gl_under, qty_tl_under, show_cb, amplify, invert_order, max_anim_gl, max_anim_tl, margin_simulado, True, config_prueba["margin_tl"], ov)
             
             return {
                 "status": "SUCCESS", 
@@ -1500,7 +1509,9 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             log_error(f"Error in aplicar_parametros_ia: {e}")
             return {"status": "ERROR", "mensaje": f"Math engine failed: {e}"}
     
-    def _actualizar_sliders_desde_ia(self, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under=False, qty_gl_under=1, qty_tl_under=1, show_cb=True, amplify=False, invert_order=False, max_anim_gl=0, max_anim_tl=0, margin=20, render_now=False, margin_tl=None):
+    def _actualizar_sliders_desde_ia(self, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under=False, qty_gl_under=1, qty_tl_under=1, show_cb=True, amplify=False, invert_order=False, max_anim_gl=0, max_anim_tl=0, margin=20, render_now=False, margin_tl=None, overrides=None):
+        if overrides is not None:   # v1.08: None = no se tocan las excepciones de arquitectura
+            self.arch_overrides = dict(overrides)
         if hasattr(self, "invert_order_var"):
             self.invert_order_var.set(invert_order)
             
@@ -1595,7 +1606,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                 "qty_gl_under": int(self.qty_gl_under_slider.get()),
                 "max_a_gl": int(self.max_anim_gl_slider.get()),
                 "max_a_tl": int(self.max_anim_tl_slider.get()),
-                "qty_tl_under": int(self.qty_tl_under_slider.get())
+                "qty_tl_under": int(self.qty_tl_under_slider.get()),
+                "ov": dict(getattr(self, "arch_overrides", {}) or {}),   # v1.08: excepciones ya confirmadas
             },
             "result": {
                 "anims_rendered": anims_count,
@@ -1606,62 +1618,49 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         prompt_enriquecido = f"{user_text}\n\n[STATE:{json.dumps(estado_mini, separators=(',', ':'))}]"
         
         self.btn_send_ai.configure(state="disabled", text="...")
-        threading.Thread(target=self._ai_worker, args=(prompt_enriquecido,), daemon=True).start()
+        self._cerrar_aviso_arquitectura()   # v1.08: una pregunta nueva descarta el aviso pendiente
+        threading.Thread(target=self._ai_worker, args=(prompt_enriquecido, user_text), daemon=True).start()
 
-    def _ai_worker(self, text):
+    def _ai_worker(self, text, user_text=""):
         import time
         max_intentos = 3
-        
+
         for intento in range(max_intentos):
             try:
                 with medir("Chat: respuesta de Gemini"):   # v1.05
                     response = self.ai_client.models.generate_content(
-                        model="gemini-2.5-flash", 
+                        model=gemini_client.MODELO_CHAT,
                         contents=text,
                         config=self.ai_config
                     )
-                
+
                 try:
                     raw_json = response.text.replace('```json', '').replace('```', '').strip()
                     datos_ia = json.loads(raw_json)
-                    
-                    resultado = self.aplicar_parametros_ia(
-                        margin=datos_ia.get("margin", int(self.margin_slider.get())),
-                        margin_tl=datos_ia.get("margin_tl", int(self.margin_tl_slider.get())),
-                        qty_goal=datos_ia.get("qty_goal", int(self.qty_goal_slider.get())),
-                        qty_corner=datos_ia.get("qty_corner", int(self.qty_corner_slider.get())),
-                        qty_cb=datos_ia.get("qty_cb", int(self.qty_cb_slider.get())),
-                        qty_tl=datos_ia.get("qty_tl", int(self.qty_tl_slider.get())),
-                        stretch_limit=datos_ia.get("stretch_limit", int(self.stretch_slider.get())),
-                        squash_logos=datos_ia.get("squash_logos", self.squash_logos_var.get()),
-                        stretch_fit_per=datos_ia.get("stretch_fit_per", self.stretch_fit_var.get()), 
-                        gl_offset=datos_ia.get("gl_offset", int(self.offset_slider.get())),
-                        corner_logo=datos_ia.get("corner_logo", self.corner_logo_var.get()),
-                        logo_under=datos_ia.get("logo_under", self.logo_under_var.get()),
-                        qty_gl_under=datos_ia.get("qty_gl_under", int(self.qty_gl_under_slider.get())),
-                        qty_tl_under=datos_ia.get("qty_tl_under", int(self.qty_tl_under_slider.get())),
-                        show_cb=datos_ia.get("show_cb", self.show_cb_var.get()),
-                        amplify=datos_ia.get("amplify", self.amplify_var.get()),
-                        invert_order=datos_ia.get("invert_order", getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get()),
-                        max_anim_gl=datos_ia.get("max_anim_gl", int(self.max_anim_gl_slider.get())),
-                        max_anim_tl=datos_ia.get("max_anim_tl", int(self.max_anim_tl_slider.get()))
-                    )
-                    
-                    if resultado["status"] == "OVERLAP ERROR":
-                        self.after(0, self.append_chat, "System Warning", resultado["mensaje"])
-                    else:
-                        explicacion = datos_ia.get("explicacion", "Layout adjusted successfully.")
-                        self.after(0, self.append_chat, "AI Assistant", explicacion)
-                        
+                    if not isinstance(datos_ia, dict):
+                        raise json.JSONDecodeError("not an object", raw_json, 0)
+
+                    # v1.08: avisos de arquitectura. El del LLM y, por si no lo detecta, la validación local
+                    aviso = reglas_arq.aviso_del_llm(datos_ia)
+                    locales = reglas_arq.detectar_conflictos(user_text, datos_ia, self._config_ui())
+                    if locales:
+                        aviso = dict(locales[0], reason=(aviso or {}).get("reason") or locales[0]["reason"])
+                    if aviso:
+                        accion = dict(reglas_arq.limpiar_datos_ia(datos_ia), **aviso.get("cambios", {}))
+                        self.after(0, self._mostrar_aviso_arquitectura, aviso, accion)
+                        self.after(0, self._restaurar_botones_ia)
+                        return
+
+                    self._aplicar_datos_ia(datos_ia)
                     self.after(0, self._restaurar_botones_ia)
-                    return 
-                    
+                    return
+
                 except json.JSONDecodeError:
                     self.after(0, self.append_chat, "System Error", "Formatting error: The AI did not return a valid JSON.")
                     debug(f"Raw AI response: {response.text}")
                     self.after(0, self._restaurar_botones_ia)
                     return
-                    
+
             except Exception as e:
                 error_str = str(e)
                 if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "503" in error_str or "UNAVAILABLE" in error_str:
@@ -1673,14 +1672,101 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                     else:
                         import re
                         match = re.search(r'retry in (\d+(?:\.\d+)?)s', error_str)
-                        segundos = int(float(match.group(1))) if match else 15 
+                        segundos = int(float(match.group(1))) if match else 15
                         self.after(0, self.append_chat, "System Warning", "⚠️ Google servers are experiencing high demand. Cooling down the system...")
                         self.after(0, lambda: self._iniciar_cooldown_ia(segundos))
                         return
                 else:
+                    log_error(f"Chat Gemini: {error_str}")
                     self.after(0, self.append_chat, "System Error", f"Critical error: {error_str[:150]}...")
                     self.after(0, self._restaurar_botones_ia)
                     return
+
+    def _aplicar_datos_ia(self, datos_ia, overrides=None):
+        """Aplica el JSON del chat (hilo de trabajo: calcula el layout). v1.08: overrides = excepciones de
+        arquitectura confirmadas por el usuario ({"allow_no_goal_logos": True}...)."""
+        g = lambda k, actual: datos_ia.get(k, actual)
+        resultado = self.aplicar_parametros_ia(
+            margin=g("margin", int(self.margin_slider.get())),
+            margin_tl=g("margin_tl", int(self.margin_tl_slider.get())),
+            qty_goal=g("qty_goal", int(self.qty_goal_slider.get())),
+            qty_corner=g("qty_corner", int(self.qty_corner_slider.get())),
+            qty_cb=g("qty_cb", int(self.qty_cb_slider.get())),
+            qty_tl=g("qty_tl", int(self.qty_tl_slider.get())),
+            stretch_limit=g("stretch_limit", int(self.stretch_slider.get())),
+            squash_logos=g("squash_logos", self.squash_logos_var.get()),
+            stretch_fit_per=g("stretch_fit_per", self.stretch_fit_var.get()),
+            gl_offset=g("gl_offset", int(self.offset_slider.get())),
+            corner_logo=g("corner_logo", self.corner_logo_var.get()),
+            logo_under=g("logo_under", self.logo_under_var.get()),
+            qty_gl_under=g("qty_gl_under", int(self.qty_gl_under_slider.get())),
+            qty_tl_under=g("qty_tl_under", int(self.qty_tl_under_slider.get())),
+            show_cb=g("show_cb", self.show_cb_var.get()),
+            amplify=g("amplify", self.amplify_var.get()),
+            invert_order=g("invert_order", getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get()),
+            max_anim_gl=g("max_anim_gl", int(self.max_anim_gl_slider.get())),
+            max_anim_tl=g("max_anim_tl", int(self.max_anim_tl_slider.get())),
+            overrides=overrides,
+        )
+        if resultado["status"] == "OVERLAP ERROR":
+            self.after(0, self.append_chat, "System Warning", resultado["mensaje"])
+        else:
+            explicacion = datos_ia.get("explicacion", "Layout adjusted successfully.")
+            self.after(0, self.append_chat, "AI Assistant", explicacion)
+        return resultado
+
+    # ---------------------------------------------------------------- v1.08: avisos de arquitectura
+    def _mostrar_aviso_arquitectura(self, aviso, accion):
+        """Aviso en el chat con "Continuar igualmente" / "Cancelar". accion: JSON del chat a aplicar si se confirma."""
+        self._cerrar_aviso_arquitectura()
+        self.append_chat("⚠️ Aviso de arquitectura",
+                         f"{aviso['reason']}\n(Regla: {aviso['rule']}). ¿Quieres aplicar el cambio igualmente?")
+        tb = self.chat_history._textbox
+        caja_btn = ctk.CTkFrame(tb, fg_color="#FFFFFF")
+        b_si = ctk.CTkButton(caja_btn, text="Continuar igualmente", width=150, height=28, corner_radius=14,
+                             fg_color=self.c_magenta, hover_color="#D1007A", text_color="#FFFFFF",
+                             command=lambda: self._resolver_aviso_arquitectura(True))
+        b_no = ctk.CTkButton(caja_btn, text="Cancelar", width=90, height=28, corner_radius=14,
+                             fg_color="#E6E6E6", hover_color="#CFCFCF", text_color="#333333",
+                             command=lambda: self._resolver_aviso_arquitectura(False))
+        b_si.pack(side="left", padx=(0, 8))
+        b_no.pack(side="left")
+        self.chat_history.configure(state="normal")
+        tb.window_create("end", window=caja_btn)
+        self.chat_history.insert("end", "\n\n")
+        self.chat_history.see("end")
+        self.chat_history.configure(state="disabled")
+        self._aviso_pendiente = {"aviso": aviso, "accion": accion, "botones": (b_si, b_no)}
+
+    def _cerrar_aviso_arquitectura(self):
+        """Desactiva los botones del aviso pendiente (si lo hay): se responde una sola vez."""
+        pend = getattr(self, "_aviso_pendiente", None)
+        self._aviso_pendiente = None
+        if pend:
+            for b in pend["botones"]:
+                try: b.configure(state="disabled")
+                except Exception: pass
+        return pend
+
+    def _resolver_aviso_arquitectura(self, confirmar):
+        pend = self._cerrar_aviso_arquitectura()
+        if not pend:
+            return
+        if not confirmar:
+            self.append_chat("Archie", "Cambio cancelado: la arquitectura se queda como estaba.")
+            return
+        aviso, accion = pend["aviso"], pend["accion"]
+        overrides = {aviso["override"]: True} if aviso.get("override") else {}
+        self.append_chat("Archie", "Aplicando el cambio con la excepción confirmada"
+                         + (f" ({aviso['override']})." if overrides else "."))
+        self.btn_send_ai.configure(state="disabled", text="...")
+
+        def trabajo():
+            try:
+                self._aplicar_datos_ia(accion, overrides=overrides)
+            finally:
+                self.after(0, self._restaurar_botones_ia)
+        threading.Thread(target=trabajo, daemon=True).start()
 
     def _restaurar_botones_ia(self):
         self.btn_send_ai.configure(state="normal", text="Send")
@@ -1917,6 +2003,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
     def update_qty_labels(self, value, qty_type):
         val = int(value)
         txt = f"{val} Logos" if val > 0 else "Auto"
+        if qty_type == "goal" and val == 0 and (getattr(self, "arch_overrides", None) or {}).get("allow_no_goal_logos"):
+            txt = "None (forced)"   # v1.08: excepción confirmada en el chat
         if qty_type == "goal": self.qty_goal_label.configure(text=txt)
         elif qty_type == "corner": self.qty_corner_label.configure(text=txt)
         elif qty_type == "cb": self.qty_cb_label.configure(text=txt)
@@ -2270,6 +2358,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             "margin_tl": int(self.margin_tl_slider.get()),                        # v0.61
             "under_hotspots": getattr(self, "current_under_hotspots", True),      # v0.61
             "even_spacing": getattr(self, "current_even_spacing", True),          # v0.62
+            **({"overrides": dict(self.arch_overrides)} if getattr(self, "arch_overrides", None) else {}),  # v1.08
         }
 
     # ---------------------------------------------------------------- v0.58: campañas
@@ -2460,6 +2549,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.current_hide_edges = bool(cfg.get("hide_extreme_edges", False))
         self.current_under_hotspots = bool(cfg.get("under_hotspots", False))  # JSON antiguos: como antes
         self.current_even_spacing = bool(cfg.get("even_spacing", False))      # v0.62 (JSON antiguos: como antes)
+        self.arch_overrides = dict(cfg.get("overrides") or {})               # v1.08
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
         self.arch_key = self.solver_key = self._arch_key()   # v0.66: arquitectura guardada = aprobada

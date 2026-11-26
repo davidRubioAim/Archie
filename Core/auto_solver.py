@@ -21,7 +21,8 @@ CONFIG_KEYS = ("stretch_limit", "squash_logos", "stretch_fit_per", "qty_goal", "
                "show_cb", "amplify", "max_anim_gl", "max_anim_tl", "invert_order",
                "margin_tl", "under_hotspots",  # v0.61
                "even_spacing",                  # v0.62
-               "f2_custom", "f2_qty_corner", "f2_qty_cb", "f2_qty_tl", "f2_margin", "f2_max_anim")  # v0.95
+               "f2_custom", "f2_qty_corner", "f2_qty_cb", "f2_qty_tl", "f2_margin", "f2_max_anim",  # v0.95
+               "overrides")                     # v1.08: excepciones confirmadas en el chat (avisos de arquitectura)
 
 
 def solver_legacy():

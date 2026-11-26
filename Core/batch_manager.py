@@ -324,6 +324,7 @@ class BatchManager:
             "margin_tl": int(self.app.margin_tl_slider.get()),          # v0.61
             "under_hotspots": getattr(self.app, "current_under_hotspots", True),
             "even_spacing": getattr(self.app, "current_even_spacing", True),   # v0.62
+            "overrides": dict(getattr(self.app, "arch_overrides", {}) or {}),  # v1.08
         }
 
         w_total = stadium_info["Width"]

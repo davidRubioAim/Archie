@@ -543,7 +543,11 @@ class Distribuidor:
     s_lim = max(0.0, min(0.9, float(c.get("stretch_limit") or 0) / 100.0))
     w_min, w_max = self.anim_w * (1.0 - s_lim), float(self.anim_w)
     cuota_obj = float(c.get("cuota_goal") or CUOTA_GOAL)
-    if c.get("goal_auto", True):
+    ov = c.get("overrides") or {}
+    if ov.get("allow_no_goal_logos") and int(c.get("qty_goal") or 0) == 0:
+      # v1.08: el usuario confirmó en el chat porterías SIN logos (aviso de arquitectura): 0 no es "Auto"
+      opciones = [0]
+    elif c.get("goal_auto", True):
       opciones = range(1, 10)
     else:
       opciones = [int(c.get("qty_goal") or 0)]
