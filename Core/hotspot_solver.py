@@ -599,6 +599,39 @@ def guardar_referencia(datos, nombre, config_dir=None, variante=False):
     return path
 
 
+def referencia_exacta(estadio, logo, config_dir=None):
+    """v1.10: la referencia ★ guardada para ESTE estadio y ESTE logo (mismo nombre que pone ★: "<estadio> - <logo>",
+    o sus variantes "__hash"). Si hay varias, la más reciente. -> (config, nombre, path) o (None, None, None).
+    Con ella, Create Architecture reproduce lo aprobado tal cual en vez de volver a calcular."""
+    clave = _nombre_limpio(f"{estadio} - {logo}").lower()
+    mejor = None
+    for r in cargar_referencias(config_dir)[0]:
+        base = os.path.splitext(r["nombre"])[0].lower()
+        if base != clave and not base.startswith(clave + "__"):
+            continue
+        try:
+            t = os.path.getmtime(r["path"])
+        except OSError:
+            t = 0
+        if mejor is None or t > mejor[0]:
+            mejor = (t, r)
+    if mejor is None:
+        return None, None, None
+    r = mejor[1]
+    try:
+        with open(r["path"], "r", encoding="utf-8") as f:
+            doc = json.load(f)   # la config tal cual (en memoria las Amplify van como su equivalente de una fila)
+    except Exception:
+        return None, None, None
+    cfg = dict(doc.get("config") or {})
+    if not cfg or "qty_goal" not in cfg:
+        return None, None, None
+    margin = ((doc.get("archie") or {}).get("config") or {}).get("margin")
+    if margin is not None:
+        cfg.setdefault("margin", margin)
+    return cfg, r["nombre"], r["path"]
+
+
 def limpiar_referencia(datos):
     """v0.62: quita las rutas de los media (NAS, nombres de cliente). El solver solo usa la geometría,
     así que la referencia se puede subir a GitHub sin exponer rutas."""
@@ -726,6 +759,14 @@ def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, exc
         objetivos = {k: (obj_ref[k] if obj_ref.get(k) else objetivos[k]) for k in objetivos}
     else:
         ref, sim = None, 0.0
+
+    # v1.10: con Logo Under, cuántos logos van bajo las ANIM ZONES (GL y TL) lo dicen las referencias Logo Under
+    # parecidas (voto ponderado), no los sliders: el motor no puede deducirlo de la geometría
+    under_vec = [(r, s) for r, s in (vec or []) if r["under"]] if base.get("logo_under") else []
+    if under_vec:
+        base = dict(base,
+                    qty_gl_under=_voto([(int(r["config"].get("qty_gl_under", 1)), s) for r, s in under_vec]),
+                    qty_tl_under=_voto([(int(r["config"].get("qty_tl_under", 1)), s) for r, s in under_vec]))
 
     plantilla_conf = None
     if ref is not None:

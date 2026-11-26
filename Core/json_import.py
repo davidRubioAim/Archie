@@ -221,6 +221,39 @@ class JsonImportMixin:
             avisos.append("Media not found (drop them again): " + ", ".join(faltan[:6]) + (" …" if len(faltan) > 6 else ""))
         self.cargar_archivos_campana(files)
 
+        modo, objetivo = self._restaurar_layout_doc(doc, avisos)
+
+        archie = doc.get("archie") if isinstance(doc.get("archie"), dict) else {}
+        base = archie.get("campaign") or self._base_desde_nombre(nombre, estadio)
+        if base:
+            self.output_filename_var.set(base)
+
+        self._init_history_state()
+        self.start_preview_render()
+
+        if modo == "automatic":
+            txt = "exact layout restored (automatic: sliders free)."
+        elif modo == "manual":
+            txt = "exact layout restored in ✋ MANUAL MODE: click an element to adjust it."
+        else:
+            n = len(set(objetivo) ^ set(firma_elementos(self.calcular_layout() or {})))
+            txt = f"settings restored, but {n} element positions differ from the JSON."
+        msg = f"📂 Imported {nombre} · {estadio} ({como}): {txt}"
+        if avisos:
+            msg += "\n• " + "\n• ".join(avisos)
+        self.append_chat("Archie", msg)
+        if avisos or modo == "recalculated":
+            messagebox.showwarning("Import JSON", msg.replace("📂 ", ""), parent=self)
+        debug(f"Import JSON {path}: estadio={estadio} modo={modo} avisos={avisos}")
+
+    def _restaurar_layout_doc(self, doc, avisos):
+        """v1.10 (pasos 3 y 4 de _importar_doc, también para Create Architecture con una referencia ★ exacta):
+        sliders de la config del JSON y, si el motor no reproduce sus posiciones, MODO MANUAL con ellas.
+        No toca estadio ni ELEMENTS. -> (modo "automatic" | "manual" | "recalculated", firma objetivo)"""
+        dj = dims_json(doc)
+        da = (_int(self.inputs["Width"].get()), _int(self.inputs["Height"].get()),
+              _int(self.inputs["Goal Line Size"].get()), _int(self.inputs["Center Board Width"].get()))
+        mismas_dims = dj == da
         # 3. Sliders
         cfg = dict(self.config_actual())   # claves que falten en JSON antiguos: lo que hay ahora
         cfg.update({k: v for k, v in config_json(doc).items() if k != "edge_case"})
@@ -266,28 +299,18 @@ class JsonImportMixin:
                 modo = "recalculated"
                 avisos.append(f"Exact positions can't be restored ({motivo or 'layout not available'}).")
 
-        archie = doc.get("archie") if isinstance(doc.get("archie"), dict) else {}
-        base = archie.get("campaign") or self._base_desde_nombre(nombre, estadio)
-        if base:
-            self.output_filename_var.set(base)
+        return modo, objetivo
 
+    def restaurar_referencia(self, path):
+        """v1.10: Create Architecture con una referencia ★ de este mismo estadio y logo: la arquitectura aprobada
+        tal cual (posiciones exactas; en MODO MANUAL si se editó a mano). -> (modo, avisos)"""
+        doc = leer_json(path)
+        self._mv_descartar()
+        avisos = []
+        modo, _ = self._restaurar_layout_doc(doc, avisos)
         self._init_history_state()
         self.start_preview_render()
-
-        if modo == "automatic":
-            txt = "exact layout restored (automatic: sliders free)."
-        elif modo == "manual":
-            txt = "exact layout restored in ✋ MANUAL MODE: click an element to adjust it."
-        else:
-            n = len(set(objetivo) ^ set(firma_elementos(self.calcular_layout() or {})))
-            txt = f"settings restored, but {n} element positions differ from the JSON."
-        msg = f"📂 Imported {nombre} · {estadio} ({como}): {txt}"
-        if avisos:
-            msg += "\n• " + "\n• ".join(avisos)
-        self.append_chat("Archie", msg)
-        if avisos or modo == "recalculated":
-            messagebox.showwarning("Import JSON", msg.replace("📂 ", ""), parent=self)
-        debug(f"Import JSON {path}: estadio={estadio} modo={modo} avisos={avisos}")
+        return modo, avisos
 
     def _aplicar_config_importada(self, cfg):
         """Como aplicar_config_campana, sin pintar (el import decide después si va en modo manual)."""

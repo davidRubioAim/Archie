@@ -156,6 +156,8 @@ def obtener_version_local():
 
     return "v0.25"
 
+
+
 class CTkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -906,7 +908,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.reset_zooms_and_pan()
         
         # 3. Regeneramos el empaquetado óptimo sin solapamientos [source: 6]
-        self.auto_create_architecture()
+        self.auto_create_architecture(usar_referencia=False)   # v1.10: RESET = Auto-Solver, no la referencia ★
         self.append_chat("Archie", "🔄 Layout reset to default optimal values.")
 
     # ==========================================
@@ -1375,7 +1377,43 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         else:
             self.start_preview_render()
 
-    def auto_create_architecture(self):
+    def _referencia_exacta(self):
+        """v1.10: referencia ★ guardada para este mismo estadio y este mismo logo -> (nombre, path) o (None, None)."""
+        try:
+            logo = os.path.splitext(os.path.basename(self.archivos_cargados.get("static_logo") or ""))[0]
+            if not logo:
+                return None, None
+            _, nombre, path = hotspot_solver.referencia_exacta(self.stadium_selector_global.get() or "stadium",
+                                                               logo, CONFIG_DIR)
+            return nombre, path
+        except Exception as e:
+            log_error(f"Referencia exacta: {e}")
+            return None, None
+
+    def auto_create_architecture(self, usar_referencia=True):
+        # v1.10: con una referencia ★ de este estadio y este logo, se restaura la arquitectura aprobada tal cual
+        # (posiciones exactas, en MODO MANUAL si se editó a mano) en vez de volver a calcularla
+        nombre, path = self._referencia_exacta() if usar_referencia else (None, None)
+        if path:
+            try:
+                modo, avisos = self.restaurar_referencia(path)
+                self.arch_stadium = self.stadium_selector_global.get()
+                self.arch_key = self.solver_key = self._arch_key()
+                if modo == "recalculated":
+                    txt = "only its settings could be applied; some positions differ."
+                elif modo == "manual":
+                    txt = "restored exactly (✋ MANUAL MODE, it was edited by hand)."
+                else:
+                    txt = "restored exactly."
+                msg = f"★ Approved reference for this stadium and logo ({os.path.splitext(nombre)[0]}): {txt}"
+                if avisos:
+                    msg += "\n• " + "\n• ".join(avisos)
+                self.append_chat("System AI", msg)
+                if getattr(self, "campaign_panel", None): self.campaign_panel.on_solver_done(msg)
+                return
+            except Exception as e:
+                traceback.print_exc()
+                log_error(f"No se pudo restaurar la referencia {nombre}: {e}")
         self._cancel_auto_update()
         self.render_gen += 1  # descarta cualquier render de preview anterior
         self.solver_gen += 1
