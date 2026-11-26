@@ -1046,13 +1046,47 @@ def _guardar_aprendizaje(config_dir, firma, pesos, lineas, escalas=None):
         except Exception as e:
             log_error(f"[refs] No se pudo publicar el modelo: {e}")
     if os.getenv("ARCHIE_NO_PUBLICAR") != "1":
-        threading.Thread(target=publicar, daemon=True).start()
+        if os.getenv("ARCHIE_APRENDIZAJE_HIJO") == "1":
+            publicar()   # v1.10: en el proceso de aprendizaje, antes de salir (un hilo daemon moriría con él)
+        else:
+            threading.Thread(target=publicar, daemon=True).start()
 
 
 _APRENDIZAJE = {"hilo": None, "lock": threading.Lock()}
 
 
+def _aprender_en_proceso(config_dir):
+    """v1.10: el aprendizaje en un proceso aparte. Es Python puro y tarda varios segundos: en un hilo de Archie se
+    quedaba con el GIL y cada llamada a Tk del hilo principal esperaba su turno (la ventana tardaba ~8 s en abrirse
+    y no respondía). El proceso hijo hace lo mismo que aprender() (guarda _aprendizaje.json y lo publica en el NAS)
+    y este hilo solo espera, sin tocar el GIL. -> True si el hijo ha terminado bien."""
+    if getattr(sys, "frozen", False) or os.getenv("ARCHIE_APRENDER_EN_HILO") == "1":
+        return False
+    import subprocess
+    env = dict(os.environ, ARCHIE_APRENDIZAJE_HIJO="1")
+    cmd = [sys.executable, os.path.abspath(__file__), "--aprender", os.path.abspath(_cfg_dir(config_dir))]
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+    try:
+        res = subprocess.run(cmd, env=env, cwd=os.path.dirname(os.path.abspath(__file__)), creationflags=flags,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900)
+    except Exception as e:
+        log_error(f"Hotspots: no se pudo lanzar el aprendizaje en un proceso aparte ({e}); se aprende en un hilo")
+        return False
+    salida = (res.stdout or b"").decode("utf-8", "replace")
+    for l in salida.splitlines():
+        debug(f"[Hotspots] {l}")
+    if res.returncode != 0:
+        log_error(f"Hotspots: el proceso de aprendizaje falló (código {res.returncode}); se aprende en un hilo")
+        return False
+    return True
+
+
 def _aprender_y_guardar(config_dir):
+    if _aprender_en_proceso(config_dir):
+        data = _leer_aprendizaje(config_dir)
+        if data and data.get("pesos"):
+            _usar_escalas(data.get("escalas"))
+            return data["pesos"]
     pesos, lineas = aprender(config_dir)   # aprender() ya guarda el resultado
     for l in lineas:
         debug(f"[Hotspots] {l}")   # v0.75: informe técnico solo con ARCHIE_DEBUG=1
@@ -1299,6 +1333,15 @@ def _mensaje(mejor, info):
 
 
 if __name__ == "__main__":
-    cdir = sys.argv[1] if len(sys.argv) > 1 else None
+    args = sys.argv[1:]
+    if args and args[0] == "--aprender":   # v1.10: proceso de aprendizaje lanzado por Archie (_aprender_en_proceso)
+        args = args[1:]
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+    cdir = args[0] if args else None
+    if cdir:
+        configurar(cdir)
     _, lineas = aprender(cdir)
     print("\n".join(lineas))

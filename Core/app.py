@@ -2,6 +2,7 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinterdnd2 import TkinterDnD, DND_FILES
 import os
+import sys
 import json
 import copy
 import math
@@ -40,7 +41,14 @@ from manual_mode import ManualModeMixin  # v0.71: MODO MANUAL en la Architecture
 from json_import import JsonImportMixin  # v0.93: IMPORT JSON (arquitectura aprobada)
 from drop_global import GlobalDropMixin  # v0.93: soltar ELEMENTS / JSON en cualquier parte de la ventana
 from perf import medir  # v1.05: ARCHIE_PERF=1 -> tiempos en consola
+import vista_cache  # v1.10: reescalado de las previews desde copias reducidas y cacheadas
 from ui_thread import UiThreadMixin  # v1.04: after() seguro desde hilos (Python 3.14: 'main thread is not in main loop')
+
+# v1.10: reparto del GIL más fino entre hilos. Con el valor por defecto (5 ms), mientras un hilo calcula en Python puro
+# (aprendizaje de referencias, auto-solver, composición de la preview) cada llamada a Tk del hilo principal esperaba
+# hasta 5 ms a recuperar el GIL: la ventana tardaba ~8 s en construirse en vez de ~1,5 s y los clics durante un
+# cálculo se quedaban congelados. Con 0,5 ms el hilo principal responde al momento y el cálculo apenas se alarga.
+sys.setswitchinterval(0.0005)
 
 # 1. Definir rutas maestras dinámicas (Soporte para arquitectura Launcher)
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -227,6 +235,12 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
 
     def __init__(self):
         super().__init__()
+        # v1.10: la ventana se construye invisible (alpha 0) y se muestra de una vez cuando ya tiene su tamaño, el
+        # reparto del divisor y los widgets dibujados: sin fogonazos negros ni saltos de layout al abrir
+        try:
+            self.attributes("-alpha", 0.0)
+        except Exception:
+            pass
         fuentes.aplicar_a_tk(self)  # v1.06: Figtree también en los widgets tk y diálogos
         self.ui_iniciar_cola()  # v1.04: antes de lanzar ningún hilo
         self._mv_init_state()   # v0.71
@@ -877,6 +891,36 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         ctk.CTkButton(self.preview_loading_box, text="Cancel", width=80, height=22, fg_color="#C0392B", hover_color="#E74C3C",
                       font=ctk.CTkFont(size=11, weight="bold"), command=self.cancel_preview_render).pack(pady=(0, 10))
 
+        self.after(0, self._revelar_ventana)   # v1.10: primera vuelta del mainloop
+
+    def _revelar_ventana(self):
+        """v1.10: aplica el layout definitivo (divisor 1/3, altura guardada de MEDIA ASSETS) con la ventana aún
+        invisible, deja que los widgets se dibujen y entonces la muestra."""
+        try:
+            self.update_idletasks()
+            self._panel_aplicar()
+            guardada = getattr(self, "_split_guardada", None)
+            if guardada:
+                self._split_set(int(guardada))
+            self.update_idletasks()
+            self.update()   # Configure + redibujado de los widgets CTk, todavía con la ventana invisible
+        except Exception:
+            traceback.print_exc()
+        self.after(30, self._mostrar_ventana)
+
+    def _mostrar_ventana(self):
+        try:
+            self.attributes("-alpha", 1.0)
+        except Exception:
+            pass
+        # v1.10: lo creado al arrancar (widgets, módulos, cachés) pasa a la generación permanente del GC: los
+        # gc.collect() de cada render (_start_thread) solo recorren objetos nuevos (~60 ms -> unos pocos ms)
+        try:
+            gc.collect()
+            gc.freeze()
+        except Exception:
+            pass
+
     def get_ctk_scale(self):
         try:
             if hasattr(self, '_get_window_scaling'):
@@ -1394,38 +1438,70 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         # v1.10: con una referencia ★ de este estadio y este logo, se restaura la arquitectura aprobada tal cual
         # (posiciones exactas, en MODO MANUAL si se editó a mano) en vez de volver a calcularla
         nombre, path = self._referencia_exacta() if usar_referencia else (None, None)
-        if path:
-            try:
-                modo, avisos = self.restaurar_referencia(path)
-                self.arch_stadium = self.stadium_selector_global.get()
-                self.arch_key = self.solver_key = self._arch_key()
-                if modo == "recalculated":
-                    txt = "only its settings could be applied; some positions differ."
-                elif modo == "manual":
-                    txt = "restored exactly (✋ MANUAL MODE, it was edited by hand)."
-                else:
-                    txt = "restored exactly."
-                msg = f"★ Approved reference for this stadium and logo ({os.path.splitext(nombre)[0]}): {txt}"
-                if avisos:
-                    msg += "\n• " + "\n• ".join(avisos)
-                self.append_chat("System AI", msg)
-                if getattr(self, "campaign_panel", None): self.campaign_panel.on_solver_done(msg)
-                return
-            except Exception as e:
-                traceback.print_exc()
-                log_error(f"No se pudo restaurar la referencia {nombre}: {e}")
         self._cancel_auto_update()
         self.render_gen += 1  # descarta cualquier render de preview anterior
         self.solver_gen += 1
         self.solver_busy = True
-        self.btn_create_arch.configure(state="disabled", text="✨ Calculating Internally...")
-        self.reset_zooms_and_pan()
-        self.show_preview_overlay("Calculating default architecture...")
-        self._start_thread(self._solver_thread, self.solver_gen)
+        self._cursor_ocupado(True)   # v1.10: se ve que está trabajando aunque el puntero esté fuera de la preview
+        if path:
+            # v1.10: primero el aviso (botón + previews oscurecidas) y, cuando ya está pintado, la restauración.
+            # Antes se restauraba en el mismo clic y la ventana se quedaba sin respuesta y sin aviso hasta acabar.
+            self.btn_create_arch.configure(state="disabled", text="★ Restoring approved reference...")
+            self.show_preview_overlay("Restoring approved architecture...")
+            self.after(20, self._restaurar_referencia_exacta, self.solver_gen, nombre, path)
+            return
+        self._iniciar_solver()
 
-    def _solver_thread(self, gen):
+    def _restaurar_referencia_exacta(self, gen, nombre, path):
+        if gen != self.solver_gen: return   # Cancel mientras tanto
+        self.solver_busy = False
+        self._cursor_ocupado(False)
         try:
-            self._native_auto_solver(gen)
+            modo, avisos = self.restaurar_referencia(path)
+        except Exception as e:
+            traceback.print_exc()
+            log_error(f"No se pudo restaurar la referencia {nombre}: {e}")
+            self.solver_gen += 1
+            self.solver_busy = True
+            self._cursor_ocupado(True)
+            self._iniciar_solver()
+            return
+        self.arch_stadium = self.stadium_selector_global.get()
+        self.arch_key = self.solver_key = self._arch_key()
+        if modo == "recalculated":
+            txt = "only its settings could be applied; some positions differ."
+        elif modo == "manual":
+            txt = "restored exactly (✋ MANUAL MODE, it was edited by hand)."
+        else:
+            txt = "restored exactly."
+        msg = f"★ Approved reference for this stadium and logo ({os.path.splitext(nombre)[0]}): {txt}"
+        if avisos:
+            msg += "\n• " + "\n• ".join(avisos)
+        self.append_chat("System AI", msg)
+        if getattr(self, "campaign_panel", None): self.campaign_panel.on_solver_done(msg)
+
+    def _iniciar_solver(self):
+        self.reset_zooms_and_pan()
+        self.btn_create_arch.configure(state="disabled", text="✨ Calculating Internally...")
+        self.show_preview_overlay("Calculating default architecture...")
+        try:
+            entradas = self._entradas_solver()   # v1.10: los widgets se leen aquí, en el hilo principal
+        except Exception as e:
+            traceback.print_exc()
+            self._on_solver_error(self.solver_gen, e)
+            return
+        self._start_thread(self._solver_thread, self.solver_gen, entradas)
+
+    def _cursor_ocupado(self, ocupado):
+        """v1.10: cursor de espera mientras se calcula la arquitectura (la ventana sigue respondiendo)."""
+        try:
+            self.configure(cursor="watch" if ocupado else "")
+        except Exception:
+            pass
+
+    def _solver_thread(self, gen, entradas=None):
+        try:
+            self._native_auto_solver(gen, entradas)
         except Exception as e:
             traceback.print_exc()
             log_error(f"Auto-Solver falló: {e}")
@@ -1434,11 +1510,16 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
     def _on_solver_error(self, gen, e):
         if gen != self.solver_gen: return  # cancelado
         self.solver_busy = False
+        self._cursor_ocupado(False)   # v1.10
         self._on_preview_error(self.render_gen, e)
 
-    def _on_solver_done(self, gen, slider_args, msg):
+    def _on_solver_done(self, gen, slider_args, msg, flags=None):
         if gen != self.solver_gen: return  # el usuario pulsó Cancel: no tocar nada
         self.solver_busy = False
+        self._cursor_ocupado(False)   # v1.10
+        if flags is not None:
+            self.current_hide_edges, self.current_under_hotspots, self.current_even_spacing = flags
+        self.preview_enabled = True
         self._mv_descartar("Manual layout discarded: new default architecture.")   # v0.71
         self.architecture_created = True
         self.arch_stadium = self.stadium_selector_global.get()
@@ -1449,8 +1530,10 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.start_preview_render()
         if getattr(self, "campaign_panel", None): self.campaign_panel.on_solver_done(msg)  # v0.58
 
-    def _native_auto_solver(self, gen=None):
-        # v0.58: el algoritmo vive en auto_solver.resolver (lo usa también el export de campañas sin interfaz)
+    def _entradas_solver(self):
+        """v1.10: todo lo que el auto-solver lee de la interfaz, leído en el hilo principal. Antes lo leía el hilo del
+        solver: cada .get() de un widget desde otro hilo espera a que el hilo principal lo atienda (y con Python 3.14 /
+        Tcl 9 falla con 'main thread is not in main loop')."""
         w_total = int(self.inputs["Width"].get() or 0)
         h_total = int(self.inputs["Height"].get() or 0)
         goal_line = int(self.inputs["Goal Line Size"].get() or 0)
@@ -1471,29 +1554,37 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             "edge_case": getattr(self, "edge_case_actual", None),        # v0.61: respeta las zonas negras
             "amplify_geo": getattr(self, "amplify_geo_actual", None),    # v0.95: AMPLIFY en el touchline
         }
-        with medir("Create Architecture (solver)"):   # v1.05
-            best_config, msg = resolver_arquitectura(w_total, h_total, goal_line, cb_width, margin, self.archivos_cargados, base)
+        return {"w_total": w_total, "h_total": h_total, "goal_line": goal_line, "cb_width": cb_width, "margin": margin,
+                "archivos": copy.deepcopy(self.archivos_cargados), "base": base,
+                "stretch_fit": self.stretch_fit_var.get(), "invert_order": base["invert_order"]}
 
-        self.current_hide_edges = best_config["hide_extreme_edges"]
-        self.current_under_hotspots = best_config.get("under_hotspots", True)  # v0.61
-        self.current_even_spacing = best_config.get("even_spacing", True)      # v0.62
+    def _native_auto_solver(self, gen=None, entradas=None):
+        # v0.58: el algoritmo vive en auto_solver.resolver (lo usa también el export de campañas sin interfaz)
+        e = entradas or self._entradas_solver()
+        w_total, h_total, goal_line, cb_width, margin = e["w_total"], e["h_total"], e["goal_line"], e["cb_width"], e["margin"]
+        base = e["base"]
+        with medir("Create Architecture (solver)"):   # v1.05
+            best_config, msg = resolver_arquitectura(w_total, h_total, goal_line, cb_width, margin, e["archivos"], base)
+
+        # v1.10: se aplican en _on_solver_done (hilo principal, y nada si se canceló)
+        flags = (best_config["hide_extreme_edges"],
+                 best_config.get("under_hotspots", True),   # v0.61
+                 best_config.get("even_spacing", True))     # v0.62
 
         slider_args = (
                    best_config["qty_goal"], best_config["qty_corner"], 
                    best_config["qty_cb"], best_config["qty_tl"], 
                    best_config["stretch_limit"], best_config["squash_logos"], 
-                   self.stretch_fit_var.get(),
+                   e["stretch_fit"],
                    best_config["gl_offset"], best_config["corner_logo"],
                    best_config["logo_under"], best_config["qty_gl_under"], best_config["qty_tl_under"],
                    best_config.get("show_cb", True), best_config["amplify"],
-                   getattr(self, "invert_order_var", ctk.BooleanVar(value=False)).get(),
+                   e["invert_order"],
                    best_config.get("max_anim_gl", 0), best_config.get("max_anim_tl", 0),
                    margin, False, best_config.get("margin_tl", margin))  # v0.61: conserva los márgenes usados
         
-        self.preview_enabled = True 
-        
         # Sliders, chat y preview se aplican juntos en el hilo principal (y nada si se canceló)
-        self.after(0, self._on_solver_done, gen, slider_args, msg)
+        self.after(0, self._on_solver_done, gen, slider_args, msg, flags)
 
     def aplicar_parametros_ia(self, qty_goal: int, qty_corner: int, qty_cb: int, qty_tl: int, stretch_limit: int, squash_logos: bool, stretch_fit_per: bool, gl_offset: int, corner_logo: bool, logo_under: bool = False, qty_gl_under: int = 1, qty_tl_under: int = 1, show_cb: bool = True, amplify: bool = False, invert_order: bool = False, max_anim_gl: int = 0, max_anim_tl: int = 0, margin: int = 20, margin_tl: int = -1, overrides: dict = None, pedidas=()) -> dict:
         self.reset_zooms_and_pan()
@@ -2594,9 +2685,9 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             w.bind("<B1-Motion>", self._split_motion)
             w.bind("<ButtonRelease-1>", self._split_release)
             w.bind("<Double-Button-1>", lambda e: self._split_auto())
-        guardada = cb_ajustes.leer_ajustes(CONFIG_DIR).get("media_assets_height")
-        if guardada:
-            self.after(800, lambda: self._split_set(int(guardada)))
+        # v1.10: la altura guardada se aplica en _revelar_ventana, antes de mostrar la ventana (antes: a los 800 ms,
+        # con la ventana ya visible, y se veía el salto)
+        self._split_guardada = cb_ajustes.leer_ajustes(CONFIG_DIR).get("media_assets_height")
 
     # ---------------------------------------------------------------- v1.10: divisor vertical izquierda / previews
     PANEL_RATIO = 1.0 / 3.0   # ancho del panel izquierdo por defecto (fracción del ancho útil)
@@ -2624,7 +2715,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             w.bind("<Double-Button-1>", lambda e: self._panel_auto())
         self._panel_pendiente = None
         self.main_frame.bind("<Configure>", lambda e: self._panel_programar(), add="+")
-        self.after(300, self._panel_aplicar)
+        # v1.10: el primer reparto lo hace _revelar_ventana (antes de mostrar la ventana); el <Configure> sigue
+        # recolocando el divisor al redimensionar
 
     def _panel_limites(self):
         """(ancho útil, mín, máx) del panel izquierdo en px reales.
@@ -3044,6 +3136,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         if self.solver_busy:
             self.solver_gen += 1
             self.solver_busy = False
+            self._cursor_ocupado(False)   # v1.10
         self.hide_preview_overlay()
         self.player.release()
         self.preview_dirty = True
@@ -3208,6 +3301,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             self.lbl_preview_status.configure(text=f"Geometry Error: {type(e).__name__} - {str(e)[:40]}", text_color="#E74C3C")
             return
 
+        self._contenedores = {"strip": (self.preview_image_container.winfo_width(), self.preview_image_container.winfo_height()),
+                              "sys": (self.sys_image_container.winfo_width(), self.sys_image_container.winfo_height())}   # v1.10
         self.render_gen += 1
         gen = self.render_gen
         self._render_datos = (gen, datos)   # v0.71: lo que se va a ver (para el modo manual)
@@ -3243,6 +3338,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             out = {}
             res, sys_canvas = self._componer_frame_preview(p, tiempos[first_idx], memo, strip_out=out)
             if gen != self.render_gen: return
+            self._precalentar_vistas(res, sys_canvas)   # v1.10: el reescalado de la preview, ya hecho aquí
             self.after(0, self._on_first_preview_frame, gen, first_idx, res, sys_canvas, self._strip_3d(out, p), p)
 
             # Escena del reproductor: capa estática + instancias (los vídeos se decodifican aparte, una vez)
@@ -3253,6 +3349,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                 log_error(f"Reproductor: no se pudo preparar la escena: {e}")
                 escena = None  # (escena strip, escena system) o None
             if gen != self.render_gen: return
+            if escena is not None:
+                self._precalentar_vistas(escena[0].static_res, escena[1].static_res if escena[1] is not None else None)
             self.after(0, self._on_player_scene, gen, escena)
 
             # Resto de frames en segundo plano, sin bloquear la ventana
@@ -3261,11 +3359,30 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                 out = {}
                 res, sys_canvas = self._componer_frame_preview(p, tiempos[idx], memo, strip_out=out)
                 if gen != self.render_gen: return
+                self._precalentar_vistas(res, sys_canvas)
                 self.after(0, self._on_background_preview_frame, gen, idx, res, sys_canvas, self._strip_3d(out, p))
         except Exception as e:
             traceback.print_exc()
             log_error(f"Error en render de preview: {e}")
             self.after(0, self._on_preview_error, gen, e)
+
+    def _precalentar_vistas(self, strip, sys_img):
+        """v1.10 (hilo del render): deja hecha la reducción previa de las imágenes que se van a mostrar, con el zoom
+        que tendrán (el de ajuste al panel o el zoom manual), para que el repintado del hilo principal sea rápido."""
+        cont = getattr(self, "_contenedores", None) or {}
+        for img, clave, manual, zoom, pan in (
+                (strip, "strip", self.manual_zoom_strip, self.zoom_factor_strip, (self.pan_x_strip, self.pan_y_strip)),
+                (sys_img, "sys", self.manual_zoom_sys, self.zoom_factor_sys, (self.pan_x_sys, self.pan_y_sys))):
+            c = cont.get(clave)
+            if img is None or not c or c[0] <= 10 or c[1] <= 10:
+                continue
+            z = zoom if manual else vista_cache.zoom_ajuste(img.size, c)
+            if not z:
+                continue
+            try:   # el lienzo entero, tal cual lo montará get_panned_image en el hilo principal
+                self.get_panned_image(img, z, pan[0], pan[1], c[0], c[1])
+            except Exception:
+                vista_cache.precalentar(img, z)
 
     def _on_first_preview_frame(self, gen, idx, res, sys_canvas, strip3d=None, p=None):
         if gen != self.render_gen: return
@@ -3826,6 +3943,13 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         pan_x = max(-max_pan_x, min(max_pan_x, pan_x)) if sw > container_w else 0
         pan_y = max(-max_pan_y, min(max_pan_y, pan_y)) if sh > container_h else 0
         
+        # v1.10: la misma vista de la misma imagen ya montada (repintado tras el aviso, ajuste de zoom sin cambios...)
+        metodo = PREVIEW_RESAMPLE if getattr(self, "_pan_rapido", False) else RESAMPLE_METHOD
+        clave = (sw, sh, round(pan_x, 2), round(pan_y, 2), container_w, container_h, metodo)
+        hecho = vista_cache.lienzo(img, clave)
+        if hecho is not None:
+            return hecho, pan_x, pan_y
+
         canvas = Image.new("RGBA", (container_w, container_h), (0, 0, 0, 0))
         
         paste_x = int((container_w - sw) / 2 + pan_x)
@@ -3835,12 +3959,16 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         rx1, ry1 = max(0, -paste_x), max(0, -paste_y)
         rx2, ry2 = min(sw, container_w - paste_x), min(sh, container_h - paste_y)
         if rx2 > rx1 and ry2 > ry1:
-            sx, sy = img.width / float(sw), img.height / float(sh)
-            visible = img.resize(
-                (rx2 - rx1, ry2 - ry1), PREVIEW_RESAMPLE if getattr(self, "_pan_rapido", False) else RESAMPLE_METHOD,
-                box=(rx1 * sx, ry1 * sy, rx2 * sx, ry2 * sy), reducing_gap=3.0
+            # v1.10: se reescala desde una copia reducida y cacheada de la imagen (vista_cache), no desde el strip
+            # completo: ~230 ms -> ~50 ms por repintado del strip en el hilo principal, con el mismo resultado
+            src = vista_cache.reducida(img, vista_cache.factor_para(zoom))
+            sx, sy = src.width / float(sw), src.height / float(sh)
+            visible = src.resize(
+                (rx2 - rx1, ry2 - ry1), metodo,
+                box=(rx1 * sx, ry1 * sy, min(src.width, rx2 * sx), min(src.height, ry2 * sy)), reducing_gap=3.0
             )
             canvas.paste(visible, (paste_x + rx1, paste_y + ry1))
+        vista_cache.guardar_lienzo(img, clave, canvas)
         return canvas, pan_x, pan_y
 
     def actualizar_imagen_preview(self):
@@ -3852,6 +3980,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         img_strip = self.pil_preview_images[self.preview_current_idx]
         cw_strip = self.preview_image_container.winfo_width()
         ch_strip = self.preview_image_container.winfo_height()
+        self._contenedores = {"strip": (cw_strip, ch_strip),   # v1.10: para precalentar desde el hilo del render
+                              "sys": (self.sys_image_container.winfo_width(), self.sys_image_container.winfo_height())}
         
         if self.player.engaged and self.player.ready:
             self.player.render()
