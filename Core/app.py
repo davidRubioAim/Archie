@@ -54,7 +54,8 @@ else:
 
 CONFIG_DIR = os.path.join(MASTER_DIR, "Config")
 hotspot_solver.configurar(CONFIG_DIR)
-hotspot_solver.aprender_en_segundo_plano(CONFIG_DIR)   # v0.75: si las referencias han cambiado, aprende ya (sin bloquear)
+# v1.10: el aprendizaje en segundo plano (v0.75) lo lanza refs_sync tras sincronizar con el NAS (más abajo, tras
+# cargar Config\.env), para aprender una sola vez y con el conjunto completo de referencias.
 ASSETS_DIR = os.path.join(MASTER_DIR, "Assets")
 
 
@@ -94,6 +95,8 @@ except Exception:
 
 # 2. Cargar variables de entorno desde Config
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
+import refs_sync   # v1.10: base de referencias ★ compartida en el NAS
+refs_sync.sincronizar_en_segundo_plano(CONFIG_DIR)
 load_remote_config(optional=("CAMPAIGN_SHEET_CSV_URL",))  # GEMINI_API_KEY (+ v0.58: URL CSV de la lista de campañas)
 api_key = os.getenv("GEMINI_API_KEY")
 
@@ -502,6 +505,15 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             hover_color="#404040", command=self.guardar_como_referencia
         )
         self.btn_ref.grid(row=0, column=4, sticky="ew", padx=(5, 0))
+        # v1.10: lista de referencias ★ (compartidas en el NAS): informe del aprendizaje y retirar
+        self.actions_arch_frame.grid_columnconfigure(5, weight=0)
+        self.btn_refs_lista = ctk.CTkButton(
+            self.actions_arch_frame, text="☰", font=ctk.CTkFont(size=16, weight="bold"),
+            width=40, height=40, corner_radius=10, fg_color="#2b2b2b", text_color="#FFC83D",
+            hover_color="#404040", command=self.abrir_lista_referencias
+        )
+        self.btn_refs_lista.grid(row=0, column=5, sticky="ew", padx=(5, 0))
+        self.after(2000, self._estado_referencias)   # v1.10: resultado de la sincronización con el NAS
 
         # --- Inicialización de Historial ---
         self.undo_stack = []
@@ -2439,9 +2451,123 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             else:
                 self.append_chat("Archie", f"★ Saved as approved reference ({n} in total): {os.path.basename(path)}. "
                                            "The Auto-Solver will learn from it on the next Create Architecture.")
+            if hotspot_solver.se_sube_al_nas(path, CONFIG_DIR):   # v1.10: compartida con todos los equipos
+                def subida(ok):
+                    txt = ("★ Shared with every machine (NAS)." if ok else
+                           "★ The NAS is not reachable: the reference stays on this PC and will be shared "
+                           "the next time Archie opens.")
+                    self.after(0, self.append_chat, "Archie", txt)
+                refs_sync.subir_en_segundo_plano(CONFIG_DIR, path, subida)
         except Exception as e:
             log_error(f"No se pudo guardar la referencia: {e}")
             self.append_chat("Archie", f"★ Could not save the reference: {e}")
+
+    def _estado_referencias(self, intentos=0):
+        """v1.10: una línea en el chat con el resultado de la sincronización de referencias al abrir Archie."""
+        est = refs_sync.estado()
+        if not est.get("hecho"):
+            if intentos < 60:
+                self.after(1000, self._estado_referencias, intentos + 1)
+            return
+        r = est.get("resultado") or {}
+        try:
+            n = len(hotspot_solver.cargar_referencias(CONFIG_DIR)[0])
+        except Exception:
+            n = r.get("total", 0)
+        err = r.get("error")
+        if err == "disabled":
+            return
+        if err == "nas_unreachable":
+            self.append_chat("Archie", f"★ References: the NAS is not reachable, using the {n} saved on this PC.")
+            return
+        if err:
+            self.append_chat("Archie", f"★ References: could not sync with the NAS ({err}). Using {n} on this PC.")
+            return
+        extra = []
+        if r.get("nuevas"):
+            extra.append(f"{len(r['nuevas'])} new from other machines")
+        if r.get("actualizadas"):
+            extra.append(f"{len(r['actualizadas'])} updated")
+        if r.get("quitadas"):
+            extra.append(f"{len(r['quitadas'])} retired")
+        if r.get("subidas"):
+            extra.append(f"{len(r['subidas'])} shared from this PC")
+        self.append_chat("Archie", f"★ References: {n} in the shared library" + (f" ({', '.join(extra)})." if extra else "."))
+
+    def abrir_lista_referencias(self):
+        """v1.10: lista de referencias ★ con su origen, el informe del aprendizaje (duplicados, contradicciones,
+        cobertura) y "Retire" (la da de baja en el NAS para todos los equipos)."""
+        win = getattr(self, "_win_refs", None)
+        if win is not None and win.winfo_exists():
+            win.destroy()
+        win = ctk.CTkToplevel(self)
+        self._win_refs = win
+        win.title("★ Approved references")
+        win.geometry("820x600")
+        win.attributes("-topmost", True)
+        win.after(300, lambda: win.attributes("-topmost", False))
+        try:
+            refs, _ = hotspot_solver.cargar_referencias(CONFIG_DIR)
+        except Exception as e:
+            refs = []
+            log_error(f"Lista de referencias: {e}")
+        cache = os.path.normcase(os.path.abspath(refs_sync.carpeta_cache(CONFIG_DIR)))
+        try:
+            with open(hotspot_solver.ruta_aprendizaje(CONFIG_DIR), "r", encoding="utf-8") as f:
+                informe = json.load(f).get("informe") or []
+        except Exception:
+            informe = []
+        avisos = [l for l in informe if l.startswith(("Referencias:", "Cobertura:", "DUP", "CONTRADICCION"))]
+        if avisos:
+            caja = ctk.CTkTextbox(win, height=130, wrap="word", font=ctk.CTkFont(size=11))
+            caja.pack(fill="x", padx=12, pady=(12, 6))
+            caja.insert("end", "\n".join(avisos))
+            caja.configure(state="disabled")
+        filtro = ctk.CTkEntry(win, placeholder_text="Filter (stadium, campaign, logo...)")
+        filtro.pack(fill="x", padx=12, pady=6)
+        lista = ctk.CTkScrollableFrame(win)
+        lista.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        def retirar(nombre, boton):
+            boton.configure(state="disabled", text="...")
+            def tarea():
+                ok, msg = refs_sync.retirar(CONFIG_DIR, nombre)
+                def fin():
+                    if ok:
+                        self.append_chat("Archie", f"★ Retired for every machine: {nombre}.")
+                        try: boton.configure(text="Retired")
+                        except Exception: pass
+                        hotspot_solver.aprender_en_segundo_plano(CONFIG_DIR)
+                    else:
+                        self.append_chat("Archie", f"★ Could not retire {nombre}: {msg}.")
+                        try: boton.configure(state="normal", text="Retire")
+                        except Exception: pass
+                self.after(0, fin)
+            threading.Thread(target=tarea, daemon=True).start()
+
+        def pintar(*_):
+            for w in lista.winfo_children():
+                w.destroy()
+            q = filtro.get().strip().lower()
+            for r in sorted(refs, key=lambda x: x["nombre"].lower()):
+                if q and q not in r["nombre"].lower():
+                    continue
+                en_nas = os.path.normcase(os.path.dirname(os.path.abspath(r["path"]))) == cache
+                fila = ctk.CTkFrame(lista, fg_color="transparent")
+                fila.pack(fill="x", pady=2)
+                etiqueta = "NAS" if en_nas else "this PC"
+                if r.get("amplify"):
+                    etiqueta += " · Amplify"
+                if r.get("under"):
+                    etiqueta += " · Logo Under"
+                ctk.CTkLabel(fila, text=os.path.splitext(r["nombre"])[0], anchor="w").pack(side="left", fill="x", expand=True)
+                ctk.CTkLabel(fila, text=etiqueta, text_color="#888888", width=150, anchor="e").pack(side="left", padx=6)
+                b = ctk.CTkButton(fila, text="Retire", width=70, height=24, fg_color="#E6E6E6", hover_color="#CFCFCF",
+                                  text_color="#333333")
+                b.configure(command=lambda n=r["nombre"], bb=b: retirar(n, bb))
+                b.pack(side="left")
+        filtro.bind("<KeyRelease>", pintar)
+        pintar()
 
     def _preguntar_referencia(self, datos, nombre, existente):
         """v1.10: ya hay otra referencia con ese nombre -> "Replace" (corrección) o "Save as variant" (las dos cuentan)."""

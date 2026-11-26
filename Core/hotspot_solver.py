@@ -298,19 +298,33 @@ def puntuar(phi, pesos):
 
 # ---------------------------------------------------------------- referencias
 def _rasgos_caso(w, h, gl, cb, logo_w, anim_w, under, amplify=False):
+    """Rasgos de un caso para buscar referencias parecidas. Ninguno depende de la brand ni del estadio: solo de la
+    geometría y del tamaño de los ELEMENTS. v1.10: + cuántos logos caben en el Goal Line y cuántas ANIM ZONES en
+    cada touchline (las "unidades de ELEMENT" que deciden la distribución)."""
+    tl = max(1.0, (w - 2.0 * gl - cb) / 2.0)
     return [math.log(max(1e-6, logo_w / float(h))), math.log(max(1e-6, anim_w / float(max(1, logo_w)))),
-            gl / float(w), cb / float(w), 1.0 if under else 0.0, 1.0 if amplify else 0.0]
+            gl / float(w), cb / float(w), 1.0 if under else 0.0, 1.0 if amplify else 0.0,
+            math.log(max(1e-6, gl / float(max(1, logo_w)))), math.log(max(1e-6, tl / float(max(1, anim_w))))]
 
 
 # v0.62: el logo pesa más que el CB al buscar la plantilla.
 # v1.10: Amplify con escala 1.0: una referencia Amplify se parece más a un caso Amplify (x1 frente a x0,61), pero
 # sigue sirviendo de plantilla a un estadio de una fila con geometría parecida.
-_ESCALA = [0.15, 0.35, 0.05, 0.1, 0.5, 1.0]
+# v1.10: logos en el GL y ANIM ZONES por TL, en escala logarítmica (0.3 ~ un 35% de diferencia).
+_ESCALA = [0.15, 0.35, 0.05, 0.1, 0.5, 1.0, 0.3, 0.3]
+_ESCALA_ACTIVA = list(_ESCALA)   # v1.10: las aprendidas (_aprendizaje.json "escalas") si mejoran a las de defecto
+K_VECINOS = 3
+SIM_MIN = 0.5
 
 
-def similitud(a, b):
-    d2 = sum(((x - y) / s) ** 2 for x, y, s in zip(a, b, _ESCALA))
+def similitud(a, b, escala=None):
+    d2 = sum(((x - y) / s) ** 2 for x, y, s in zip(a, b, escala or _ESCALA_ACTIVA))
     return math.exp(-d2 / 2.0)
+
+
+def _usar_escalas(escalas):
+    global _ESCALA_ACTIVA
+    _ESCALA_ACTIVA = list(escalas) if escalas and len(escalas) == len(_ESCALA) else list(_ESCALA)
 
 
 def _moda(valores):
@@ -460,6 +474,7 @@ _CACHE = {"firma": None, "refs": []}
 def carpetas_referencias(config_dir=None):
     """Carpetas de referencias, por prioridad:
       0) v0.64: carpetas de ARCHIE_REFERENCIAS (Config\\.env): la memoria compartida ("master");
+      0b) v1.10: Config\\referencias_nas, copia local de la base del NAS (ver refs_sync.py);
       1) v0.62: Config\\referencias de la instalación (las que guarda ★ en este PC sin carpeta maestra);
       2) Config\\referencias de la propia versión (las del repo de GitHub, llegan con cada versión).
     v1.10: si el mismo nombre de fichero está en varias, gana la de MAYOR prioridad (maestra > local > versión)."""
@@ -472,6 +487,10 @@ def carpetas_referencias(config_dir=None):
         extra = extra.strip().strip('"')
         if extra and os.path.isdir(extra):
             carpetas.append(extra)
+    # v1.10: copia local de la base compartida del NAS (refs_sync): se lee de disco, nunca de la red
+    import refs_sync
+    if refs_sync.activo():
+        carpetas.append(refs_sync.carpeta_cache(_cfg_dir(config_dir)))
     carpetas += [local, version]
     unicas, vistas = [], set()
     for c in carpetas:
@@ -483,11 +502,13 @@ def carpetas_referencias(config_dir=None):
 
 
 def cargar_referencias(config_dir=None):
-    paths, vistos = [], set()
+    import refs_sync
+    vistos = set(refs_sync.retiradas(_cfg_dir(config_dir)))   # v1.10: retiradas = no se usan en ningún PC
+    paths = []
     for carpeta in carpetas_referencias(config_dir):
         for p in sorted(glob.glob(os.path.join(carpeta, "*.json"))):
             nombre = os.path.basename(p)
-            if nombre.startswith("_") or nombre.lower() in vistos:
+            if nombre.startswith("_") or nombre == RULES_FILE or nombre.lower() in vistos:
                 continue
             vistos.add(nombre.lower())
             paths.append(p)
@@ -499,9 +520,22 @@ def cargar_referencias(config_dir=None):
 
 
 def _carpeta_guardado(config_dir=None):
+    """ARCHIE_REFERENCIAS si está; v1.10: si no, la caché del NAS (refs_sync la sube); sin sincronización, la local."""
     maestras = [c.strip().strip('"') for c in (os.getenv("ARCHIE_REFERENCIAS") or "").split(";") if c.strip()]
     maestras = [c for c in maestras if os.path.isdir(c)]
-    return maestras[0] if maestras else os.path.join(_cfg_dir(config_dir), REFS_DIR)
+    if maestras:
+        return maestras[0]
+    import refs_sync
+    if refs_sync.activo():
+        return refs_sync.carpeta_cache(_cfg_dir(config_dir))
+    return os.path.join(_cfg_dir(config_dir), REFS_DIR)
+
+
+def se_sube_al_nas(path, config_dir=None):
+    """v1.10: True si la referencia guardada en path la tiene que subir refs_sync al NAS."""
+    import refs_sync
+    return refs_sync.activo() and os.path.normcase(os.path.dirname(os.path.abspath(path))) == \
+        os.path.normcase(os.path.abspath(refs_sync.carpeta_cache(_cfg_dir(config_dir))))
 
 
 def _nombre_limpio(nombre):
@@ -582,6 +616,49 @@ def _plantilla(caso, refs):
     return mejor, sim
 
 
+CLAVES_EST = ("goal_L", "goal_R", "corner_L", "corner_R", "centro", "cerca_L", "cerca_R", "sep", "anims")
+
+
+def vecinos(caso, refs, k=None, escala=None):
+    """v1.10: las k referencias más parecidas con similitud >= SIM_MIN -> [(ref, sim)], de más a menos parecida."""
+    pares = sorted(((r, similitud(caso, r["caso"], escala)) for r in refs), key=lambda rs: -rs[1])
+    return [(r, s) for r, s in pares[:k or K_VECINOS] if s >= SIM_MIN]
+
+
+def _voto(valores_pesos):
+    """Moda ponderada (a igualdad, el valor de la referencia más parecida, que va primero)."""
+    tot = {}
+    for v, w in valores_pesos:
+        tot[v] = tot.get(v, 0.0) + w
+    mejor = max(tot.values())
+    return next(v for v, _ in valores_pesos if tot[v] == mejor)
+
+
+def _mediana_ponderada(valores_pesos):
+    vp = sorted((v, w) for v, w in valores_pesos if v)
+    if not vp:
+        return None
+    mitad, acc = sum(w for _, w in vp) / 2.0, 0.0
+    for v, w in vp:
+        acc += w
+        if acc >= mitad:
+            return v
+    return vp[-1][0]
+
+
+def consenso(vec):
+    """v1.10: estructura y objetivos de los k vecinos (voto ponderado por similitud), no solo de la más parecida."""
+    if not vec:
+        return None, None
+    est = {k: _voto([(r["estructura"].get(k, 0), s) for r, s in vec]) for k in CLAVES_EST}
+    obj = {}
+    for k in ("goal", "corner", "centro"):
+        v = _mediana_ponderada([(r["objetivos_medidos"].get(k), s) for r, s in vec])
+        if v:
+            obj[k] = v
+    return est, obj
+
+
 def _base_conf(base, reglas):
     return {
         "stretch_limit": reglas["stretch_limit"], "squash_logos": False,
@@ -630,18 +707,19 @@ def _cabe_mas(r2, r):
     return sum(e2.get(k, 0) for k in claves) > sum(e.get(k, 0) for k in claves)
 
 
-def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, excluir=None, dims=None):
+def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, excluir=None, dims=None, escala=None):
     """Devuelve (mejor, todos los evaluados). logo_w / anim_w ya escalados al alto del strip."""
     clase = clase_logo(logo_w / float(max(1, geo.h)), reglas)
     objetivos = objetivos_por_clase(clase, reglas, geo.cb)
     caso = _rasgos_caso(geo.w, geo.h, geo.gl, geo.cb, logo_w, anim_w, bool(base.get("logo_under")),
                         bool(base.get("_amplify_caso")))   # v1.10
-    ref, sim = _plantilla(caso, [r for r in refs if r is not excluir])
+    excl = excluir if isinstance(excluir, (set, frozenset)) else ({id(excluir)} if excluir is not None else set())
+    vec = vecinos(caso, [r for r in refs if id(r) not in excl], escala=escala)
     estructura_ref = None
-    if ref is not None and sim >= 0.5:
-        estructura_ref = ref["estructura"]
-        # la referencia parecida manda en los tamaños objetivo de los hotspots
-        obj_ref = ref["objetivos_medidos"]
+    if vec:
+        ref, sim = vec[0]
+        # v1.10: los k vecinos (voto ponderado) mandan en la estructura y en los tamaños objetivo de los hotspots
+        estructura_ref, obj_ref = consenso(vec)
         objetivos = {k: (obj_ref[k] if obj_ref.get(k) else objetivos[k]) for k in objetivos}
     else:
         ref, sim = None, 0.0
@@ -689,7 +767,7 @@ def buscar(geo, margin, archivos, base, logo_w, anim_w, reglas, pesos, refs, exc
                 evaluados.append(r2)
     validos = sorted([r for r in evaluados if not r["solapa"]], key=lambda r: -r["score"])
     mejor = validos[0] if validos else None
-    return mejor, evaluados, {"clase": clase, "objetivos": objetivos, "ref": ref, "sim": sim}
+    return mejor, evaluados, {"clase": clase, "objetivos": objetivos, "ref": ref, "sim": sim, "vecinos": vec}
 
 
 # ---------------------------------------------------------------- aprendizaje
@@ -725,19 +803,25 @@ def _base_ref(r):
 def aprender(config_dir=None, epocas=12, informe=None):
     """Ajusta los pesos para que cada referencia gane con su propia geometría. -> (pesos, líneas de informe)"""
     reglas = cargar_reglas(config_dir)
-    refs, firma = cargar_referencias(config_dir)
+    refs_todas, firma = cargar_referencias(config_dir)
     pesos = dict(reglas["pesos"])
     lineas = []
-    if not refs:
+    if not refs_todas:
+        _usar_escalas(None)
         return pesos, ["Sin referencias en Config/referencias: se usan los pesos por defecto."]
-    _preparar_refs(refs, reglas)
+    _preparar_refs(refs_todas, reglas)
+    # v1.10: duplicados (misma geometría y misma estructura) cuentan una vez; al resolver una referencia no se
+    # usan como plantilla ni ella ni sus copias
+    refs, grupos = _deduplicar(refs_todas)
+    escalas, acierto_def, acierto_esc = aprender_escalas(refs)
+    # (el aprendizaje va en un hilo: no toca las escalas activas hasta el final)
     aprendibles = [k for k in pesos if k not in PESOS_FIJOS]
     defecto = dict(pesos)
     lr = 0.15
     for _ in range(epocas):
         cambios = 0
         for r in refs:
-            mejor, _, info = _buscar_ref(r, reglas, pesos, refs)
+            mejor, _, info = _buscar_ref(r, reglas, pesos, refs, escalas)
             if not mejor:
                 continue
             phi_ref = dict(r["phi"], plantilla=0.0)
@@ -764,30 +848,127 @@ def aprender(config_dir=None, epocas=12, informe=None):
             break
     # v0.62: los pesos aprendidos solo se quedan si reproducen más referencias que los de por defecto
     # (referencias contradictorias no deben estropear las reglas generales)
-    def contar(p):
-        return sum(1 for r in refs if (lambda m: bool(m) and _misma(m, r))(_buscar_ref(r, reglas, p, refs)[0]))
+    def contar(p, esc=None):
+        esc = esc or escalas
+        return sum(1 for r in refs if (lambda m: bool(m) and _misma(m, r))(_buscar_ref(r, reglas, p, refs, esc)[0]))
     if contar(pesos) <= contar(defecto):
         pesos = dict(defecto)
+    # v1.10: las escalas aprendidas solo se quedan si, con la búsqueda completa, reproducen más que las de defecto
+    if escalas != _ESCALA and contar(pesos) <= contar(pesos, list(_ESCALA)):
+        escalas = list(_ESCALA)
     aciertos = 0
     for r in refs:
-        mejor, _, info = _buscar_ref(r, reglas, pesos, refs)
+        mejor, _, info = _buscar_ref(r, reglas, pesos, refs, escalas)
         ok = bool(mejor) and _misma(mejor, r)
         aciertos += ok
         est_ref = {k: r["estructura"][k] for k in ("goal_L", "corner_L", "centro", "cerca_L", "sep", "anims")}
         est_sol = {k: mejor["estructura"][k] for k in est_ref} if mejor else {}
         lineas.append(f"{'OK ' if ok else 'DIF'} {r['nombre']}: referencia {est_ref} | Archie {est_sol}")
-    lineas.insert(0, f"Referencias: {len(refs)} · Archie reproduce {aciertos}/{len(refs)} · pesos: "
-                     + ", ".join(f"{k}={v:.1f}" for k, v in pesos.items()))
-    _guardar_aprendizaje(config_dir, firma, pesos, lineas)
+    cab = [f"Referencias: {len(refs_todas)} ({len(refs)} distintas) · Archie reproduce {aciertos}/{len(refs)} · pesos: "
+           + ", ".join(f"{k}={v:.1f}" for k, v in pesos.items()),
+           "Escalas de similitud: " + ("aprendidas " if escalas != _ESCALA else "por defecto ")
+           + ", ".join(f"{v:g}" for v in escalas)
+           + f" (vecinos que aciertan la estructura: {acierto_def} -> {acierto_esc} de {len(refs)})"]
+    cab += [f"DUP {', '.join(g)}" for g in grupos if len(g) > 1]
+    cab += contradicciones(refs)
+    cab += cobertura(refs_todas, reglas)
+    lineas[:0] = cab
+    _usar_escalas(escalas)
+    _guardar_aprendizaje(config_dir, firma, pesos, lineas, escalas)
     return pesos, lineas
 
 
-def _buscar_ref(r, reglas, pesos, refs):
+def _clave_dup(r):
+    return (tuple(round(x, 3) for x in r["caso"]), tuple(r["estructura"].get(k) for k in CLAVES_EST))
+
+
+def _deduplicar(refs):
+    """-> (una referencia por grupo, [nombres de cada grupo]). Cada referencia guarda los id() de su grupo."""
+    por_clave = {}
+    for r in refs:
+        por_clave.setdefault(_clave_dup(r), []).append(r)
+    unicas, grupos = [], []
+    for g in por_clave.values():
+        ids = frozenset(id(x) for x in g)
+        for x in g:
+            x["_grupo"] = ids
+        # se queda la corrección (CORRECT / manual) si la hay
+        g.sort(key=lambda x: not (x["doc"].get("manual") or "CORRECT" in x["nombre"].upper()))
+        unicas.append(g[0])
+        grupos.append([x["nombre"] for x in g])
+    return unicas, grupos
+
+
+def _acierto_vecinos(refs, escala):
+    """Cuántas referencias acierta el consenso de sus vecinos (sin ella ni sus copias): rápido, sin el motor."""
+    n = 0
+    for r in refs:
+        otras = [x for x in refs if id(x) not in r.get("_grupo", {id(r)})]
+        est, _ = consenso(vecinos(r["caso"], otras, escala=escala))
+        if est and all(est.get(k) == r["estructura"].get(k) for k in CLAVES_EST if k != "sep"):
+            n += 1
+    return n
+
+
+def aprender_escalas(refs, multiplicadores=(0.5, 2.0), pasadas=2):
+    """v1.10: ajusta las escalas de similitud (descenso por coordenadas) para que los vecinos de cada referencia
+    acierten su estructura. -> (escalas, aciertos con las de defecto, aciertos con las elegidas)"""
+    base = list(_ESCALA)
+    mejor = _acierto_vecinos(refs, base)
+    inicial = mejor
+    if len(refs) < 6:   # con tan pocas referencias no hay de dónde aprender
+        return base, inicial, inicial
+    esc = list(base)
+    for _ in range(pasadas):
+        cambio = False
+        for i in range(len(esc)):
+            for m in multiplicadores:
+                prueba = list(esc)
+                prueba[i] = max(base[i] / 8.0, min(base[i] * 8.0, esc[i] * m))
+                a = _acierto_vecinos(refs, prueba)
+                if a > mejor:
+                    mejor, esc, cambio = a, prueba, True
+        if not cambio:
+            break
+    return esc, inicial, mejor
+
+
+def contradicciones(refs, umbral=0.9):
+    """v1.10: referencias casi iguales en geometría que piden estructuras distintas (alguien debería retirar una)."""
+    out = []
+    for i, a in enumerate(refs):
+        for b in refs[i + 1:]:
+            s = similitud(a["caso"], b["caso"])
+            if s < umbral:
+                continue
+            dif = [k for k in CLAVES_EST if k != "sep" and a["estructura"].get(k) != b["estructura"].get(k)]
+            if dif:
+                out.append(f"CONTRADICCION ({s:.0%}) {a['nombre']} vs {b['nombre']}: "
+                           + ", ".join(f"{k} {a['estructura'].get(k)}/{b['estructura'].get(k)}" for k in dif))
+    return out
+
+
+def cobertura(refs, reglas):
+    """v1.10: cuántas referencias hay por tipo de caso (logo ancho/medio/pequeño, con o sin CB, Amplify, Logo Under).
+    Los tipos con 0 o 1 son los que más aporta marcar con ★."""
+    cuenta = {}
+    for r in refs:
+        k = (clase_logo(r["logo_w"] / float(r["h"]), reglas), "CB" if r["cb"] else "sin CB",
+             "Amplify" if r.get("amplify") else "1 fila", "Logo Under" if r["under"] else "normal")
+        cuenta[k] = cuenta.get(k, 0) + 1
+    tipos = [(c, l, a, u) for c in ("ancho", "medio", "pequeno") for l in ("CB", "sin CB")
+             for a in ("1 fila", "Amplify") for u in ("normal", "Logo Under")]
+    vacios = [" / ".join(t) for t in tipos if cuenta.get(t, 0) == 0]
+    return ["Cobertura: " + "; ".join(f"{' / '.join(k)}: {n}" for k, n in sorted(cuenta.items()))
+            + (f" · sin referencias: {len(vacios)} tipos" if vacios else "")]
+
+
+def _buscar_ref(r, reglas, pesos, refs, escala=None):
     """Resuelve la geometría de una referencia sin usarla a ella misma como plantilla."""
     base = _base_ref(r)
     dims = base.pop("dims")
     return buscar(r["geo"], r["margin"], _archivos_ref(), base, r["logo_w"], r["anim_w"], reglas, pesos, refs,
-                  excluir=r, dims=dims)
+                  excluir=r.get("_grupo") or {id(r)}, dims=dims, escala=escala)
 
 
 def _misma(cand, r):
@@ -795,15 +976,33 @@ def _misma(cand, r):
     return all(cand["estructura"].get(k) == r["estructura"].get(k) for k in claves)
 
 
-def _guardar_aprendizaje(config_dir, firma, pesos, lineas):
+def ruta_aprendizaje(config_dir=None):
+    return os.path.join(_cfg_dir(config_dir), REFS_DIR, LEARN_FILE)
+
+
+def _guardar_aprendizaje(config_dir, firma, pesos, lineas, escalas=None):
+    modelo = {"firma": firma, "pesos": pesos, "escalas": list(escalas or _ESCALA), "informe": lineas,
+              "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+              "equipo": os.getenv("COMPUTERNAME") or ""}
     try:
-        path = os.path.join(_cfg_dir(config_dir), REFS_DIR, LEARN_FILE)
+        path = ruta_aprendizaje(config_dir)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"firma": firma, "pesos": pesos, "informe": lineas,
-                       "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f, indent=2, ensure_ascii=False)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(modelo, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
     except Exception as e:
         log_error(f"No se pudo guardar el aprendizaje: {e}")
+    # v1.10: se publica en el NAS para que el resto de PCs no tengan que aprender lo mismo (en segundo plano)
+    def publicar():
+        try:
+            import refs_sync
+            if refs_sync.activo() and refs_sync.publicar_modelo(_cfg_dir(config_dir), modelo):
+                debug("[refs] Modelo publicado en el NAS")
+        except Exception as e:
+            log_error(f"[refs] No se pudo publicar el modelo: {e}")
+    if os.getenv("ARCHIE_NO_PUBLICAR") != "1":
+        threading.Thread(target=publicar, daemon=True).start()
 
 
 _APRENDIZAJE = {"hilo": None, "lock": threading.Lock()}
@@ -857,19 +1056,24 @@ def pesos_actuales(config_dir=None):
     vez, sin pesos guardados, se espera al aprendizaje."""
     refs, firma = cargar_referencias(config_dir)
     if not refs:
+        _usar_escalas(None)
         return cargar_reglas(config_dir)["pesos"]
     data = _leer_aprendizaje(config_dir)
     if data and data.get("firma") == firma:
+        _usar_escalas(data.get("escalas"))   # v1.10
         return data["pesos"]
     h = _APRENDIZAJE["hilo"]
     if data and data.get("pesos"):
         if h is None or not h.is_alive():
             aprender_en_segundo_plano(config_dir)
+        if h is None or not h.is_alive() or h is threading.current_thread():
+            _usar_escalas(data.get("escalas"))
         return data["pesos"]
     if h is not None and h.is_alive() and h is not threading.current_thread():
         h.join()
         data = _leer_aprendizaje(config_dir)
         if data and data.get("pesos"):
+            _usar_escalas(data.get("escalas"))
             return data["pesos"]
     return _aprender_y_guardar(config_dir)
 
@@ -964,9 +1168,9 @@ def completar_goal(w_total, h_total, goal_line, cb_width, margin, archivos, conf
         clase = clase_logo(logo_w / float(max(1, h_total)), reglas)
         objetivos = objetivos_por_clase(clase, reglas, cb_width)
         caso = _rasgos_caso(w_total, h_total, goal_line, cb_width, logo_w, anim_w or logo_w, False)
-        ref, sim = _plantilla(caso, refs)
-        if ref is not None and sim >= 0.5 and ref["objetivos_medidos"].get("goal"):
-            objetivos = dict(objetivos, goal=ref["objetivos_medidos"]["goal"])
+        _, obj_vec = consenso(vecinos(caso, refs))   # v1.10: k vecinos
+        if obj_vec and obj_vec.get("goal"):
+            objetivos = dict(objetivos, goal=obj_vec["goal"])
         meta = int(objetivos["goal"])
         dims = conf0.get("dims") or _dims_conf(archivos)   # v1.05: los ficheros se miden una sola vez
         conf_eval = dict(conf0, dims=dims) if dims else conf0
@@ -1027,6 +1231,11 @@ def _limpiar(conf):
 _NOMBRE_CLASE = {"ancho": "WIDE", "medio": "MEDIUM", "pequeno": "SMALL"}
 
 
+def _nombre_corto(nombre):
+    n = os.path.splitext(nombre)[0]
+    return n if len(n) <= 60 else n[:57] + "..."
+
+
 def _mensaje(mejor, info):
     e, c = mejor["estructura"], mejor["conf"]
     partes = [f"{_NOMBRE_CLASE[info['clase']]} logo",
@@ -1038,8 +1247,10 @@ def _mensaje(mejor, info):
         partes.append("near-camera corner logos removed to fit Anim Zones")
     if c.get("gl_offset"):
         partes.append(f"goal logos shifted {c['gl_offset']}% towards the far corners")
-    if info.get("ref") is not None:
-        partes.append(f"template: {info['ref']['nombre']} ({info['sim']:.0%})")
+    vec = info.get("vecinos") or ([(info["ref"], info["sim"])] if info.get("ref") is not None else [])
+    if vec:   # v1.10: de qué referencias sale la decisión
+        partes.append("based on " + ("similar references: " if len(vec) > 1 else "the similar reference ")
+                      + "; ".join(f"{_nombre_corto(r['nombre'])} ({s:.0%})" for r, s in vec))
     return "Auto-Solver (hotspots): " + ", ".join(partes) + "."
 
 
