@@ -67,7 +67,20 @@ REGLAS_PROMPT = "\n".join(f"        - {rid}: {txt}" for rid, txt, _ in REGLAS) +
           "architecture_warning": {"rule": "<RULE_ID>", "reason": "<1-2 sentences, in the user's language, explaining why it is a bad decision>"},
           "override": "<override name or null>"
         Known overrides: "allow_no_goal_logos" (rule GOAL_HOTSPOT_RESERVED; then send `qty_goal`: 0).
-        Requests that respect the rules never carry these keys. If the [STATE] block shows the override already
+        Requests that respect the rules never carry these keys.
+
+        KEY MAPPING (use the keys of the CURRENT MODE shown in [STATE] "logo_under"):
+          - Logo Under OFF: "goal"/"porteria"/"behind the goal" -> `qty_goal`; "touchline"/"banda"/"linea de toque"
+            separators -> `qty_tl`; "corner"/"esquina" -> `qty_corner`; "center board"/"CB" -> `qty_cb`.
+          - Logo Under ON: "goal line"/"fondo"/"GL"/"goal" -> `qty_gl_under` (TOTAL logos per Goal Line, Z1 and Z5);
+            "touchline"/"banda"/"linea de toque"/"TL" -> `qty_tl_under` (TOTAL logos per Touchline side, Z2 and Z4,
+            animated + visible); "all zones"/"todas" -> both. `qty_goal`/`qty_tl` do nothing in Logo Under.
+          - AMPLIFY: the Touchline 1st and 2nd row are ONE element (amplified); "1a/2a fila" still means `qty_tl_under`
+            (Logo Under) or `qty_tl` (standard). Never touch `amplify`.
+          - The number the user gives is the EXACT number they want to see: the engine applies it literally.
+        AMBIGUITY: if the user gives a quantity without saying where (e.g. "reduce los logos a 6"), do NOT guess:
+        return {"needs_clarification": "<short question in the user's language>"} and nothing else.
+        If the [STATE] block shows the override already
         active ("ov"), the user accepted it before: do not warn again for that same rule.
 """
 
@@ -133,7 +146,78 @@ def aviso_del_llm(datos_ia):
     }
 
 
+# ---------------------------------------------------------------- v1.09: lo pedido en el chat manda
+# Claves de cantidad que el motor trata como orientativas (Auto / densidad del Logo Under con hotspots). Si el
+# chat las pide, van a config["overrides"]["locks"] y el motor las usa tal cual.
+LOCKABLES = ("qty_goal", "qty_gl_under", "qty_tl_under")
+CLAVES_PARAMETRO = ("qty_goal", "qty_corner", "qty_cb", "qty_tl", "margin", "margin_tl", "stretch_limit",
+                    "squash_logos", "stretch_fit_per", "gl_offset", "corner_logo", "logo_under", "qty_gl_under",
+                    "qty_tl_under", "show_cb", "amplify", "invert_order", "max_anim_gl", "max_anim_tl")
+
+
+def fusionar_overrides(actual, nuevos=None, pedidas=()):
+    """overrides actuales + los nuevos (bools) + locks de las claves que el chat ha pedido explícitamente."""
+    ov = {k: v for k, v in (actual or {}).items() if k != "locks"}
+    ov.update({k: v for k, v in (nuevos or {}).items() if k != "locks"})
+    locks = set((actual or {}).get("locks") or ()) | set((nuevos or {}).get("locks") or ())
+    locks |= {k for k in pedidas if k in LOCKABLES}
+    if locks:
+        ov["locks"] = sorted(locks)
+    return ov
+
+
+def contar_logos(datos):
+    """-> {zona: nº de static_logo} de un resultado de calcular_layout_data."""
+    return {zn: sum(1 for e in z.get("elementos", []) if e.get("tipo") == "static_logo")
+            for zn, z in ((datos or {}).get("zonas") or {}).items()}
+
+
+def firma_layout(datos):
+    """Algo comparable para saber si un cambio ha movido algo de verdad."""
+    return tuple(sorted((zn, e.get("tipo"), int(e.get("x_absoluta", 0)), int(e.get("width", 0)))
+                        for zn, z in ((datos or {}).get("zonas") or {}).items() for e in z.get("elementos", [])))
+
+
+_ZONAS_QTY = {"qty_gl_under": (("ZONA_1", "ZONA_5"), "Goal Lines"),
+              "qty_tl_under": (("ZONA_2", "ZONA_4"), "Touchline")}
+
+
+def verificar(datos, config, pedidas):
+    """Compara lo pedido en el chat con lo que ha salido del motor. -> lista de discrepancias (texto)."""
+    fallos = []
+    cuenta = contar_logos(datos)
+    if config.get("logo_under"):
+        for clave in pedidas:
+            if clave not in _ZONAS_QTY:
+                continue
+            zonas, nombre = _ZONAS_QTY[clave]
+            pedido = int(config.get(clave) or 0)
+            for zn in zonas:
+                if zn in cuenta and cuenta[zn] != pedido:
+                    fallos.append(f"{nombre} ({zn}): pedido {pedido} logos, salen {cuenta[zn]} "
+                                  f"(no caben más / menos con el ancho de logo y ANIM ZONES actuales)")
+    elif "qty_gl_under" in pedidas or "qty_tl_under" in pedidas:
+        fallos.append("Las cantidades 'Logo Under' sólo se aplican con el modo Logo Under activado.")
+    return fallos
+
+
+_RE_NUM_LOGOS = re.compile(r"\b(\d+|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|one|two|three|four|five|six|"
+                           r"seven|eight|nine|ten)\b[^.\n]{0,30}\blogos?\b|\blogos?\b[^.\n]{0,30}\b(\d+|seis|six)\b", re.I)
+_RE_ZONA = re.compile(r"(goal|gol|porter|\bgl\b|fondo|touch|toque|banda|\btl\b|lateral|corner|esquina|centro|center|"
+                      r"\bcb\b|fila|row|1st|2nd|primera|segunda|amplify|todo|toda|\ball\b|everywhere|total|cada|ambas|ambos|"
+                      r"each|both|under)", re.I)
+
+
+def pregunta_ambigua(texto):
+    """"Reduce el número de logos a 6" sin decir dónde -> pregunta para el usuario (o None)."""
+    t = texto or ""
+    if _RE_NUM_LOGOS.search(t) and not _RE_ZONA.search(t):
+        return ("¿Dónde quieres ese número de logos? Dime la zona: Goal Lines (fondos, Z1/Z5), Touchline "
+                "(Z2/Z4), tras las porterías, corners o en todas las zonas.")
+    return None
+
+
 def limpiar_datos_ia(datos_ia):
     """Quita del JSON del LLM las claves del aviso (lo que queda son los parámetros a aplicar)."""
     return {k: v for k, v in (datos_ia or {}).items()
-            if k not in ("requires_confirmation", "architecture_warning", "override")}
+            if k not in ("requires_confirmation", "architecture_warning", "override", "needs_clarification")}

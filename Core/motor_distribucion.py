@@ -279,6 +279,8 @@ class Distribuidor:
       segs = [("ZONA_1",), ("ZONA_2", "ZONA_4"), ("ZONA_5",)]
     qty = {"ZONA_1": self.config.get("qty_gl_under", 1), "ZONA_5": self.config.get("qty_gl_under", 1),
            "ZONA_2": self.config.get("qty_tl_under", 1), "ZONA_4": self.config.get("qty_tl_under", 1)}
+    clave_qty = {"ZONA_1": "qty_gl_under", "ZONA_5": "qty_gl_under", "ZONA_2": "qty_tl_under", "ZONA_4": "qty_tl_under"}
+    locks = set((self.config.get("overrides") or {}).get("locks") or ())
 
     def tipo_borde(x):
       if abs(x - 0) < 1 or abs(x - W) < 1:
@@ -308,7 +310,9 @@ class Distribuidor:
       if A == 0:
         tipos = ["libre"]
       p_obj = (L1 - L0) / float(max(1, sum(int(qty[zn] or 1) for zn in seg)))
-      info.append({"seg": seg, "L0": L0, "L1": L1, "anims": anims, "tipos": tipos, "p_obj": p_obj})
+      # v1.09: cantidad pedida en el chat (bloqueada): N exacto en el tramo, no una densidad orientativa
+      n_fijo = sum(int(qty[zn] or 0) for zn in seg) if any(clave_qty[zn] in locks for zn in seg) else None
+      info.append({"seg": seg, "L0": L0, "L1": L1, "anims": anims, "tipos": tipos, "p_obj": p_obj, "n_fijo": n_fijo})
 
     def opciones_de(t):
       if t == "nada":
@@ -352,6 +356,10 @@ class Distribuidor:
       res = {}
       n_min = max(1, int(L // (w * 2.6)))
       n_max = int(L // (w * 1.15))
+      if it.get("n_fijo") is not None:
+        if it["n_fijo"] <= 0:
+          return {}
+        n_min = n_max = min(it["n_fijo"], int(L // w))   # lo que quepa (la verificación del chat avisa)
       for N in range(n_min, n_max + 1):
         p = L / float(N)
         dens = abs(p - it["p_obj"]) / it["p_obj"] * 100.0
@@ -547,7 +555,8 @@ class Distribuidor:
     if ov.get("allow_no_goal_logos") and int(c.get("qty_goal") or 0) == 0:
       # v1.08: el usuario confirmó en el chat porterías SIN logos (aviso de arquitectura): 0 no es "Auto"
       opciones = [0]
-    elif c.get("goal_auto", True):
+    # v1.09: qty_goal pedido en el chat (lock) -> se usa tal cual; 0 sigue siendo Auto salvo allow_no_goal_logos
+    elif c.get("goal_auto", True) and not ("qty_goal" in (ov.get("locks") or ()) and int(c.get("qty_goal") or 0) > 0):
       opciones = range(1, 10)
     else:
       opciones = [int(c.get("qty_goal") or 0)]

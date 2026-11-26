@@ -1442,12 +1442,12 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         # Sliders, chat y preview se aplican juntos en el hilo principal (y nada si se canceló)
         self.after(0, self._on_solver_done, gen, slider_args, msg)
 
-    def aplicar_parametros_ia(self, qty_goal: int, qty_corner: int, qty_cb: int, qty_tl: int, stretch_limit: int, squash_logos: bool, stretch_fit_per: bool, gl_offset: int, corner_logo: bool, logo_under: bool = False, qty_gl_under: int = 1, qty_tl_under: int = 1, show_cb: bool = True, amplify: bool = False, invert_order: bool = False, max_anim_gl: int = 0, max_anim_tl: int = 0, margin: int = 20, margin_tl: int = -1, overrides: dict = None) -> dict:
+    def aplicar_parametros_ia(self, qty_goal: int, qty_corner: int, qty_cb: int, qty_tl: int, stretch_limit: int, squash_logos: bool, stretch_fit_per: bool, gl_offset: int, corner_logo: bool, logo_under: bool = False, qty_gl_under: int = 1, qty_tl_under: int = 1, show_cb: bool = True, amplify: bool = False, invert_order: bool = False, max_anim_gl: int = 0, max_anim_tl: int = 0, margin: int = 20, margin_tl: int = -1, overrides: dict = None, pedidas=()) -> dict:
         self.reset_zooms_and_pan()
         # v1.08: excepciones de arquitectura: las ya confirmadas + las nuevas. Pedir logos en el goal anula
         # la de porterías sin logos (vuelve el reparto automático).
-        ov = dict(getattr(self, "arch_overrides", {}) or {})
-        ov.update(overrides or {})
+        # v1.09: + locks de las claves que el chat ha pedido explícitamente (el motor las usa tal cual)
+        ov = reglas_arq.fusionar_overrides(getattr(self, "arch_overrides", {}) or {}, overrides, pedidas)
         if int(qty_goal or 0) > 0:
             ov.pop("allow_no_goal_logos", None)
         amplify = bool(amplify) and AMPLIFY_ACTIVO   # v0.91: AMPLIFY desactivado de momento
@@ -1476,8 +1476,17 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         margin_simulado = int(margin)
 
         try:
+            # v1.09: arquitectura de antes, para saber si el cambio mueve algo de verdad
+            try:
+                antes = calcular_layout_data(w_total, h_total, goal_line, cb_width, int(self.margin_slider.get()),
+                                             self.archivos_cargados, self._config_ui())
+            except Exception:
+                antes = None
             datos = calcular_layout_data(w_total, h_total, goal_line, cb_width, margin_simulado, self.archivos_cargados, config_prueba)
             warnings = datos.get("warnings", []) if datos else []
+            fallos = reglas_arq.verificar(datos, config_prueba, pedidas)
+            sin_cambios = (bool(pedidas) and antes is not None
+                           and reglas_arq.firma_layout(antes) == reglas_arq.firma_layout(datos))
             
             if "goal_overlap" in warnings or "touchline_overlap" in warnings:
                 return {
@@ -1490,7 +1499,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             # otro logo/estadio) y el chat no ha tocado los logos del goal, prueba a meter los que pide el logo
             extra = ""
             if (self.solver_key != self._arch_key() and int(qty_goal) == int(self.qty_goal_slider.get())
-                    and not ov.get("allow_no_goal_logos")):
+                    and not ov.get("allow_no_goal_logos") and "qty_goal" not in (ov.get("locks") or ())):
                 conf2, msg_goal = completar_goal(w_total, h_total, goal_line, cb_width, margin_simulado,
                                                  self.archivos_cargados, config_prueba)
                 if msg_goal:
@@ -1501,7 +1510,8 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             self.after(0, self._actualizar_sliders_desde_ia, qty_goal, qty_corner, qty_cb, qty_tl, stretch_limit, squash_logos, stretch_fit_per, gl_offset, corner_logo, logo_under, qty_gl_under, qty_tl_under, show_cb, amplify, invert_order, max_anim_gl, max_anim_tl, margin_simulado, True, config_prueba["margin_tl"], ov)
             
             return {
-                "status": "SUCCESS", 
+                "status": "SUCCESS", "fallos": fallos, "sin_cambios": sin_cambios,
+                "logos": reglas_arq.contar_logos(datos),
                 "mensaje": "The parameters fit perfectly and have been applied to the interface." + extra + " Stop here and answer the user confirming the action."
             }
         except Exception as e:
@@ -1571,6 +1581,17 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         if not self._mv_confirmar_chat(): return   # v0.71: el chat no pisa el MODO MANUAL sin preguntar
         self.chat_input.delete(0, 'end')
         self.append_chat("You", user_text)
+        # v1.09: si Archie había preguntado algo, la respuesta completa la petición anterior
+        pendiente = getattr(self, "_pregunta_pendiente", None)
+        self._pregunta_pendiente = None
+        if pendiente:
+            user_text = f"{pendiente}\n(Aclaración del usuario: {user_text})"
+        else:
+            pregunta = reglas_arq.pregunta_ambigua(user_text)
+            if pregunta:
+                self._pregunta_pendiente = user_text
+                self.append_chat("Archie", pregunta)
+                return
         
         datos = self.calcular_layout()
         anims_count = 0
@@ -1640,6 +1661,12 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                     if not isinstance(datos_ia, dict):
                         raise json.JSONDecodeError("not an object", raw_json, 0)
 
+                    if datos_ia.get("needs_clarification"):   # v1.09: Gemini no sabe a qué zona se refiere
+                        self._pregunta_pendiente = user_text
+                        self.after(0, self.append_chat, "Archie", str(datos_ia["needs_clarification"]))
+                        self.after(0, self._restaurar_botones_ia)
+                        return
+
                     # v1.08: avisos de arquitectura. El del LLM y, por si no lo detecta, la validación local
                     aviso = reglas_arq.aviso_del_llm(datos_ia)
                     locales = reglas_arq.detectar_conflictos(user_text, datos_ia, self._config_ui())
@@ -1707,9 +1734,22 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             max_anim_gl=g("max_anim_gl", int(self.max_anim_gl_slider.get())),
             max_anim_tl=g("max_anim_tl", int(self.max_anim_tl_slider.get())),
             overrides=overrides,
+            pedidas=tuple(k for k in reglas_arq.CLAVES_PARAMETRO if k in datos_ia),
         )
         if resultado["status"] == "OVERLAP ERROR":
             self.after(0, self.append_chat, "System Warning", resultado["mensaje"])
+        elif resultado["status"] != "SUCCESS":
+            self.after(0, self.append_chat, "System Error", resultado.get("mensaje", "Error"))
+        elif resultado.get("fallos"):
+            # v1.09: no decir "hecho" si el motor no ha dado lo pedido
+            self.after(0, self.append_chat, "⚠️ Archie",
+                       "Lo he aplicado, pero el resultado no coincide del todo con lo que pediste:\n- "
+                       + "\n- ".join(resultado["fallos"]))
+        elif resultado.get("sin_cambios"):
+            self.after(0, self.append_chat, "⚠️ Archie",
+                       "He enviado el cambio al motor pero la arquitectura no se ha movido: esos valores ya "
+                       "estaban así o no afectan al modo actual (Logo Under / Amplify). Dime la zona exacta o "
+                       "el resultado que quieres ver y lo ajusto.")
         else:
             explicacion = datos_ia.get("explicacion", "Layout adjusted successfully.")
             self.after(0, self.append_chat, "AI Assistant", explicacion)
