@@ -12,6 +12,9 @@ La carpeta se puede cambiar con ARCHIE_REFS_NAS en Config\\.env (ruta completa; 
 Caché local: Config\\referencias_nas\\ (+ _sync.json). El Auto-Solver lee SIEMPRE de disco local: la red solo se toca al
 sincronizar (al abrir Archie, en segundo plano) y al guardar una ★.
 
+Para quitar una referencia guardada por error: botón derecho sobre ★ abre la carpeta refs\\ del NAS; se borra a mano
+y desaparece de todos los PCs la próxima vez que abran Archie.
+
 Al abrir Archie (sincronizar):
   1. Sondea el NAS con timeout. Si no responde, se sigue con la caché.
   2. Lista refs\\ y retiradas\\ (os.scandir: nombre, tamaño y fecha en una pasada) y lo compara con _sync.json.
@@ -83,6 +86,25 @@ def carpeta_nas():
         if _isdir_timeout(raiz):
             return os.path.join(raiz, *SUB_NAS)
     return None
+
+
+def carpeta_refs_nas():
+    """Carpeta refs\\ del NAS (la que se abre con botón derecho sobre ★) o None si el NAS no responde."""
+    nas = carpeta_nas()
+    if not nas:
+        return None
+    c = os.path.join(nas, REFS)
+    try:
+        os.makedirs(c, exist_ok=True)
+    except OSError:
+        return None
+    return c
+
+
+def migrado(config_dir):
+    """True cuando este PC ya ha subido sus referencias al NAS: desde entonces el NAS es la única fuente (una
+    referencia borrada a mano en el NAS no vuelve a subir desde la carpeta local de ningún PC)."""
+    return bool(_leer_sync(config_dir).get("migrado"))
 
 
 def carpeta_cache(config_dir):
@@ -187,8 +209,9 @@ def sincronizar(config_dir, nas=None, migrar=True):
                 res["subidas"].append(nombre)
             except OSError as e:
                 log_error(f"[refs] No se pudo subir {nombre}: {e}")
-        # 2) migración: referencias de este PC (Config\referencias) y de la versión que el NAS aún no tiene
-        if migrar:
+        # 2) migración (UNA vez por PC): referencias de este PC (Config\referencias) y de la versión que el NAS
+        #    aún no tiene. Después ya no se suben: así lo que se borra a mano en el NAS no vuelve.
+        if migrar and not d.get("migrado"):
             remotas_l = {n.lower() for n in remotas} | {n.lower() for n in res["subidas"]}
             for carpeta in _carpetas_legacy(config_dir):
                 for p in sorted(glob.glob(os.path.join(carpeta, "*.json"))):
@@ -203,6 +226,7 @@ def sincronizar(config_dir, nas=None, migrar=True):
                         res["subidas"].append(nombre)
                     except OSError as e:
                         log_error(f"[refs] No se pudo migrar {nombre}: {e}")
+            d["migrado"] = True
         if res["subidas"]:
             remotas = _listar(os.path.join(nas, REFS))
         # 3) bajar lo nuevo o cambiado

@@ -491,7 +491,10 @@ def carpetas_referencias(config_dir=None):
     import refs_sync
     if refs_sync.activo():
         carpetas.append(refs_sync.carpeta_cache(_cfg_dir(config_dir)))
-    carpetas += [local, version]
+        # una vez migradas al NAS, las carpetas local y de la versión ya no cuentan: el NAS es la única fuente
+        if refs_sync.migrado(_cfg_dir(config_dir)):
+            local = version = None
+    carpetas += [c for c in (local, version) if c]
     unicas, vistas = [], set()
     for c in carpetas:
         k = os.path.normcase(os.path.abspath(c))
