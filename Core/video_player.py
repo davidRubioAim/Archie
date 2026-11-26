@@ -163,6 +163,7 @@ class Vista:
         self.static_view_fn = static_view_fn
         self.show_fn = show_fn
         self.escena = None
+        self.pesada = False   # v1.11: True = no se repinta mientras se arrastra la línea de tiempo (3D PREVIEW)
         self.reset()
 
     def reset(self):
@@ -398,7 +399,7 @@ class PreviewPlayer:
         self.engaged = True
         self.playing = True
         self._hq = None
-        self._cancel(self._hq_id); self._hq_id = None
+        self._cancelar_hq()
         self._ensure_readers()
         self._last_wall = time.perf_counter()
         self.app.player_state_changed()
@@ -423,13 +424,16 @@ class PreviewPlayer:
         if self.playing: self.pause()
         else: self.play()
 
-    def seek(self, t, hq=False):
+    def seek(self, t, hq=False, rapido=False):
+        """rapido (v1.11, arrastrando la línea de tiempo): sin las vistas pesadas (3D) y sin pedir frames a
+        resolución completa; al soltar se llama con hq=True y se pinta todo."""
         if not self.ready: return
         self.engaged = True
         self.t = max(0.0, min(self.duration, t))
         self._hq = None
+        self._cancelar_hq()
         self._ensure_readers()
-        self.render()
+        self.render(rapido=rapido)
         self.app.player_state_changed()
         if hq and not self.playing:
             self._schedule_hq()
@@ -496,12 +500,25 @@ class PreviewPlayer:
         self._tick_id = self.app.after(delay, self._tick)
 
     # ---------- Calidad completa en pausa ----------
+    def _cancelar_hq(self):
+        """v1.11: descarta la petición de frames a resolución completa pendiente. Antes, cada clic en la línea de
+        tiempo dejaba en cola un ffmpeg por vídeo a resolución completa (ProRes, a veces desde el NAS) que nadie iba
+        a mirar ya; con varios clics seguidos la cola crecía y todo iba cada vez más lento."""
+        self._cancel(self._hq_id); self._hq_id = None
+        futs, self._hq_futures = getattr(self, "_hq_futures", None), None
+        if futs:
+            try:
+                FRAME_CACHE.cancelar(futs.values())
+            except Exception:
+                pass
+
     def _schedule_hq(self, delay=150):
         self._cancel(self._hq_id)
         self._hq_id = self.app.after(delay, self._start_hq)
 
     def _start_hq(self):
         self._hq_id = None
+        self._cancelar_hq()
         if self.playing or not self.ready or not self.engaged: return
         if self.proxy_h is not None and self.proxy_h >= self.escena.h_total: return
         t = self.t
@@ -513,6 +530,7 @@ class PreviewPlayer:
         except Exception as e:
             debug(f"Reproductor: HQ no disponible ({e})")
             return
+        self._hq_futures = futures
         self._poll_hq(t, futures)
 
     def _poll_hq(self, t, futures):
@@ -521,10 +539,11 @@ class PreviewPlayer:
             self._hq_id = self.app.after(40, self._poll_hq, t, futures)
             return
         self._hq_id = None
+        self._hq_futures = None
         frames = {}
         for path, f in futures.items():
             try: frames[path] = f.result()
-            except Exception: pass
+            except BaseException: pass   # v1.11: también CancelledError
         self._hq = (t, frames)
         self.render()
         self.app.player_state_changed()
@@ -549,10 +568,11 @@ class PreviewPlayer:
             self._gc_readers()
         return vista.compose(view, t, self._source)
 
-    def render(self):
+    def render(self, rapido=False):
         if not self.ready or not self.engaged: return
         t0 = time.perf_counter()
         for vista in self._vistas_activas():
+            if rapido and vista.pesada: continue
             view = vista.view_fn()
             if view is None: continue
             vista.show_fn(self.compose(view, self.t, vista))

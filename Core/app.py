@@ -121,6 +121,7 @@ except AttributeError:
 
 PREVIEW_FRAMES = 8
 PAN_FRAME_MS = 16   # v1.05: repintado del pan / arrastre (≈60 fps)
+SCRUB_MIN_MS = 33   # v1.11: línea de tiempo del reproductor: como mucho ~30 repintados por segundo al arrastrar
 
 def aplicar_letterbox_pil(img, target_w, target_h, resample_method):
     if target_w <= 0 or target_h <= 0:
@@ -311,6 +312,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.sys_vista = self.player.add_vista(Vista(self.sys_player_view, self.sys_player_static_view, self.sys_player_show))
         # v0.46: y en 3D PREVIEW (el strip entero como textura, mismo reloj y mismos proxies)
         self.vista_3d = self.player.add_vista(Vista(self.v3d_player_view, self.v3d_player_static_view, self.v3d_player_show))
+        self.vista_3d.pesada = True   # v1.11: no se repinta mientras se arrastra la línea de tiempo
 
         self.pan_x_strip = 0
         self.pan_y_strip = 0
@@ -892,6 +894,11 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                       font=ctk.CTkFont(size=11, weight="bold"), command=self.cancel_preview_render).pack(pady=(0, 10))
 
         self.after(0, self._revelar_ventana)   # v1.10: primera vuelta del mainloop
+        try:   # v1.11: si la ventana se queda sin responder, deja en logs/archie_bloqueos.log dónde estaba
+            import vigilante
+            vigilante.iniciar(self, os.path.join(MASTER_DIR, "logs"))
+        except Exception as e:
+            log_error(f"Vigilante de bloqueos: {e}")
 
     def _revelar_ventana(self):
         """v1.10: aplica el layout definitivo (divisor 1/3, altura guardada de MEDIA ASSETS) con la ventana aún
@@ -3886,22 +3893,47 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.player.loop = self.player_loop_var.get()
 
     def on_player_scrub(self, value):
+        """v1.11: la línea de tiempo solo apunta adónde ir; el repintado se hace como mucho una vez por fotograma
+        (_aplicar_scrub). Antes cada evento del ratón repintaba todas las vistas en el momento: con ELEMENTS pesados
+        los eventos se acumulaban, la ventana dejaba de responder y Windows acababa cerrando Archie."""
         if not self.player.ready: return
         if not self._player_scrubbing:
             self._player_scrubbing = True
             self._player_scrub_resume = self.player.playing
             self.player.pause()
-        self.player.seek(float(value) * self.player.duration)
+        self._scrub_t = float(value) * self.player.duration
+        if getattr(self, "_scrub_id", None) is None:
+            # si pintar cuesta más que un fotograma, se espera lo que tardó el último (nunca se acumulan repintados)
+            espera = max(SCRUB_MIN_MS, min(250, int(self.player.last_render_ms)))
+            self._scrub_id = self.after(espera, self._aplicar_scrub)
+
+    def _aplicar_scrub(self):
+        self._scrub_id = None
+        t, self._scrub_t = getattr(self, "_scrub_t", None), None
+        if t is None or not self.player.ready: return
+        try:
+            self.player.seek(t, rapido=True)
+        except Exception:
+            traceback.print_exc()
 
     def on_player_scrub_end(self, event=None):
         if not self._player_scrubbing: return
         resume = self._player_scrub_resume
         self._player_scrubbing = self._player_scrub_resume = False
+        if getattr(self, "_scrub_id", None) is not None:   # v1.11: el último punto pendiente
+            self.after_cancel(self._scrub_id)
+            self._scrub_id = None
+        t, self._scrub_t = getattr(self, "_scrub_t", None), None
         if not self.player.ready: return
-        if resume:
-            self.player.play()
-        else:
-            self.player.seek(self.player.t, hq=True)
+        try:
+            if t is not None:
+                self.player.t = max(0.0, min(self.player.duration, t))
+            if resume:
+                self.player.play()
+            else:
+                self.player.seek(self.player.t, hq=True)
+        except Exception:
+            traceback.print_exc()
 
     def auto_fit_zooms(self):
         self.update_idletasks()

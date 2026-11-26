@@ -225,6 +225,17 @@ class FrameCache:
                 self._pending[key] = fut
             return fut
 
+    def cancelar(self, futures):
+        """v1.11: quita de la cola las decodificaciones que aún no han empezado (las que ya corren terminan y se
+        guardan en la caché como siempre)."""
+        with self._lock:
+            for fut in futures:
+                if isinstance(fut, _Done) or not fut.cancel():
+                    continue
+                for k, f in list(self._pending.items()):
+                    if f is fut:
+                        del self._pending[k]
+
     def frame(self, path, t, height=None):
         """Frame RGBA en el instante t (en bucle sobre la duración), escalado a 'height'."""
         return self.request(path, t, height).result()
