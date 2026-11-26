@@ -194,8 +194,9 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
     def _update_mostrar(self, version):
         self._update_version = version
         self.btn_update.configure(text=f"\u2191  Update available \u00b7 {version}")
-        if not self.btn_update.winfo_ismapped():
-            self.btn_update.pack(side="right", padx=(10, 0), before=self.stadium_frame)
+        if not self.btn_update.winfo_ismapped():   # v1.10: esquina superior derecha de las previews
+            self.btn_update.place(in_=self.preview_area, relx=1.0, x=-4, y=0, anchor="ne")
+            self.btn_update.lift()
 
     def on_update_click(self):
         from tkinter import messagebox
@@ -307,17 +308,23 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
 
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.main_frame.pack(fill="both", expand=True, padx=15, pady=15)
-        # v1.10: columnas de la izquierda más estrechas: prioridad a las previews (columna 2, se lleva el resto)
-        self.main_frame.grid_columnconfigure(0, weight=0, minsize=320)
-        self.main_frame.grid_columnconfigure(1, weight=0, minsize=280)
+        # v1.10: columna 0 = panel izquierdo (ancho fijado por el divisor, 1/3 por defecto), columna 1 = divisor
+        # arrastrable, columna 2 = previews (se lleva el resto)
+        self.main_frame.grid_columnconfigure(0, weight=0)
+        self.main_frame.grid_columnconfigure(1, weight=0)
         self.main_frame.grid_columnconfigure(2, weight=1)
         self.main_frame.grid_rowconfigure(0, weight=0) 
         self.main_frame.grid_rowconfigure(1, weight=2) 
         self.main_frame.grid_rowconfigure(2, weight=1) 
         self.main_frame.grid_rowconfigure(3, weight=0)
 
-        self.top_left_container = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.top_left_container.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+        # v1.10: panel izquierdo con ancho propio (pack_propagate(False)): su contenido no puede ensancharlo; el
+        # ancho lo decide el divisor vertical (_panel_*), 1/3 de la ventana por defecto
+        self.left_panel = ctk.CTkFrame(self.main_frame, fg_color="transparent", width=420)
+        self.left_panel.grid(row=0, column=0, rowspan=3, sticky="nsew")
+        self.left_panel.pack_propagate(False)
+        self.top_left_container = ctk.CTkFrame(self.left_panel, fg_color="transparent")
+        self.top_left_container.pack(fill="x", padx=5, pady=5)
         self.header_frame = ctk.CTkFrame(self.top_left_container, fg_color="transparent")
         self.header_frame.pack(fill="x", anchor="w", padx=10, pady=(0, 10))
 
@@ -349,7 +356,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         # v1.07: "Update available" en la esquina superior derecha (oculto hasta que el Gist publique una versión mayor)
         self._update_version = None
         self.btn_update = ctk.CTkButton(
-            self.header_frame, text="Update available", width=150, height=32, corner_radius=16,
+            self.main_frame,   # v1.10: arriba a la derecha de las previews, no en la cabecera del panel izquierdo text="Update available", width=150, height=32, corner_radius=16,
             font=ctk.CTkFont(size=12, weight="bold"), fg_color=self.c_magenta, hover_color="#C8007A",
             text_color=self.c_white, command=self.on_update_click)
         self.after(4000, self._update_programar)
@@ -396,7 +403,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             button_color="#1a1a1a",               
             button_hover_color=self.c_magenta,    
             font=self.font_t3,
-            width=300,   # v1.10: 400 -> 300, más hueco para las previews
+            width=260,   # v1.10: 400 -> 260, la cabecera cabe en 1/3 de la ventana
             dynamic_resizing=False
         )
         self.stadium_selector_global.pack(anchor="e", fill="x")
@@ -471,14 +478,14 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
 
         # corner_radius unificado a 10
         self.btn_create_arch = ctk.CTkButton(
-            self.actions_arch_frame, text="✨ Create Architecture", font=self.font_t2, height=40, 
+            self.actions_arch_frame, text="✨ Create Architecture", font=self.font_t2, height=40, width=100,   # v1.10: estira con la columna
             corner_radius=10, fg_color=self.c_magenta, text_color=self.c_white,
             hover_color="#D1007A", command=self.on_create_architecture
         )
         self.btn_create_arch.grid(row=0, column=0, sticky="ew", padx=(0, 5))
 
         self.btn_reset_arch = ctk.CTkButton(
-            self.actions_arch_frame, text="🔄 RESET", font=self.font_t2, height=40, 
+            self.actions_arch_frame, text="🔄 RESET", font=self.font_t2, height=40, width=80,   # v1.10
             corner_radius=10, fg_color="#2b2b2b", text_color=self.c_white,
             hover_color="#404040", command=self.reset_layout_to_defaults
         )
@@ -517,7 +524,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.after(500, self._init_history_state)
 
         self.tabs_container = ctk.CTkTabview(
-            self.main_frame, 
+            self.left_panel, 
             corner_radius=10, 
             fg_color=self.c_white, 
             segmented_button_fg_color=self.c_light_grey, 
@@ -527,7 +534,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             segmented_button_unselected_hover_color="#E0E0E0",
             text_color=self.c_text_dark
         )
-        self.tabs_container.grid(row=1, column=0, rowspan=2, columnspan=2, padx=5, pady=(5, 0), sticky="nsew")
+        self.tabs_container.pack(fill="both", expand=True, padx=5, pady=(5, 0))
         self.tabs_container.add("MANUAL EDIT")
         self.tabs_container.add("AI ASSISTANT")
         
@@ -711,6 +718,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         
         self.export_controls_frame = ctk.CTkFrame(self.preview_area, fg_color="transparent")
         self.export_controls_frame.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        self._build_panel_splitter()   # v1.10: divisor vertical panel izquierdo / previews
 
         # Rutas de Exportación
         self.output_frame = ctk.CTkFrame(self.export_controls_frame, fg_color="transparent")
@@ -2551,6 +2559,150 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         guardada = cb_ajustes.leer_ajustes(CONFIG_DIR).get("media_assets_height")
         if guardada:
             self.after(800, lambda: self._split_set(int(guardada)))
+
+    # ---------------------------------------------------------------- v1.10: divisor vertical izquierda / previews
+    PANEL_RATIO = 1.0 / 3.0   # ancho del panel izquierdo por defecto (fracción del ancho útil)
+
+    def _build_panel_splitter(self):
+        """Franja vertical entre el panel izquierdo y las previews: arrastrar a izquierda/derecha cambia el reparto.
+        Doble clic = 1/3 - 2/3. Se guarda como fracción del ancho (se mantiene al redimensionar la ventana)."""
+        sp = ctk.CTkFrame(self.main_frame, fg_color="transparent", width=10, cursor="sb_h_double_arrow")
+        sp.grid(row=0, column=1, rowspan=3, sticky="ns", pady=(5, 0))
+        grip = ctk.CTkFrame(sp, fg_color="#D9D9D9", width=4, height=48, corner_radius=2, cursor="sb_h_double_arrow")
+        grip.place(relx=0.5, rely=0.5, anchor="center")
+        self._panel_splitter, self._panel_grip = sp, grip
+        self._panel_drag = None
+        guardada = cb_ajustes.leer_ajustes(CONFIG_DIR).get("left_panel_ratio")
+        try:
+            self._panel_ratio = float(guardada) if guardada else self.PANEL_RATIO
+        except (TypeError, ValueError):
+            self._panel_ratio = self.PANEL_RATIO
+        for w in (sp, grip):
+            w.bind("<Enter>", lambda e: self._panel_grip.configure(fg_color=self.c_magenta))
+            w.bind("<Leave>", lambda e: self._panel_drag is None and self._panel_grip.configure(fg_color="#D9D9D9"))
+            w.bind("<ButtonPress-1>", self._panel_press)
+            w.bind("<B1-Motion>", self._panel_motion)
+            w.bind("<ButtonRelease-1>", self._panel_release)
+            w.bind("<Double-Button-1>", lambda e: self._panel_auto())
+        self._panel_pendiente = None
+        self.main_frame.bind("<Configure>", lambda e: self._panel_programar(), add="+")
+        self.after(300, self._panel_aplicar)
+
+    def _panel_limites(self):
+        """(ancho útil, mín, máx) del panel izquierdo en px reales.
+        Mín: lo que necesitan la cabecera (logos + Stadium Profile), los botones CREATE / RESET / ↶ / ↷ / ★ y las
+        dos columnas de drop zones (nunca menos de 360). Máx: deja a las previews lo que necesita la fila de botones
+        de exportar (Generate AE Import ... Render Preview) y nunca menos de 560."""
+        s = self._split_scaling()
+        total = self.main_frame.winfo_width() - max(self._panel_splitter.winfo_width(), int(10 * s))
+        izq_min = max(int(360 * s),
+                      self._cabecera_anchos()[1] + int(20 * s),   # cabecera apilada (logos / Stadium Profile)
+                      self.actions_arch_frame.winfo_reqwidth() + int(50 * s),
+                      self.drop_zones_frame.winfo_reqwidth() + int(20 * s))
+        der_min = max(int(560 * s), self.export_controls_frame.winfo_reqwidth() + int(10 * s))
+        izq_max = max(izq_min, total - der_min)
+        return total, izq_min, izq_max
+
+    def _panel_programar(self):
+        if self._panel_pendiente is None:
+            self._panel_pendiente = self.after_idle(self._panel_aplicar)
+
+    def _panel_aplicar(self):
+        """Aplica la fracción guardada al ancho actual (al abrir, al redimensionar y al soltar el divisor)."""
+        self._panel_pendiente = None
+        if self._panel_drag is not None:
+            return
+        total, lo, hi = self._panel_limites()
+        if total <= 1:
+            return
+        w = int(min(hi, max(lo, total * self._panel_ratio)))
+        self._cabecera_ajustar(w)
+        if abs(w - self.left_panel.winfo_width()) > 1:
+            self.left_panel.configure(width=w / self._split_scaling())
+
+    def _cabecera_anchos(self):
+        """(ancho en una fila, ancho apilada) de la cabecera: logos AIM + Archie y Stadium Profile, en px reales."""
+        if getattr(self, "_cab_info", None) is None:
+            # orden y opciones de pack originales (en una fila), para poder volver a ella
+            self._cab_info = [(k, k.pack_info()) for k in self.header_frame.pack_slaves()]
+            self._cab_apilada = False
+        def ancho(k, info):
+            px = info.get("padx", 0)
+            px = sum(px) if isinstance(px, (tuple, list)) else 2 * int(px)
+            return k.winfo_reqwidth() + int(px * self._split_scaling())
+        logos = [ancho(k, i) for k, i in self._cab_info if k is not self.stadium_frame]
+        est = [ancho(k, i) for k, i in self._cab_info if k is self.stadium_frame]
+        return sum(logos) + sum(est), max(sum(logos), sum(est))
+
+    def _cabecera_ajustar(self, w):
+        """v1.10: si el panel izquierdo es más estrecho que la cabecera en una fila, Stadium Profile pasa debajo
+        de los logos (a todo el ancho); si vuelve a caber, vuelve a la derecha."""
+        fila, _ = self._cabecera_anchos()
+        apilar = w < fila + int(20 * self._split_scaling())
+        if apilar == self._cab_apilada:
+            return
+        self._cab_apilada = apilar
+        for k, _ in self._cab_info:
+            k.pack_forget()
+        if apilar:
+            self.stadium_frame.pack(side="bottom", fill="x", padx=(0, 10), pady=(8, 0))
+            for k, info in self._cab_info:
+                if k is not self.stadium_frame:
+                    k.pack(**{o: v for o, v in info.items() if o != "in"})
+        else:
+            for k, info in self._cab_info:
+                k.pack(**{o: v for o, v in info.items() if o != "in"})
+
+    def _panel_press(self, e):
+        self._panel_lim = self._panel_limites()
+        self._panel_drag = (e.x_root, self.left_panel.winfo_width())
+        self._panel_grip.configure(fg_color=self.c_magenta)
+        if getattr(self, "_panel_guia", None) is None:
+            self._panel_guia = tk.Frame(self, bg=self.c_magenta, width=3, bd=0, highlightthickness=0,
+                                        cursor="sb_h_double_arrow")
+        self._panel_mover_guia(self._panel_drag[1])
+
+    def _panel_clamp(self, w):
+        _, lo, hi = self._panel_lim
+        return int(min(hi, max(lo, w)))
+
+    def _panel_mover_guia(self, w):
+        # mientras se arrastra solo se mueve una guía magenta (como el divisor de MEDIA ASSETS): sin relayout
+        x = self.left_panel.winfo_rootx() - self.winfo_rootx() + w + int(3 * self._split_scaling())
+        y = self.main_frame.winfo_rooty() - self.winfo_rooty()
+        self._panel_guia.place(x=x, y=y, width=3, height=self.main_frame.winfo_height())
+        self._panel_guia.lift()
+
+    def _panel_motion(self, e):
+        if self._panel_drag is None:
+            return
+        x0, w0 = self._panel_drag
+        self._panel_mover_guia(self._panel_clamp(w0 + (e.x_root - x0)))
+
+    def _panel_release(self, e):
+        if self._panel_drag is None:
+            return
+        x0, w0 = self._panel_drag
+        self._panel_drag = None
+        if getattr(self, "_panel_guia", None) is not None:
+            self._panel_guia.place_forget()
+        self._panel_grip.configure(fg_color="#D9D9D9")
+        if abs(e.x_root - x0) < 2:
+            return   # clic sin arrastrar
+        total = self._panel_lim[0]
+        w = self._panel_clamp(w0 + (e.x_root - x0))
+        self._panel_ratio = w / float(max(1, total))
+        self._cabecera_ajustar(w)
+        self.left_panel.configure(width=w / self._split_scaling())
+        cb_ajustes.guardar_ajuste(CONFIG_DIR, "left_panel_ratio", round(self._panel_ratio, 4))
+
+    def _panel_auto(self):
+        self._panel_drag = None
+        if getattr(self, "_panel_guia", None) is not None:
+            self._panel_guia.place_forget()
+        self._panel_ratio = self.PANEL_RATIO
+        cb_ajustes.guardar_ajuste(CONFIG_DIR, "left_panel_ratio", None)
+        self._panel_aplicar()
 
     def _split_scaling(self):
         try:
