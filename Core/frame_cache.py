@@ -116,6 +116,9 @@ class FrameCache:
         self._pending = {}             # key -> Future
         self._infos = {}               # sig -> dict(duration, size, fps)
         self._images = OrderedDict()   # sig -> PIL.Image (imágenes estáticas)
+        self._info_vuelo = {}          # v1.11: sig -> Event del ffprobe en curso (uno por fichero, no uno por hilo)
+        self._precargando = set()      # v1.11: rutas que se están leyendo en segundo plano
+        self._fallidos = set()         # v1.11: rutas cuya lectura falló (no se espera por ellas)
         workers = workers or max(2, min(4, (os.cpu_count() or 4) // 2))
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="frame_cache")
 
@@ -126,15 +129,33 @@ class FrameCache:
         with self._lock:
             if sig in self._infos:
                 return self._infos[sig]
-        raw = ffmpeg_parse_infos(path, decode_file=False)
-        info = {
-            "duration": float(raw.get("duration") or raw.get("video_duration") or 0.0),
-            "size": tuple(raw.get("video_size") or (0, 0)),
-            "fps": float(raw.get("video_fps") or 25.0),
-        }
-        with self._lock:
-            self._infos[sig] = info
-        return info
+            # v1.11: si otro hilo ya está leyendo este fichero, se espera a su resultado. Antes cada hilo (preview,
+            # solver, LOGO UNDER, ventana) lanzaba su propio ffmpeg contra el mismo vídeo del NAS a la vez, y con
+            # el NAS ocupado cada uno tardaba más de 3 s.
+            ev = self._info_vuelo.get(sig)
+            mio = ev is None
+            if mio:
+                ev = self._info_vuelo[sig] = threading.Event()
+        if not mio:
+            ev.wait()
+            with self._lock:
+                if sig in self._infos:
+                    return self._infos[sig]
+            return self.info(path)   # el otro hilo falló: se intenta de nuevo
+        try:
+            raw = ffmpeg_parse_infos(path, decode_file=False)
+            info = {
+                "duration": float(raw.get("duration") or raw.get("video_duration") or 0.0),
+                "size": tuple(raw.get("video_size") or (0, 0)),
+                "fps": float(raw.get("video_fps") or 25.0),
+            }
+            with self._lock:
+                self._infos[sig] = info
+            return info
+        finally:
+            with self._lock:
+                self._info_vuelo.pop(sig, None)
+            ev.set()
 
     def duration(self, path):
         try:
@@ -147,6 +168,43 @@ class FrameCache:
         if is_video(path):
             return self.info(path)["size"]
         return self.image(path).size
+
+    # ---------- v1.11: lectura anticipada (para no esperar al NAS en el hilo de la ventana) ----------
+    def conocido(self, path):
+        """True si dimensions(path) responde ya sin tocar el disco (o si no hay fichero / su lectura falló)."""
+        if not path or path in self._fallidos:
+            return True
+        with _SIGS_LOCK:
+            c = _SIGS.get(path)
+        if c is None:
+            return False
+        with self._lock:
+            return c[1] in (self._infos if is_video(path) else self._images)
+
+    def leyendo(self):
+        """v1.11: True mientras hay lecturas de ELEMENTS en curso (el escaneo del NAS les cede el paso)."""
+        with self._lock:
+            return bool(self._info_vuelo or self._precargando)
+
+    def precargar(self, paths):
+        """Lee en segundo plano firma + metadatos (vídeo) o la imagen de cada ruta. Sin duplicados."""
+        for p in dict.fromkeys(p for p in paths if p):
+            with self._lock:
+                if p in self._precargando:
+                    continue
+                self._precargando.add(p)
+            self._fallidos.discard(p)
+            threading.Thread(target=self._precargar_una, args=(p,), daemon=True, name="precarga").start()
+
+    def _precargar_una(self, path):
+        try:
+            self.dimensions(path)
+        except Exception as e:
+            self._fallidos.add(path)
+            log_error(f"FrameCache: no se pudo leer '{path}': {e}")
+        finally:
+            with self._lock:
+                self._precargando.discard(path)
 
     # ---------- Imágenes estáticas ----------
     def image(self, path):

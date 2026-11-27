@@ -3017,6 +3017,19 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.pil_preview_images, self.pil_sys_images, self.pil_strip3d_images = [], [], []
         self.preview_current_idx = 0
         self.undo_stack, self.redo_stack = [], []
+        # v1.11: los ELEMENTS suelen estar en el NAS: se empiezan a leer ya, en segundo plano y a la vez, para que
+        # ni el layout ni la preview tengan que esperar a ffmpeg en el hilo de la ventana.
+        FRAME_CACHE.precargar([self.archivos_cargados[k] for k in ("static_logo", "background", "center_board")]
+                              + list(anims))
+
+    def _medios_pendientes(self):
+        """v1.11: ELEMENTS cuyas dimensiones necesita el layout y aún no se conocen (se están leyendo)."""
+        a = self.archivos_cargados
+        anims = [f for f in a.get("anim_zones") or [] if f] or ([a["anim_zone"]] if a.get("anim_zone") else [])
+        pend = [p for p in (a.get("static_logo"), anims[0] if anims else None) if p and not FRAME_CACHE.conocido(p)]
+        if pend:
+            FRAME_CACHE.precargar(pend)
+        return pend
 
     def aplicar_config_campana(self, cfg):
         """Carga en Manual Edit la arquitectura guardada de una campaña y la pinta."""
@@ -3336,6 +3349,15 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         del cambio ya está pintada y la preview definitiva la sustituye en cuanto llega."""
         debug("Iniciando render de preview...")
         self._cancel_auto_update()
+        # v1.11: con el logo / ANIM ZONE aún leyéndose del NAS, la ventana no los espera: se reintenta al llegar.
+        if self._medios_pendientes():
+            self.lbl_preview_status.configure(text="Reading media…", text_color="gray")
+            if getattr(self, "_espera_medios_id", None) is None:
+                def reintentar():
+                    self._espera_medios_id = None
+                    self.start_preview_render(quiet=quiet)
+                self._espera_medios_id = self.after(80, reintentar)
+            return
         self._perf_t0 = time.perf_counter()   # v1.05
         with medir("Recalcular layout"):
             datos = self.calcular_layout()

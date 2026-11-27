@@ -79,6 +79,18 @@ def safe_name(text):
     return re.sub(r'[<>:"/\\|?*]+', "_", str(text or "")).strip().strip(".") or "Stadium"
 
 
+def _ceder_paso(max_s=8.0):
+    """v1.11: mientras Archie lee los ELEMENTS de la campaña abierta (ffmpeg por SMB), el escaneo de CAMPAIGNS
+    espera: las dos cosas a la vez contra el mismo NAS hacían que cada lectura tardase varios segundos."""
+    try:
+        from frame_cache import FRAME_CACHE
+    except Exception:
+        return
+    fin = time.time() + max_s
+    while FRAME_CACHE.leyendo() and time.time() < fin:
+        time.sleep(0.05)
+
+
 class NasIndex:
     def __init__(self, config_dir, log=print):
         self.config_dir = config_dir
@@ -157,6 +169,7 @@ class NasIndex:
 
         def recorrer(path, depth, brand_path):
             # v0.60: se baja por todas las subcarpetas (hasta SCAN_DEPTH) y se para en cuanto una empieza por un código
+            _ceder_paso()
             try:
                 entradas = [e for e in os.scandir(path) if e.is_dir()]
             except OSError:

@@ -766,6 +766,9 @@ class ManualModeMixin:
         if self.manual_drag is not None:
             self._mv_tip(None)
             return
+        if self.manual is None and self._medios_pendientes():   # v1.11: sin esperar al NAS al pasar el ratón
+            self._mv_tip(None)
+            return
         m = self._mv_modelo(avisar=False)
         x = self._mv_evento_x(event) if m is not None else None
         uid = m.hit(x, getattr(self, "_mv_ultimo_y", None)) if x is not None else None
