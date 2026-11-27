@@ -27,6 +27,7 @@ from stadium_loader import load_stadium_library as cargar_estadios, AMPLIFY_ACTI
 from amplify import (caja, pintar_sin_led, bandas_fondo, mosaico, franjas_arquitectura, rects_sin_led, filas_sistema, geo_de_perfil, geo_de_datos,  # v0.95
                      etiqueta as etiqueta_2rows, modo_de, SINGLE)
 from log_utils import debug, log_error
+import tiempos as registro_tiempos   # v1.11: logs/archie_tiempos.log
 from frame_cache import FRAME_CACHE, is_video
 from remote_config import load_remote_config
 from auto_import import buscar_elements_hermanos, anims_de_carpeta
@@ -897,6 +898,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         try:   # v1.11: si la ventana se queda sin responder, deja en logs/archie_bloqueos.log dónde estaba
             import vigilante
             vigilante.iniciar(self, os.path.join(MASTER_DIR, "logs"))
+            registro_tiempos.iniciar(os.path.join(MASTER_DIR, "logs"))   # v1.11: logs/archie_tiempos.log
         except Exception as e:
             log_error(f"Vigilante de bloqueos: {e}")
 
@@ -3189,6 +3191,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         threading.Thread(target=target, args=args, daemon=True).start()
 
     def show_preview_overlay(self, status_text):
+        registro_tiempos.empezar()   # v1.11: logs/archie_tiempos.log
         self.render_busy = True
         self.player.hold()
         self.lbl_preview_overlay_status.configure(text=status_text)
@@ -3220,6 +3223,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             self.solver_busy = False
             self._cursor_ocupado(False)   # v1.10
         self.hide_preview_overlay()
+        registro_tiempos.terminar("CANCELADO")
         self.player.release()
         self.preview_dirty = True
         self.lbl_preview_status.configure(text="ARCHITECTURE PREVIEW (Update cancelled)", text_color="#E67E22")
@@ -3359,6 +3363,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                 self._espera_medios_id = self.after(80, reintentar)
             return
         self._perf_t0 = time.perf_counter()   # v1.05
+        registro_tiempos.marca("cálculo")   # v1.11: desde el aviso hasta aquí (solver / referencia)
         with medir("Recalcular layout"):
             datos = self.calcular_layout()
         if not datos:
@@ -3424,11 +3429,13 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                 except Exception: pass  # el compositor pinta el placeholder rojo
                 self.after(0, self._set_preview_progress, gen, 0.85 * k / total, f"Decoding key frames {k}/{total}...")
 
+            registro_tiempos.marca("leer frames")
             self.after(0, self._set_preview_progress, gen, 0.9, "Composing architecture...")
             memo = {}
             out = {}
             res, sys_canvas = self._componer_frame_preview(p, tiempos[first_idx], memo, strip_out=out)
             if gen != self.render_gen: return
+            registro_tiempos.marca("componer")
             self._precalentar_vistas(res, sys_canvas)   # v1.10: el reescalado de la preview, ya hecho aquí
             self.after(0, self._on_first_preview_frame, gen, first_idx, res, sys_canvas, self._strip_3d(out, p), p)
 
@@ -3496,6 +3503,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.preview_frames_ready = 1
         self._shown_strip = self._shown_sys = None  # no repintar la imagen vieja: la nueva llega enseguida
         self.hide_preview_overlay()
+        registro_tiempos.terminar(self.output_filename_var.get() if hasattr(self, "output_filename_var") else "")
         self._update_preview_status_label()
         self.after(100, self.auto_fit_zooms)
         debug("Preview: primer frame listo.")

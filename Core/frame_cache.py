@@ -148,6 +148,8 @@ class FrameCache:
                 "duration": float(raw.get("duration") or raw.get("video_duration") or 0.0),
                 "size": tuple(raw.get("video_size") or (0, 0)),
                 "fps": float(raw.get("video_fps") or 25.0),
+                "codec": str(raw.get("video_codec_name") or ""),     # v1.11: para saber si puede llevar alfa
+                "profile": str(raw.get("video_profile") or ""),
             }
             with self._lock:
                 self._infos[sig] = info
@@ -199,6 +201,9 @@ class FrameCache:
     def _precargar_una(self, path):
         try:
             self.dimensions(path)
+            if is_video(path):   # v1.11: la detección de alfa premultiplicado, ya aquí y no en el primer frame
+                from alpha_utils import es_premultiplicado
+                es_premultiplicado(path)
         except Exception as e:
             self._fallidos.add(path)
             log_error(f"FrameCache: no se pudo leer '{path}': {e}")
@@ -284,6 +289,11 @@ class FrameCache:
             t0 = time.perf_counter()
             img = self._decode(path, t, height, info)
             ms = (time.perf_counter() - t0) * 1000.0
+            try:
+                import tiempos   # v1.11
+                tiempos.lectura(path, ms)
+            except Exception:
+                pass
             if ms > 400:   # v1.05: con ARCHIE_PERF=1, frames que tardan (NAS lento, ProRes pesado)
                 from perf import log as perf_log
                 perf_log(f"frame lento {ms:.0f} ms · {os.path.basename(path)} t={t:.2f}s h={height}")
