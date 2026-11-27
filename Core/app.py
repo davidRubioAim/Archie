@@ -2300,9 +2300,15 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                 
                 self.update_idletasks() 
                 
-                max_gl, max_tl = self.get_max_under_logos()
+                max_gl, max_tl = self.get_max_under_logos()   # v1.11: sin esperar al NAS (ver _refrescar_maximos_under)
                 default_gl = max(1, int(max_gl * 0.8))
                 default_tl = max(1, int(max_tl * 0.8))
+                if self._ancho_logo_pendiente():
+                    # Las dimensiones del logo llegan en segundo plano: entonces se ponen los valores por defecto
+                    # reales, salvo que alguien (usuario o auto-solver) haya tocado ya los sliders.
+                    self._lu_defaults_provisionales = (default_gl, default_tl)
+                else:
+                    self._lu_defaults_provisionales = None
                 
                 self.update_qty_under_labels(default_gl, "gl_under")
                 self.update_qty_under_labels(default_tl, "tl_under")
@@ -2312,7 +2318,62 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
                 
                 self.toggle_logo_under_mode()
 
-    def get_max_under_logos(self):
+    def _ancho_logo(self, logo_path, h_total, esperar=False):
+        """v1.11: ancho del logo a la altura del estadio, a partir de sus dimensiones (cacheadas por ruta). Antes se
+        decodificaba un frame del logo (ffmpeg) en el hilo de la ventana cada vez que se movía un slider o se cargaba
+        una campaña: con el logo en el NAS ocupado eran 3 s de ventana bloqueada. Si aún no se conocen y no se puede
+        esperar, se piden en un hilo y devuelve None; al llegar se recalculan los máximos de LOGO UNDER."""
+        cache = self.__dict__.setdefault("_logo_aspecto", {})
+        dims = cache.get(logo_path)
+        if dims is None and esperar:
+            dims = cache[logo_path] = tuple(FRAME_CACHE.dimensions(logo_path))
+        if dims is None:
+            pidiendo = self.__dict__.setdefault("_logo_aspecto_pidiendo", set())
+            if logo_path not in pidiendo:
+                pidiendo.add(logo_path)
+
+                def medir_logo():
+                    try:
+                        cache[logo_path] = tuple(FRAME_CACHE.dimensions(logo_path))
+                    except Exception as e:
+                        log_error(f"No se pudieron leer las dimensiones del logo '{logo_path}': {e}")
+                        cache[logo_path] = (0, 0)
+                    finally:
+                        pidiendo.discard(logo_path)
+                    self.after(0, self._refrescar_maximos_under)
+                threading.Thread(target=medir_logo, daemon=True).start()
+            return None
+        w, h = dims
+        if w <= 0 or h <= 0:
+            return None
+        if is_video(logo_path):   # igual que obtener_frame_pil: el vídeo se escala a la altura del estadio
+            return max(1, int(round(w * h_total / float(h)))) if h_total else w
+        return w                  # ...y la imagen se usa a su tamaño
+
+    def _ancho_logo_pendiente(self):
+        logo_path = self.archivos_cargados.get("static_logo")
+        return bool(logo_path) and logo_path not in self.__dict__.get("_logo_aspecto", {})
+
+    def _refrescar_maximos_under(self):
+        try:
+            provisionales = self.__dict__.get("_lu_defaults_provisionales")
+            if provisionales and not self._ancho_logo_pendiente():
+                self._lu_defaults_provisionales = None
+                if (self.logo_under_var.get() and
+                        (int(self.qty_gl_under_slider.get()), int(self.qty_tl_under_slider.get())) == provisionales):
+                    max_gl, max_tl = self.get_max_under_logos()
+                    default_gl, default_tl = max(1, int(max_gl * 0.8)), max(1, int(max_tl * 0.8))
+                    self.update_qty_under_labels(default_gl, "gl_under")
+                    self.update_qty_under_labels(default_tl, "tl_under")
+                    self.qty_gl_under_slider.set(default_gl)
+                    self.qty_tl_under_slider.set(default_tl)
+                    return
+            self.update_qty_under_labels(self.qty_gl_under_slider.get(), "gl_under")
+            self.update_qty_under_labels(self.qty_tl_under_slider.get(), "tl_under")
+        except Exception:
+            traceback.print_exc()
+
+    def get_max_under_logos(self, esperar=False):
         try:
             w_total = int(self.inputs["Width"].get() or 0)
             h_total = int(self.inputs["Height"].get() or 0)
@@ -2324,8 +2385,9 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             # --- BLINDAJE ARCHIE: Fallback realista por zona en vez de 60 ---
             if not logo_path: return 15, 15
             
-            img = self.obtener_frame_pil(logo_path, h_target=h_total)
-            logo_w = img.width if img.width > 0 else int(h_total * 1.5)
+            logo_w = self._ancho_logo(logo_path, h_total, esperar=esperar)   # v1.11: sin decodificar el logo
+            if logo_w is None:
+                return 15, 15   # aún midiendo el logo (en segundo plano): se recalcula al llegar
             logo_w = max(1, logo_w) 
             
             cb_start = (w_total / 2) - (cb_width / 2)
