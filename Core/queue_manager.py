@@ -265,6 +265,7 @@ class QueueManager:
         Exporta de forma inmediata el archivo .json para After Effects.
         Abre la carpeta del explorador local al finalizar con éxito.
         """
+        if not self.app.estadio_listo(): return   # v1.11: primero el estadio
         data = self.app.calcular_layout()
         if not data: 
             return
@@ -308,6 +309,7 @@ class QueueManager:
             )
 
     def run_direct_render(self, render_type):
+        if not self.app.estadio_listo(): return   # v1.11: primero el estadio
         data = self.app.calcular_layout()
         if not data: return
         

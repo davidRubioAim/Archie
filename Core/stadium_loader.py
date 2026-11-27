@@ -22,6 +22,7 @@ import io
 import json
 import os
 import re
+import unicodedata
 import urllib.request
 
 from edge_cases import cargar_overrides, aplicar_overrides
@@ -33,7 +34,9 @@ AMPLIFY_ACTIVO = True
 FETCH_TIMEOUT = 6
 DEFAULT_SHEET_ID = "15hfgbbpTAd06OEmSR6Zpad3-xjgN_CiSuLtnS5-ExL0"  # AIM Sport - Atlas Venue Specs (Master Atlas)
 # v0.87: la hoja TESTS (1k-DcjAS_4barGv6X280Y6EyryiQVjhbhnae7hlBkkg4) ya no se usa
-DEFAULT_SHEET_GID = "1272902361"   # pestaña MASTER ATLAS
+# v1.11: pestañas MASTER ATLAS + MASTER ATLAS (UEFA). STADIUM_SHEET_GID admite varias separadas por comas;
+# si un estadio está en las dos, manda la última pestaña (la de UEFA).
+DEFAULT_SHEET_GID = "1272902361,1677030154"
 
 # Columna de la hoja (normalizada) -> clave que espera la app
 COLUMN_MAP = {
@@ -238,8 +241,30 @@ def fetch_sheet_rows(sheet_id, gid="0"):
     return list(csv.reader(io.StringIO(raw)))
 
 
+def orden_alfabetico(nombre):
+    """v1.11: orden del selector: alfabético sin distinguir mayúsculas ni acentos ('Á' junto a 'A')."""
+    sin_acentos = "".join(c for c in unicodedata.normalize("NFKD", str(nombre)) if not unicodedata.combining(c))
+    return (sin_acentos.casefold(), str(nombre))
+
+
 def _with_custom(stadiums):
-    return {"Custom": dict(CUSTOM_PROFILE), **{k: v for k, v in stadiums.items() if k != "Custom"}}
+    """'Custom' primero y el resto de estadios en orden alfabético (v1.11)."""
+    resto = sorted((k for k in stadiums if k != "Custom"), key=orden_alfabetico)
+    return {"Custom": dict(CUSTOM_PROFILE), **{k: stadiums[k] for k in resto}}
+
+
+def fetch_and_parse(sheet_id, gids):
+    """v1.11: lee y une varias pestañas. Si alguna falla, falla todo (y se usa la copia local entera, para no
+    guardar una lista a la que le faltan los estadios de esa pestaña)."""
+    stadiums, warnings, duplicados = {}, [], []
+    for gid in gids:
+        parte, avisos = parse_sheet_rows(fetch_sheet_rows(sheet_id, gid))
+        for nombre in parte:
+            if nombre in stadiums:
+                duplicados.append(nombre)
+        stadiums.update(parte)
+        warnings.extend(f"[pestaña {gid}] {w}" for w in avisos)
+    return stadiums, warnings, duplicados
 
 
 def _read_json(path):
@@ -293,7 +318,7 @@ def _load_base_library(config_dir, log=print, fallback_dirs=()):
     """
     cache_path = os.path.join(config_dir, "stadium_cache.json")
     sheet_id = (os.getenv("STADIUM_SHEET_ID") or DEFAULT_SHEET_ID).strip()
-    gid = (os.getenv("STADIUM_SHEET_GID") or DEFAULT_SHEET_GID).strip()
+    gids = [g.strip() for g in (os.getenv("STADIUM_SHEET_GID") or DEFAULT_SHEET_GID).split(",") if g.strip()]
 
     previous = {}
     try:
@@ -302,7 +327,9 @@ def _load_base_library(config_dir, log=print, fallback_dirs=()):
         pass
 
     try:
-        stadiums, warnings = parse_sheet_rows(fetch_sheet_rows(sheet_id, gid))
+        stadiums, warnings, duplicados = fetch_and_parse(sheet_id, gids)
+        if duplicados:
+            log(f"  [ESTADIOS] En MASTER ATLAS y en MASTER ATLAS (UEFA), se usa la de UEFA: {', '.join(duplicados)}")
         if stadiums:
             data = _with_custom(stadiums)
             try:

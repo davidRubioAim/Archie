@@ -24,6 +24,7 @@ from edge_cases import edge_de, filas_system, restar_zonas, pintar_zonas_negras,
 from queue_manager import QueueManager
 from batch_manager import BatchManager
 from stadium_loader import load_stadium_library as cargar_estadios, AMPLIFY_ACTIVO  # v0.91
+ELEGIR_ESTADIO = "▸ SELECT STADIUM"   # v1.11: texto del selector hasta que se elige estadio
 from amplify import (caja, pintar_sin_led, bandas_fondo, mosaico, franjas_arquitectura, rects_sin_led, filas_sistema, geo_de_perfil, geo_de_datos,  # v0.95
                      etiqueta as etiqueta_2rows, modo_de, SINGLE)
 from log_utils import debug, log_error
@@ -426,6 +427,10 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             dynamic_resizing=False
         )
         self.stadium_selector_global.pack(anchor="e", fill="x")
+        # v1.11: el primer paso es siempre elegir el estadio (MEDIA ASSETS y CAMPAIGNS bloqueados hasta entonces)
+        self.estadio_elegido = False
+        self.stadium_selector_global.set(ELEGIR_ESTADIO)
+        self.stadium_selector_global.configure(fg_color=self.c_magenta, button_color="#D1007A")
 
         self.col_media = ctk.CTkFrame(self.top_left_container, fg_color=self.c_white, corner_radius=15, border_width=0)
         self.col_media.pack(fill="x", expand=False)
@@ -482,6 +487,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
 
         # v0.58: pestaña CAMPAIGNS (se muestra en lugar de las zonas de drop)
         self.campaign_panel = CampaignPanel(self, self.media_body, CONFIG_DIR)
+        self._crear_candado_media()   # v1.11
         self._build_media_splitter()   # v1.02: divisor arrastrable MEDIA ASSETS / MANUAL EDIT - AI ASSISTANT
 
         # --- NUEVO BLOQUE DE ACCIONES (CREATE + RESET + UNDO/REDO) ---
@@ -1423,6 +1429,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
     def on_create_architecture(self):
         """1er click (o estadio nuevo): arquitectura por defecto. Después: aplica los ajustes actuales a la preview."""
         if self.solver_busy: return  # un render de preview en curso sí se puede sustituir
+        if not self.estadio_listo(): return   # v1.11: primero el estadio
         stadium = self.stadium_selector_global.get()
         # v0.66: también si han cambiado el logo o las ANIM ZONES (p. ej. Mastercard -> PlayStation)
         if not self.architecture_created or stadium != self.arch_stadium or self._arch_key() != self.arch_key:
@@ -2022,6 +2029,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.trigger_update()
 
     def update_anim_zone(self, event, idx):
+        if not self.estadio_listo(): return   # v1.11
         paths = self._dnd_paths(event)
         if self._drop_especial(paths):   # v0.93: varios ELEMENTS (p. ej. el grupo de ANIM) o un JSON
             self._soltar_archivos(paths)
@@ -2437,6 +2445,9 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         self.stadium_selector_global.configure(values=list(data.keys()))
         self.batch_manager.sync_stadiums()
 
+        if not self.estadio_elegido:   # v1.11: aún sin estadio: se sigue pidiendo que se elija
+            self.stadium_selector_global.set(ELEGIR_ESTADIO)
+            return
         if previous in data:
             self.on_stadium_change(previous)  # recarga valores por si cambiaron en la hoja
         else:
@@ -2469,8 +2480,49 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
             self.stadium_selector_global.set(first_match)
             self.on_stadium_change(first_match)
 
+    # ---------- v1.11: primero el estadio ----------
+    def _crear_candado_media(self):
+        """Tapa MEDIA ASSETS (FILES y CAMPAIGNS) hasta que se elige un estadio."""
+        self._candado_media = ctk.CTkFrame(self.col_media, fg_color=self.c_white, corner_radius=0)
+        caja = ctk.CTkFrame(self._candado_media, fg_color="transparent")
+        caja.place(relx=0.5, rely=0.4, anchor="center")
+        ctk.CTkLabel(caja, text="🔒", font=ctk.CTkFont(size=28)).pack()
+        ctk.CTkLabel(caja, text="STEP 1 · SELECT THE STADIUM", font=self.font_t2, text_color=self.c_magenta).pack(pady=(4, 2))
+        ctk.CTkLabel(caja, text="Choose a stadium in the selector above to unlock\nMEDIA ASSETS and CAMPAIGNS.",
+                     font=ctk.CTkFont(size=11), text_color=self.c_text_muted, justify="center").pack()
+        self._candado_media.place(in_=self.media_body, relx=0, rely=0, relwidth=1, relheight=1)
+        self._candado_media.lift()
+        self.media_mode.configure(state="disabled")
+
+    def _quitar_candado_media(self):
+        if self.estadio_elegido:
+            return
+        self.estadio_elegido = True
+        self.stadium_selector_global.configure(fg_color="#2b2b2b", button_color="#1a1a1a")
+        candado = getattr(self, "_candado_media", None)
+        if candado is not None:
+            candado.place_forget()
+            candado.destroy()
+            self._candado_media = None
+        self.media_mode.configure(state="normal")
+
+    def estadio_listo(self, avisar=True):
+        """False (y avisa) mientras no se haya elegido estadio: no se puede soltar ni cargar contenido."""
+        if self.estadio_elegido:
+            return True
+        if avisar:
+            try:
+                self.lbl_preview_status.configure(text="Select the stadium first (STEP 1)", text_color="#E74C3C")
+                sel = self.stadium_selector_global
+                sel.configure(fg_color="#E74C3C")
+                self.after(350, lambda: (not self.estadio_elegido) and sel.configure(fg_color=self.c_magenta))
+            except Exception:
+                pass
+        return False
+
     def on_stadium_change(self, choice):
         if choice == "No matches found" or choice not in self.stadium_data: return
+        self._quitar_candado_media()   # v1.11
         panel = getattr(self, "campaign_panel", None)
         if panel: panel.before_stadium_change()  # v0.58: la campaña activa pertenece al estadio anterior
         
@@ -2507,6 +2559,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
         if folder := ctk.filedialog.askdirectory(title="Select Destination"): self.output_path_var.set(folder)
 
     def on_drop(self, event, key):
+        if not self.estadio_listo(): return   # v1.11
         paths = self._dnd_paths(event)
         if self._drop_especial(paths):   # v0.93: varios ELEMENTS o un JSON -> cada uno a su sitio
             self._soltar_archivos(paths)
@@ -2733,6 +2786,7 @@ class MegaStripApp(UiThreadMixin, GlobalDropMixin, JsonImportMixin, ManualModeMi
     def batch_add_to_queue(self):
         """v0.94: con la pestaña CAMPAIGNS y campañas en CAMPAIGN CODES, todas las READY van a la cola de render.
         Si no, el Batch Setup de estadios de siempre."""
+        if not self.estadio_listo(): return   # v1.11: primero el estadio
         panel = getattr(self, "campaign_panel", None)
         if panel and self.media_mode.get() == "CAMPAIGNS" and panel.approved:
             panel.batch_add_queue()

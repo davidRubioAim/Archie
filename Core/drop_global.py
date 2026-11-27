@@ -37,6 +37,8 @@ class GlobalDropMixin:
         return len(paths) != 1 or paths[0].lower().endswith(".json") or os.path.isdir(paths[0])
 
     def on_drop_global(self, event):
+        if not self.estadio_listo():   # v1.11: primero el estadio
+            return getattr(event, "action", None)
         self._soltar_archivos(self._dnd_paths(event))
         return getattr(event, "action", None)
 

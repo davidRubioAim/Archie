@@ -546,6 +546,8 @@ class CampaignPanel:
 
     # ================================================================ añadir / quitar
     def agregar_desde_buscador(self):
+        if not self.app.estadio_listo():   # v1.11: primero el estadio
+            return
         texto = self.entry_code.get()
         tokens = [normalizar_codigo(t) for t in re.split(r"[\s,;]+", texto) if t.strip()]
         if not tokens:
@@ -592,6 +594,8 @@ class CampaignPanel:
             self.tree_l.item(code, tags=("added",) if added else (("noelem",) if tiene is False else ()))
 
     def agregar(self, codes):
+        if not self.app.estadio_listo():   # v1.11: primero el estadio
+            return
         nuevos = []
         for code in codes:
             # v0.97: volver a añadir una campaña con variantes recupera las que se hubieran quitado
@@ -776,6 +780,8 @@ class CampaignPanel:
 
     def activar(self, code, popup=False):
         app = self.app
+        if not self.app.estadio_listo():   # v1.11: primero el estadio
+            return
         if self.exporting:
             return
         if popup:
