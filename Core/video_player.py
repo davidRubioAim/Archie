@@ -508,7 +508,7 @@ class PreviewPlayer:
         futs, self._hq_futures = getattr(self, "_hq_futures", None), None
         if futs:
             try:
-                FRAME_CACHE.cancelar(futs.values())
+                FRAME_CACHE.cancelar([f for k, f in list(futs.items()) if k != "__listo__"])
             except Exception:
                 pass
 
@@ -523,25 +523,38 @@ class PreviewPlayer:
         if self.proxy_h is not None and self.proxy_h >= self.escena.h_total: return
         t = self.t
         h = self.escena.h_total
+        paths = list(self.escena.videos)
         futures = {}
-        try:
-            for path in self.escena.videos:
-                futures[path] = FRAME_CACHE.request(path, t, h)
-        except Exception as e:
-            debug(f"Reproductor: HQ no disponible ({e})")
-            return
         self._hq_futures = futures
-        self._poll_hq(t, futures)
+
+        # v1.11: las peticiones se hacen en un hilo. FRAME_CACHE.request consulta el fichero (firma, duración) y,
+        # con los ELEMENTS en el NAS ocupado, eso podía tener la ventana 3-4 s sin responder.
+        def pedir():
+            try:
+                for path in paths:
+                    if self._hq_futures is not futures: return   # ya se ha pedido otro punto
+                    futures[path] = FRAME_CACHE.request(path, t, h)
+            except Exception as e:
+                debug(f"Reproductor: HQ no disponible ({e})")
+                futures.clear()
+            finally:
+                futures["__listo__"] = True
+        threading.Thread(target=pedir, daemon=True, name="hq").start()
+        self._hq_id = self.app.after(40, self._poll_hq, t, futures)
 
     def _poll_hq(self, t, futures):
         if self.playing or abs(t - self.t) > 1e-6 or not self.ready: return
-        if not all(f.done() for f in futures.values()):
+        if self._hq_futures is not futures: return
+        pendientes = [f for k, f in list(futures.items()) if k != "__listo__"]
+        if not futures.get("__listo__") or not all(f.done() for f in pendientes):
             self._hq_id = self.app.after(40, self._poll_hq, t, futures)
             return
         self._hq_id = None
         self._hq_futures = None
+        if not pendientes: return
         frames = {}
-        for path, f in futures.items():
+        for path, f in list(futures.items()):
+            if path == "__listo__": continue
             try: frames[path] = f.result()
             except BaseException: pass   # v1.11: también CancelledError
         self._hq = (t, frames)

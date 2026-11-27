@@ -54,6 +54,19 @@ def _ttl():
     return _TTL
 
 
+_REFRESCANDO = set()
+
+
+def _refrescar_firma(path):
+    try:
+        _stat_y_guardar(path, time.monotonic())
+    except OSError:
+        pass
+    finally:
+        with _SIGS_LOCK:
+            _REFRESCANDO.discard(path)
+
+
 def _file_sig(path):
     ahora = time.monotonic()
     with _SIGS_LOCK:
@@ -61,6 +74,19 @@ def _file_sig(path):
         if c is not None and ahora - c[0] < _ttl():
             STATS["stat_cache"] += 1
             return c[1]
+        # v1.11: en el hilo de la ventana nunca se espera al NAS. Si ya hay una firma (aunque tenga más de unos
+        # segundos) se usa y se comprueba en segundo plano: un os.stat por SMB con el NAS ocupado (escaneo de
+        # CAMPAIGNS, ffmpeg leyendo ProRes) tardaba 3-4 s y la ventana dejaba de responder.
+        if c is not None and threading.current_thread() is threading.main_thread():
+            STATS["stat_cache"] += 1
+            if path not in _REFRESCANDO:
+                _REFRESCANDO.add(path)
+                threading.Thread(target=_refrescar_firma, args=(path,), daemon=True).start()
+            return c[1]
+    return _stat_y_guardar(path, ahora)
+
+
+def _stat_y_guardar(path, ahora):
     st = os.stat(path)
     sig = (os.path.abspath(path), st.st_size, int(st.st_mtime))
     with _SIGS_LOCK:
